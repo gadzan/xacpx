@@ -23,6 +23,7 @@ All runtime file paths are centralized in `daemon-files.ts` — nothing else com
 | `~/.xacpx/runtime/stdout.log` | Daemon stdout |
 | `~/.xacpx/runtime/stderr.log` | Daemon stderr |
 | `~/.xacpx/runtime/app.log` | Structured application log (bounded / rolling) |
+| `~/.xacpx/runtime/runtime-consumer.lock.json` | Stable metadata path for the OS-held, channel-independent core consumer lock |
 
 ### Module files
 
@@ -33,6 +34,10 @@ All runtime file paths are centralized in `daemon-files.ts` — nothing else com
 | [`daemon-runtime.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/daemon-runtime.ts) | In-process registration — writes PID, status file, and heartbeat |
 | [`daemon-files.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/daemon-files.ts) | Runtime file path definitions — the single source of truth for all paths |
 | [`daemon-status.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/daemon-status.ts) | Status file persistence — read / write / clear `status.json`; defines `DaemonStatus` shape |
+| [`runtime-consumer-lock.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/runtime-consumer-lock.ts) | OS-held core consumer lock (`flock` on POSIX / runtime-owner IPC guard on Windows) plus one compatibility fence per lock-capable channel |
+| [`windows-daemon-runtime.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/windows-daemon-runtime.ts) | Windows daemon generation identity and orphan registry bookkeeping |
+| [`posix-daemon-recovery.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/posix-daemon-recovery.ts) | POSIX status-only daemon identity recovery — consumer-lock and OS start-time proof |
+| [`private-runtime-dir.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/private-runtime-dir.ts) | Private runtime directory invariant (`0700`) |
 
 ## Start lifecycle
 
@@ -62,8 +67,9 @@ The resulting states:
 | State | Condition |
 | --- | --- |
 | `running` | PID file exists, process exists, valid status file present |
-| `stopped` | No PID file, or no status information |
-| `stale stopped` | Stale PID or status left by a crashed daemon — controller cleans up |
+| `stopped` | No evidence of a live daemon |
+| `stopped` + `stale: true` | Old PID or status left by a dead process — the controller cleans up the remnants |
+| `indeterminate` | A process is alive but its PID/status metadata is incomplete, inconsistent, or too stale to repair safely — blocks a second daemon start; status/doctor probes stay read-only while that PID is alive |
 
 `DaemonController.getStatus()` does not just check files — it performs a **liveness check** on the actual process. This is its core value: a file's existence does not guarantee the process is alive. Source: [`src/daemon/daemon-controller.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/daemon-controller.ts)
 

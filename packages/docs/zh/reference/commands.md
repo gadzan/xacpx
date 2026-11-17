@@ -110,7 +110,7 @@
 | `/agent add <name>` | 添加内置代理模板；不会覆盖已有不同配置的同名代理 |
 | `/agent rm <name>` | 删除代理 |
 
-内置模板名称：`codex`、`claude`、`pi`、`openclaw`、`gemini`、`cursor`、`copilot`、`droid`、`factory-droid`、`factorydroid`、`grok-build`、`iflow`、`kilocode`、`kimi`、`kiro`、`mux`、`omp`、`opencode`、`qoder`、`qwen`、`reasonix`、`trae`。
+内置模板名称：`codex`、`claude`、`ante`、`pi`、`openclaw`、`gemini`、`cursor`、`copilot`、`droid`、`deepseek-harness`、`factory-droid`、`factorydroid`、`goose`、`grok-build`、`hermes`、`iflow`、`kilocode`、`kimi`、`kiro`、`mcode`、`mux`、`octomind`、`omp`、`opencode`、`pool`、`qoder`、`qwen`、`reasonix`、`trae`、`zeroclaw`。
 
 ```text
 /agent add codex
@@ -171,6 +171,20 @@
 
 已知值：`codex` 支持 `plan`；`cursor` 支持 `agent`、`plan`、`ask`。
 
+## 模型命令
+
+`/model` 用于查看或切换当前会话的 LLM 模型。acpx 会根据代理声明的可用模型校验该 id，并将其应用到运行中的会话（活跃回合期间立即生效，否则自下一回合起生效）。设置模型有三种方式，优先级由低到高：代理默认值（`/agent add <template> --model <id>`）、每会话固定值（`/session new ... --model <id>`）以及实时切换（`/model <id>`）。
+
+| 命令 | 说明 |
+|------|------|
+| `/model` | 查看当前会话的模型及可用的模型 id |
+| `/model <id>` | 切换当前会话的模型（例如 `gpt-5.2[high]`） |
+
+```text
+/model
+/model gpt-5.2[high]
+```
+
 ## 配置命令
 
 `/config` 提供对一组配置字段白名单的受限写入访问。完整字段参考请见[配置参考](/zh/reference/configuration)。关于 `/config` 命令本身的详细说明，请见 [/config 命令](/zh/reference/config-command)。
@@ -194,6 +208,7 @@
 - `logging.maxFiles`
 - `logging.retentionDays`
 - `channel.replyMode`
+- `channels.<id>.replyMode`
 - `language`
 
 **动态字段**（目标必须已存在）：

@@ -69,6 +69,12 @@ Controls how xacpx communicates with the `acpx` backend.
 | `nonInteractivePermissions` | `"deny"` \| `"fail"` | No | Policy for non-interactive scenarios (default: `"deny"`) |
 | `permissionPolicy` | `string` | No | Path to an `acpx` permission policy file; passed as `acpx --permission-policy <value>` |
 | `queueOwnerTtlSeconds` | `number` | No | Idle lifetime of the `acpx` queue owner process in seconds; passed as `--ttl` (default: `1800`; `0` = keep alive indefinitely) |
+| `turnIdleTimeoutSeconds` | `number` | No | Inactivity watchdog for in-flight agent turns. If a turn produces no streamed agent activity (output/tool/thought/usage/plan/command event) for this many seconds, it is aborted and reported as `Turn timed out due to inactivity`, reclaiming its slot. The timer resets on every streamed event, so long but actively-working turns are unaffected — **but a single tool call that stays silent for the whole window (e.g. `sleep`, a long compile/clone with no interleaved output) will still trip it**; raise this value or set `0` for workloads with long silent operations. Defaults to `600` (10 minutes); `0` disables the watchdog. Each reclaim is logged as `control.turn.idle_timeout` (with the session and the concrete threshold) for diagnosis |
+| `preferLocalAgents` | `boolean` | No | Prefer a locally-installed native agent CLI over acpx's `npx -y <pkg>` fallback when one is on `PATH` (currently `opencode`, `kilocode`, plus the local-fallback drivers `reasonix` and `omp` that aren't in acpx's registry but speak ACP via `<bin> acp`). Avoids a per-cold-start npm-registry fetch — faster and immune to network blips (e.g. `ECONNRESET` during agent init). Defaults to `true`; set `false` to always use acpx's default resolution. A per-agent `command` override still takes precedence |
+| `adapterVersions` | `{ "codex"?: string, "claude"?: string }` | No | Local exact-version overrides for xacpx-managed ACP adapters. Values must be exact semver versions, not ranges or tags. Omitted entries use xacpx's tested defaults (`codex` `2.2.2`, `claude` `0.107.2` in this release). Prefer the `xacpx adapter` CLI below over editing this object by hand |
+| `adapterRegistry` | `string` | No | npm registry used only for xacpx-managed Codex/Claude adapters. Defaults to `https://registry.npmjs.org/` and does **not** inherit the machine/company npm default. Change it with `xacpx adapter registry set <url>`; only credential-free HTTP(S) URLs are accepted |
+| `acpxMaxIncomingMessageBytes` | `number` \| `null` | No | Advanced: overrides acpx 0.15.1+'s default 64 MiB ceiling on agent → acpx inbound ACP messages. Applies to the CLI queue-owner lane and the Runtime worker lane (host process env, never agent env). `null`/absent follows upstream; `0` disables the limit (not recommended). Changing it requires recycling warm queue owners / Runtime workers |
+| `acpxTerminalMaxOutputBytes` | `number` \| `null` | No | Advanced: host ceiling on retained terminal stdout+stderr bytes. `null`/absent follows upstream behavior. Same lane coverage and recycle requirement as above |
 
 ### Transport types
 
@@ -130,27 +136,34 @@ Built-in templates (use `driver` only; let `acpx` resolve the alias):
 |----------|--------|
 | `codex` | `"codex"` |
 | `claude` | `"claude"` |
+| `ante` | `"ante"` |
 | `pi` | `"pi"` |
 | `openclaw` | `"openclaw"` |
 | `gemini` | `"gemini"` |
 | `cursor` | `"cursor"` |
 | `copilot` | `"copilot"` |
 | `droid` | `"droid"` |
+| `deepseek-harness` | `"deepseek-harness"` |
 | `factory-droid` | `"factory-droid"` |
 | `factorydroid` | `"factorydroid"` |
+| `goose` | `"goose"` |
 | `grok-build` | `"grok-build"` |
+| `hermes` | `"hermes"` |
 | `iflow` | `"iflow"` |
 | `kilocode` | `"kilocode"` |
 | `kimi` | `"kimi"` |
 | `kiro` | `"kiro"` |
 | `mcode` | `"mcode"` |
 | `mux` | `"mux"` |
+| `octomind` | `"octomind"` |
 | `omp` | `"omp"` |
 | `opencode` | `"opencode"` |
+| `pool` | `"pool"` |
 | `qoder` | `"qoder"` |
 | `qwen` | `"qwen"` |
 | `reasonix` | `"reasonix"` |
 | `trae` | `"trae"` |
+| `zeroclaw` | `"zeroclaw"` |
 
 Add templates via chat with `/agent add <name>` or from the terminal with `xacpx agent add <name>`. Adding an agent that already has the same configuration is idempotent; a name conflict with different settings prompts you to delete first.
 

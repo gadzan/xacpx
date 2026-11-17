@@ -135,7 +135,7 @@ interface SessionTransport {
 完整说明请参阅[守护进程模块](/zh/development/daemon-module)。
 
 `DaemonController` — 外部控制接口（CLI 调用）：
-- `getStatus()` — PID 缺失 → 已停止；PID 存在但进程不在 → 清理运行时文件；PID 存在但无状态 → 不确定。
+- `getStatus()` — PID/状态匹配且进程存活 → `running`；存活元数据冲突或不完整 → 只读 `indeterminate`；已消亡的 PID 元数据会被清理（`stopped` 且 `stale: true`）。
 - `start()` — 以分离模式启动 → 写入 PID → 轮询 `status.json` 等待就绪（PID 匹配）。
 - `stop()` — 终止进程 → 等待退出 → 清理 PID 和状态文件。
 
@@ -177,7 +177,7 @@ interface SessionTransport {
 | `~/.xacpx/runtime/orchestration.sock` | Unix socket（Windows 上为 `\\.\pipe\xacpx-orchestration-<hash>`） | `OrchestrationServer` |
 | `~/.xacpx/plugins/` | 插件 npm 主目录（独立的 `package.json` + `node_modules`） | `xacpx plugin add/update` |
 
-`WEACPX_CONFIG` 和 `WEACPX_STATE` 环境变量分别覆盖配置和状态文件路径。
+`XACPX_CONFIG` 和 `XACPX_STATE` 环境变量分别覆盖配置和状态文件路径；旧名 `WEACPX_CONFIG` / `WEACPX_STATE` 仍作为回退生效。
 
 ### 职责边界
 

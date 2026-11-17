@@ -6,7 +6,7 @@ A guide for bug fixers, feature developers, channel plugin authors, and code rea
 
 ### Prerequisites
 
-- **Node.js ≥ 22.12** or **Bun** (Bun is used for development scripts and builds; Node can run the output)
+- **Node.js ≥ 22.13** or **Bun** (Bun is used for development scripts and builds; Node can run the output)
 - A WeChat, Feishu, or Yuanbao account (depending on which channel you are testing; code reading requires neither)
 - `acpx` and your target agent CLI (codex / claude / gemini, etc.) runnable on the machine
 
@@ -48,7 +48,7 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 | Script | Purpose |
 | --- | --- |
 | `bun run build` | Main package: bundle `dist/cli.js`, `dist/bridge/bridge-main.js`, `dist/bridge/engine/runtime/runtime-worker-main.js`, the adapter guards (`dist/adapters/hermes-acp-shim.js`, `acp-output-guard-main.js`, `acp-read-only-guard-main.js`), `dist/conversations/default-router-main.js` and `dist/plugin-api.js`; emit `dist/plugin-api.d.ts` via `tsc -p tsconfig.plugin-api.json` |
-| `bun run build:plugin-api` | Refresh `dist/plugin-api.d.ts` only (use when changing public types) |
+| `bun run build:plugin-api` | Builds the relay-protocol package first (`build:relay-protocol`), then emits `dist/plugin-api.d.ts` via `tsc -p tsconfig.plugin-api.json` (use when changing public types) |
 | `bun run build:channel-feishu` | Main package + Feishu plugin |
 | `bun run build:channel-yuanbao` | Main package + Yuanbao plugin |
 | `bun run build:channel-discord` | Main package + Discord plugin |
@@ -99,7 +99,7 @@ Reuses the same `buildApp` + router + transport stack, replacing IM inbound with
 | `tests/smoke/` | `npm run test:smoke` | Real `acpx` / real IM protocols; run manually, not in CI |
 | `tests/helpers/`, `tests/fixtures/` | — | Shared utilities and static data |
 
-The test runner is `scripts/run-tests.mjs` → `scripts/run-tests-lib.mjs::buildTestPlan`. It runs `tsc --noEmit` first, then spawns a separate `bun test` process for each `*.test.ts` file. To change runner behavior, only modify those two scripts.
+The test runner is `scripts/run-tests.mjs` → `scripts/run-tests-lib.mjs::buildTestPlan`. Before the test plan it runs three build steps (`build:relay-protocol`, the `dist/plugin-api` bundle, and the runtime-worker + bridge bundle); the plan itself starts with `tsc --noEmit`, then spawns a separate `bun test` process for each `*.test.ts` file; when the root is `tests/unit` it finishes with a trailing `test:web` run. To change runner behavior, only modify those two scripts.
 
 Testing conventions:
 - Any test that writes to disk must use `mkdtemp` for isolation and clean up with `rm -rf`.

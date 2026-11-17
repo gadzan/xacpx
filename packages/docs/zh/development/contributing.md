@@ -6,7 +6,7 @@
 
 ### 前置条件
 
-- **Node.js ≥ 22.12** 或 **Bun**（Bun 用于开发脚本和构建；Node 可运行构建产物）
+- **Node.js ≥ 22.13** 或 **Bun**（Bun 用于开发脚本和构建；Node 可运行构建产物）
 - 微信、飞书或元宝账号（取决于你要测试的频道；仅阅读代码无需任何账号）
 - `acpx` 及目标智能体 CLI（codex / claude / gemini 等）可在机器上正常运行
 
@@ -48,7 +48,7 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 | 脚本 | 用途 |
 | --- | --- |
 | `bun run build` | 主包：打包 `dist/cli.js`、`dist/bridge/bridge-main.js`、`dist/bridge/engine/runtime/runtime-worker-main.js`、adapter 守卫（`dist/adapters/hermes-acp-shim.js`、`acp-output-guard-main.js`、`acp-read-only-guard-main.js`）、`dist/conversations/default-router-main.js` 与 `dist/plugin-api.js`；通过 `tsc -p tsconfig.plugin-api.json` 生成 `dist/plugin-api.d.ts` |
-| `bun run build:plugin-api` | 仅刷新 `dist/plugin-api.d.ts`（修改公共类型时使用） |
+| `bun run build:plugin-api` | 先构建 relay-protocol 包（`build:relay-protocol`），再通过 `tsc -p tsconfig.plugin-api.json` 生成 `dist/plugin-api.d.ts`（修改公共类型时使用） |
 | `bun run build:channel-feishu` | 主包 + 飞书插件 |
 | `bun run build:channel-yuanbao` | 主包 + 元宝插件 |
 | `bun run build:channel-discord` | 主包 + Discord 插件 |
@@ -99,7 +99,7 @@ bun run dry-run --chat-key wx:test -- \
 | `tests/smoke/` | `npm run test:smoke` | 真实 `acpx` / 真实 IM 协议；手动运行，不在 CI 中运行 |
 | `tests/helpers/`、`tests/fixtures/` | — | 共享工具和静态数据 |
 
-测试运行器为 `scripts/run-tests.mjs` → `scripts/run-tests-lib.mjs::buildTestPlan`。它先运行 `tsc --noEmit`，然后为每个 `*.test.ts` 文件单独启动一个 `bun test` 进程。如需修改运行器行为，只修改这两个脚本。
+测试运行器为 `scripts/run-tests.mjs` → `scripts/run-tests-lib.mjs::buildTestPlan`。在执行测试计划之前，它先运行三个构建步骤（`build:relay-protocol`、`dist/plugin-api` 打包、runtime-worker + 桥接打包）；测试计划本身以 `tsc --noEmit` 开头，随后为每个 `*.test.ts` 文件单独启动一个 `bun test` 进程；当测试根目录为 `tests/unit` 时，最后追加运行一次 `test:web`。如需修改运行器行为，只修改这两个脚本。
 
 测试约定：
 - 任何写入磁盘的测试必须使用 `mkdtemp` 进行隔离，并通过 `rm -rf` 清理。

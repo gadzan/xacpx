@@ -135,7 +135,7 @@ The core ships only the built-in `weixin` channel plus the generic channel/plugi
 See [Daemon Module](/development/daemon-module) for the full description.
 
 `DaemonController` — external control surface (CLI calls):
-- `getStatus()` — PID missing → stopped; PID present, process gone → cleans up runtime files; PID present, no status → indeterminate.
+- `getStatus()` — matching PID/status and a live process → `running`; conflicting or incomplete live metadata → read-only `indeterminate`; dead PID metadata is cleaned up (`stopped` with `stale: true`).
 - `start()` — spawn detached → write PID → poll `status.json` for readiness (PID match).
 - `stop()` — terminate → wait for exit → clean PID and status.
 
@@ -177,7 +177,7 @@ The bridge isolates `acpx` driving into a separate subprocess, giving the main p
 | `~/.xacpx/runtime/orchestration.sock` | Unix socket (or `\\.\pipe\xacpx-orchestration-<hash>` on Windows) | `OrchestrationServer` |
 | `~/.xacpx/plugins/` | Plugin npm home (isolated `package.json` + `node_modules`) | `xacpx plugin add/update` |
 
-`WEACPX_CONFIG` and `WEACPX_STATE` environment variables override the config and state paths respectively.
+`XACPX_CONFIG` and `XACPX_STATE` environment variables override the config and state paths respectively; the legacy `WEACPX_CONFIG` / `WEACPX_STATE` names are honored as a fallback.
 
 ### Responsibility boundary
 

@@ -53,7 +53,13 @@
 - `logging.maxFiles`
 - `logging.retentionDays`
 - `channel.replyMode`
+- `channels.<id>.replyMode`
 - `language`
+
+**向后兼容字段：**
+
+- `channel.type`（旧版单频道配置；多频道场景请使用 `xacpx channel ...`）
+- `channels[]`（多频道运行时配置；建议使用 `xacpx channel ...` 管理）
 
 **动态字段**（命名目标必须已存在）：
 

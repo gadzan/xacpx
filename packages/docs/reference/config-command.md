@@ -53,7 +53,13 @@ Examples:
 - `logging.maxFiles`
 - `logging.retentionDays`
 - `channel.replyMode`
+- `channels.<id>.replyMode`
 - `language`
+
+**Backward-compatible fields:**
+
+- `channel.type` (old single-channel config; for multi-channel use `xacpx channel ...`)
+- `channels[]` (multi-channel runtime config; recommended to manage with `xacpx channel ...`)
 
 **Dynamic fields** (the named target must already exist):
 

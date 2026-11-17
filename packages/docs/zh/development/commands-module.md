@@ -49,11 +49,12 @@ Chat message → ConsoleAgent → CommandRouter → handler → SessionService /
 - 调用 `parseCommand()` 解析输入。
 - 根据 `command.kind` 进行分发。
 - 组装每个处理器所需的上下文和操作对象。
+- 组合并委派给 `TransportInvoker` 和 `SessionControlService`；为会话 CRUD 方法保留公开转发。
 - 捕获传输错误，记录日志，并生成诊断摘要。
 
-将其视为**精简路由器 + 上下文组装器**——不是存放业务逻辑的地方。
+将其视为**精简路由器 + 上下文组装器**——不是存放业务逻辑的地方。传输调用包装和"会话 CRUD + 传输"逻辑已抽取到 `TransportInvoker` 和 `SessionControlService`；路由器仅将它们接入处理器的 ops，并转发 CRUD 调用。
 
-关键内部操作：
+面向处理器的传输操作位于 `TransportInvoker`（[`src/commands/transport-invoker.ts`](https://github.com/gadzan/xacpx/blob/main/src/commands/transport-invoker.ts)），而非路由器中：
 
 - `ensureTransportSession()` — 支持缺失可选依赖的自动安装和二次验证。
 - `promptTransportSession()` — 统一转发 `reply` / `quota` / `media`，并确保 `mcpCoordinatorSession` 的默认值。
@@ -87,6 +88,10 @@ Chat message → ConsoleAgent → CommandRouter → handler → SessionService /
 | `session-shortcut-handler.ts` | 会话快捷方式创建/切换流程 |
 | `session-recovery-handler.ts` | 会话恢复与错误渲染 |
 | `session-reset-handler.ts` | 会话重置流程 |
+| `native-session-handler.ts` | 原生会话列表 / 附加流程 |
+| `orchestration-handler.ts` | 编排命令——委派、群组、任务批准/取消 |
+| `later-handler.ts` | 定时（`/later`）延迟任务命令 |
+| `config-handler.ts` | 配置命令——读写配置值 |
 
 这种拆分方式保持了 `command-router.ts` 与各大处理器之间的松耦合。当一个处理器积累了多个不同流程（主流程 + 恢复 + 重置 + 特化渲染）时，应及早拆分为独立文件，而不是继续向单个文件叠加。
 
