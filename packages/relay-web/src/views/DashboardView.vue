@@ -932,8 +932,10 @@ onUnmounted(() => {
                     :inert="directBotsStore.isBotSelected || groupsStore.isGroupSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"
                     v-show="!!currentKey && centerTabs.activeFor(currentKey) === 'chat'"
                     @show-files="onShowFiles">
+            <!-- ChatPane stays mounted behind the Bot / Group pane, so this slot must not
+                 render a second copy of the actions while those panes own the content bar. -->
             <template #actions>
-              <ConversationActions v-if="isDesktop"
+              <ConversationActions v-if="isDesktop && !isBotSelected && !isGroupSelected"
                                    v-bind="conversationActions"
                                    @terminal="openTerminalTab"
                                    @desktop="toggleDesktopViewer" />

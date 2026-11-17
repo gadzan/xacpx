@@ -74,4 +74,36 @@ test.describe("desktop header layout", () => {
     await terminal.click();
     await expect(page.getByTestId("terminal-host")).toBeVisible({ timeout: 30_000 });
   });
+
+  // ChatPane stays mounted behind the Bot pane and its slot is the desktop home of the
+  // actions, so a missing gate there yields two `toggle-terminal` nodes and an ambiguous
+  // locator for every consumer.
+  test("a Bot view keeps exactly one copy of the session actions", async ({ page }) => {
+    const bot = { id: "b1", name: "Review assistant", agent: "codex", workspace: "repo", enabled: true, profileRevision: 1, createdAt: "2026-10-11T00:00:00Z", updatedAt: "2026-10-11T00:00:00Z" };
+    await page.route("**/api/instances/i1/rpc", async (route) => {
+      const { type } = route.request().postDataJSON() as { type: string };
+      const results: Record<string, unknown> = {
+        "control.bots.list": { bots: [bot] },
+        "control.bots.get": { bot },
+        "control.conversations.list": {
+          conversations: [{ id: "c1", kind: "bot", title: bot.name, botIds: [bot.id], defaultTopicId: "t1", createdAt: bot.createdAt, updatedAt: bot.updatedAt }],
+        },
+        "control.topics.list": {
+          topics: [{ id: "t1", conversationId: "c1", title: "Default", status: "active", defaultDirect: true, createdAt: bot.createdAt, updatedAt: bot.updatedAt }],
+        },
+        "control.conversation.history": { conversationId: "c1", topicId: "t1", messages: [], hasMoreBefore: false, hasMoreAfter: false },
+        "control.runs.list": { runs: [] },
+      };
+      if (!(type in results)) return route.fallback();
+      await route.fulfill({ json: { result: results[type] } });
+    });
+
+    await loginAndShowInstances(page);
+    await page.getByTestId("instance-nav-bots").click();
+    await page.getByTestId("bot-row").first().getByRole("button").first().click();
+    await expect(page.getByTestId("topic-menu")).toBeVisible({ timeout: 30_000 });
+
+    await expect(page.getByTestId("toggle-terminal")).toHaveCount(1);
+    await expect(page.locator("[data-conversation-header]").getByTestId("toggle-terminal")).toHaveCount(1);
+  });
 });

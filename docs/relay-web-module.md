@@ -606,9 +606,11 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     `CenterTabStrip`（`v-if="currentKey"`，溢出横向滚动）与右侧全局搜索（`lg` 下收成图标 + ⌘K）。内容栏就是当前
     pane 自己的 `data-conversation-header`：`ChatPane` 44px，`DirectBotPane` / `GroupPane` 由内容决定（当前 52px，
     话题 pill 撑高了元信息行；桌面群组头像已降到 32）。终端 / 桌面开关属于会话上下文动作，桌面由
-    `components/ConversationActions.vue` 经 pane 的 `#actions` 插槽渲染在内容栏右侧；`<lg` 仍渲染在全局栏里
-    （`v-if="!isDesktop"` 保证同一个 test id 只有一个实例）。侧栏不再有品牌行（旧 `sidebar-brand` 已删除），
-    顶部直接从「实例」开始；主题切换与设置入口留在侧栏底部 footer（`data-test="sidebar-footer"`，
+    `components/ConversationActions.vue` 经当前 pane 的 `#actions` 插槽渲染在内容栏右侧；`ChatPane` 永远挂载，
+    所以它在 Bot / 群组视图下不渲染这份插槽，否则会和 `DirectBotPane` / `GroupPane` 的副本撞成两个同 test id 的节点。
+    `<lg` 仍渲染在全局栏里（`v-if="!isDesktop"`），所以同一个 test id 任意时刻只有一个实例。中栏的文件 / diff /
+    终端 / 实例桌面页签有自己的头，不带这两枚开关；回到固定的 Chat 页签即可用，页签条就在全局栏里。
+    侧栏不再有品牌行（旧 `sidebar-brand` 已删除），顶部直接从「实例」开始；主题切换与设置入口留在侧栏底部 footer（`data-test="sidebar-footer"`，
     `border-t border-hairline`，仅 `lg` 可见），全局栏里对应的两枚入口保留 `lg:hidden`，所以移动端不变、桌面不重复。
     右栏标题行 `h-9 lg:h-11`，桌面与内容栏共用同一条底边。侧栏宽度 232px（`lg:w-[232px]`）。
   - **选中会话 / Direct Bot**：全局顶栏（品牌、连接徽标、搜索、终端/桌面/主题/设置）在 `<lg` 隐藏
