@@ -761,6 +761,7 @@ function handleStopAll(): void {
           <Trash2 :size="14" />
         </button>
       </div>
+      <slot name="actions" />
     </header>
 
     <div v-if="bot?.retired" data-test="removed-bot-banner" class="bg-surface/60 px-3 lg:px-5 py-1.5 text-xs text-fg-muted">

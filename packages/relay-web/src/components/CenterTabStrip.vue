@@ -7,9 +7,11 @@ import { useTabDrag } from "../lib/use-tab-drag";
 import { iconForFile } from "../lib/file-icons";
 
 // The center tab strip: pinned Chat button + closable, drag-reorderable file/diff/
-// terminal tabs, horizontally scrollable when they overflow. Rendered as a standalone row
-// above the center content on desktop; on mobile the open tabs live in the ⋯ sheet's
-// "open tabs" list instead (DashboardView), so this strip is desktop-only.
+// terminal tabs, horizontally scrollable when they overflow. Rendered in the middle of the
+// desktop global bar (the content bar below it belongs to the open pane), on the global
+// bar's own surface — so the strip paints no background of its own. On mobile the open tabs
+// live in the ⋯ sheet's "open tabs" list instead (DashboardView), so this strip is
+// desktop-only.
 //
 // `select-none` + `[-webkit-touch-callout:none]` on the root stop a touch press-hold
 // (the natural start of a drag) from highlighting a tab's label or popping the iOS
@@ -97,7 +99,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
   <div
     ref="scroller"
     :style="maskStyle"
-    class="no-scrollbar flex select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none] shrink-0 bg-surface"
+    class="no-scrollbar flex min-w-0 flex-1 select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none]"
   >
     <!-- Pinned chat tab: never closable, never draggable, always first. -->
     <button

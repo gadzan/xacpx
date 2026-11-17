@@ -709,12 +709,13 @@ const worktreeRunId = computed(() => {
     <!-- Opaque on purpose: a backdrop-filtered ancestor becomes the containing block for
          fixed/absolute descendants, which would trap TopicSwitcher's popover, confirm
          dialog and row menu inside this header. -->
-    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-14 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
-      <!-- The desktop collage opens the same member panel as the mobile one. -->
+    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
+      <!-- The desktop collage opens the same member panel as the mobile one. 32px keeps this
+           header close to one content-bar height; the mobile bar keeps its 44px stack. -->
       <button type="button" data-test="group-desktop-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="memberPanelOpen = true">
-        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="44" :name="group?.title ?? $t('group.nav.title')"
+        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
                           :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
                           style="--avatar-ring: rgb(var(--c-surface))" />
@@ -760,6 +761,7 @@ const worktreeRunId = computed(() => {
       >
         <Pencil :size="14" />
       </button>
+      <slot name="actions" />
     </header>
 
 

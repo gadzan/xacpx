@@ -601,10 +601,18 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 
 - `DashboardView.vue` 桌面（`lg:` ≥1024px）保持三栏静态布局；未选中任何会话 / Bot / 群组 / 实例桌面时
   中栏渲染空状态、右栏整体隐藏（见下文「桌面空状态与右栏折叠」）。窄屏（`<lg`）按选择状态分两种形态：
-  - **桌面顶栏与侧栏的分工**：桌面不再有独立的全局顶栏壳——品牌标识移到左侧栏顶部（`data-test="sidebar-brand"`，
-    仅 `lg` 可见），主题切换与设置入口移到左侧栏底部 footer（`data-test="sidebar-footer"`，`border-t border-hairline`，
-    仅 `lg` 可见）。全局顶栏在桌面只保留连接徽标、搜索触发器和终端 / 桌面开关；顶栏里的品牌、主题与设置
-    入口加了 `lg:hidden`，所以移动端行为不变，桌面不重复渲染。侧栏宽度 232px（`lg:w-[232px]`）。
+  - **桌面壳层：两层，不是三层**。全局栏（`DashboardView` 的 `<header>`，44px）在桌面同时承载品牌
+    `data-test="global-brand"`、连接徽标（在线时只留圆点，文字只在连接中 / 重连 / 丢失时展开）、中段的中栏页签
+    `CenterTabStrip`（`v-if="currentKey"`，溢出横向滚动）与右侧全局搜索（`lg` 下收成图标 + ⌘K）。内容栏就是当前
+    pane 自己的 `data-conversation-header`：`ChatPane` 44px，`DirectBotPane` / `GroupPane` 由内容决定（当前 52px，
+    话题 pill 撑高了元信息行；桌面群组头像已降到 32）。终端 / 桌面开关属于会话上下文动作，桌面由
+    `components/ConversationActions.vue` 经当前 pane 的 `#actions` 插槽渲染在内容栏右侧；`ChatPane` 永远挂载，
+    所以它在 Bot / 群组视图下不渲染这份插槽，否则会和 `DirectBotPane` / `GroupPane` 的副本撞成两个同 test id 的节点。
+    `<lg` 仍渲染在全局栏里（`v-if="!isDesktop"`），所以同一个 test id 任意时刻只有一个实例。中栏的文件 / diff /
+    终端 / 实例桌面页签有自己的头，不带这两枚开关；回到固定的 Chat 页签即可用，页签条就在全局栏里。
+    侧栏不再有品牌行（旧 `sidebar-brand` 已删除），顶部直接从「实例」开始；主题切换与设置入口留在侧栏底部 footer（`data-test="sidebar-footer"`，
+    `border-t border-hairline`，仅 `lg` 可见），全局栏里对应的两枚入口保留 `lg:hidden`，所以移动端不变、桌面不重复。
+    右栏标题行 `h-9 lg:h-11`，桌面与内容栏共用同一条底边。侧栏宽度 232px（`lg:w-[232px]`）。
   - **选中会话 / Direct Bot**：全局顶栏（品牌、连接徽标、搜索、终端/桌面/主题/设置）在 `<lg` 隐藏
     （`:class="mobileSingleBar ? 'hidden lg:flex' : 'flex'"`，纯 CSS，桌面不受影响），改为**一条 52px 顶栏**
     （`h-[calc(3.25rem+env(safe-area-inset-top))]`）。三条手机顶栏（会话 / Direct Bot / 群组）现在是
@@ -636,7 +644,8 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     composer 的 chip 上。底部 sheet 互斥，同一时间只开一个（`DashboardView` / `DirectBotPane` 各用一个 `activeSheet`）。「已打开标签」
     会替换掉 `⋯` sheet（不叠加），关闭后直接回到页面、不回 `⋯`：Chat + 每个打开的文件/diff/终端标签，点击切换、
     关闭走与桌面标签条同一 `requestCloseTab` 守卫路径（脏文件先确认、终端先 terminate）。
-  - `ChatPane.vue` 的头部 chip 行在 `<lg` 隐藏（`hidden lg:flex`），桌面不变。
+  - `ChatPane.vue` 的头部 chip 行在 `<lg` 隐藏（`hidden lg:flex`）；桌面这一行就是内容栏（`lg:h-11`），右侧
+    `#actions` 插槽放终端 / 桌面开关，chip 仍横向滚动、不换行。
   - 移动端**没有左抽屉**。右栏（文件 / 任务面板）仍是**屏外抽屉**（`fixed inset-y-0` + `transform translate-x`），
     `lg:` 类把它覆盖回静态列，所以 `rightOpen` 仅在移动端可见、桌面无副作用；半透明 backdrop 点击关闭，
     右边缘左滑仍可打开。桌面（≥lg）左侧实例栏保持静态列，行为不变。

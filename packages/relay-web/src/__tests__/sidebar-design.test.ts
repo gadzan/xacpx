@@ -228,16 +228,15 @@ describe("sidebar brand and footer", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [] }), { status: 200 })));
   });
 
-  it("moves the brand, theme toggle and settings link into the sidebar on desktop", async () => {
+  it("keeps the brand in the global bar and only the theme / settings entries in the sidebar", async () => {
     const w = mount(DashboardView, { global: { stubs: { ChatPane: true, "router-link": true } } });
     await flushPromises();
 
-    // The sidebar carries the brand block.
-    const brand = w.find('[data-test="sidebar-brand"]');
+    const brand = w.find('[data-test="global-brand"]');
     expect(brand.exists()).toBe(true);
     expect(brand.find('[data-test="brand-x"]').exists()).toBe(true);
+    expect(w.find('[data-test="sidebar-brand"]').exists()).toBe(false);
 
-    // ...and a footer with the theme toggle and the settings link.
     const footer = w.find('[data-test="sidebar-footer"]');
     expect(footer.exists()).toBe(true);
     expect(footer.classes()).toContain("border-t");
@@ -253,8 +252,6 @@ describe("sidebar brand and footer", () => {
     expect(headerSettings.exists()).toBe(true);
     expect(headerSettings.classes()).toContain("lg:hidden");
 
-    // The global search trigger and the terminal / desktop toggles stay in the
-    // desktop header.
     expect(w.find('[data-test="global-search"]').exists()).toBe(true);
     expect(w.find('[data-test="toggle-terminal"]').exists()).toBe(true);
   });

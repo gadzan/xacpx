@@ -32,6 +32,7 @@ import FilesPanel from "../components/FilesPanel.vue";
 import TerminalTab from "../components/TerminalTab.vue";
 import DesktopTab from "../components/DesktopTab.vue";
 import CenterTabStrip from "../components/CenterTabStrip.vue";
+import ConversationActions from "../components/ConversationActions.vue";
 import NoticeToast from "../components/NoticeToast.vue";
 import ActionToast from "../components/ActionToast.vue";
 import ToastHost from "../components/ToastHost.vue";
@@ -322,6 +323,23 @@ const desktopCapableForSelection = computed(() => {
 /** The instance the toolbar button would open: the current viewer, else the selection. */
 const desktopToolbarTarget = computed(() => desktopInstanceId.value ?? chat.instanceId);
 
+const conversationActions = computed(() => ({
+  terminalTitle: terminalCapable.value ? t("terminal.title") : t("terminal.unavailable"),
+  terminalDisabled: !chat.sessionAlias || !terminalCapable.value,
+  terminalActive: !!currentKey.value && centerTabs.activeFor(currentKey.value) === "terminal",
+  desktopVisible: desktopCapableForSelection.value,
+  desktopDisabled: !desktopToolbarTarget.value,
+  desktopActive: desktopTabOpen.value,
+}));
+
+function openTerminalTab(): void {
+  if (currentKey.value && terminalCapable.value) centerTabs.openTerminal(currentKey.value);
+}
+function toggleDesktopViewer(): void {
+  if (desktopTabOpen.value) closeDesktop();
+  else openDesktop();
+}
+
 function openDesktop(instanceId?: string): void {
   const target = instanceId ?? chat.instanceId;
   if (!target) return;
@@ -347,8 +365,8 @@ function closeDesktop(): void {
 
 // ── Mobile (<lg) chrome ───────────────────────────────────────────────────────────
 // Below lg the old three-layer stack (global header + second bar + ChatPane chip row)
-// collapses into ONE 52px bar: [←] [avatar] [title + subtitle] [⋯]. Desktop keeps the
-// global header and the chip row exactly as before, so everything below is only ever
+// collapses into ONE 52px bar: [←] [avatar] [title + subtitle] [⋯]. Desktop is two rows —
+// the global bar and the open pane's content bar — so everything below is only ever
 // reachable from the mobile markup.
 // One bottom sheet at a time: opening any sheet replaces the current one (the open-tabs
 // sheet does not stack on the ⋯ sheet, and closing it does not return there).
@@ -513,12 +531,11 @@ function openSheetRight(tab: "tasks" | "files"): void {
   closeSheet();
 }
 function openSheetTerminal(): void {
-  if (currentKey.value && terminalCapable.value) centerTabs.openTerminal(currentKey.value);
+  openTerminalTab();
   closeSheet();
 }
 function openSheetDesktop(): void {
-  if (desktopTabOpen.value) closeDesktop();
-  else openDesktop();
+  toggleDesktopViewer();
   closeSheet();
 }
 
@@ -730,63 +747,41 @@ onUnmounted(() => {
        @touchstart.passive="swipe.onTouchStart"
        @touchend.passive="swipe.onTouchEnd"
        @touchcancel.passive="swipe.onTouchCancel">
-    <!-- Global top bar. On mobile it carries the brand lockup, the connection pill,
-         the search trigger and the theme / settings entries. On desktop the brand
-         and the theme / settings entries live in the sidebar (its brand block and
-         its footer), so only the connection pill, the search trigger and the
-         terminal / desktop toggles remain here. -->
+    <!-- Global bar: with the pane content bar below it, the shell's two rows. The
+         conversation actions live in that content bar on desktop. -->
     <!-- pt-[env(safe-area-inset-top)]: in an installed iOS PWA (viewport-fit=cover)
          the content runs under the notch / status bar; extend the bar's surface up
          so its controls sit below the inset instead of behind the notch. env() is 0
          on desktop, so this is a no-op there. -->
-    <header class="sticky top-0 z-30 h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl"
+    <header data-test="global-bar" class="sticky top-0 z-30 h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between gap-2 bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl"
            :class="mobileSingleBar ? 'hidden lg:flex' : 'flex'">
-      <!-- Left: on mobile the brand X mark + wordmark, then the Connected pill; on
-           desktop the brand has moved into the sidebar, so only the pill stays.
-           The sidebar collapse control lives in the sidebar's own header (and a
-           slim edge handle below), not up here. -->
-      <div class="flex items-center gap-2">
-        <div class="lg:hidden"><BrandLogo /></div>
+      <div data-test="global-brand" class="flex shrink-0 items-center gap-2">
+        <BrandLogo />
         <ConnectionBadge />
       </div>
-      <!-- Right: search button with ⌘K chip, terminal / desktop toggles, and (on
-           mobile only) the theme toggle and the settings link. -->
+      <div v-if="currentKey" class="hidden min-w-0 flex-1 items-center lg:flex">
+        <CenterTabStrip :session-key="currentKey" @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
+      </div>
       <div class="flex items-center gap-1.5">
+        <!-- Collapses to the icon + shortcut at the 1024 boundary so the strip keeps room. -->
         <button
           data-test="global-search"
           :aria-label='$t("nav.search")'
-          class="group flex h-12 lg:h-8 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-surface-2 active:bg-surface-2 lg:bg-bg lg:hover:bg-surface-2 lg:active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
+          class="group flex h-12 lg:h-8 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-surface-2 active:bg-surface-2 lg:bg-bg lg:hover:bg-surface-2 lg:active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64 lg:w-32 xl:w-64"
           @click="paletteOpen = true"
         >
-          <Search :size="14" class="text-fg-muted" />
-          <span class="hidden flex-1 text-ui text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
+          <Search :size="14" class="shrink-0 text-fg-muted" />
+          <span class="hidden flex-1 text-ui text-fg-muted sm:inline lg:hidden xl:inline">{{ $t("nav.searchPlaceholder") }}</span>
           <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-xs text-fg-muted sm:inline">⌘K</kbd>
         </button>
-        <button
-          data-test="toggle-terminal"
-          :aria-label='$t("terminal.title")'
-          :title='terminalCapable ? $t("terminal.title") : $t("terminal.unavailable")'
-          :disabled="!chat.sessionAlias || !terminalCapable"
-          class="grid h-10 w-10 lg:h-7 lg:w-7 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
-          :class="currentKey && centerTabs.activeFor(currentKey) === 'terminal' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised'"
-          @click="currentKey && terminalCapable && centerTabs.openTerminal(currentKey)"
-        >
-          <SquareTerminal :size="15" />
-        </button>
-        <button
-          v-if="desktopCapableForSelection"
-          data-test="toggle-desktop"
-          :aria-label='$t("desktop.title")'
-          :title='$t("desktop.title")'
-          :disabled="!desktopToolbarTarget"
-          class="grid h-10 w-10 lg:h-7 lg:w-7 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
-          :class="desktopTabOpen ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised'"
-          @click="desktopTabOpen ? closeDesktop() : openDesktop()"
-        >
-          <Monitor :size="15" />
-        </button>
-        <!-- Theme + settings moved into the sidebar footer on desktop; they stay
-             here for mobile, where the sidebar footer is not reachable. -->
+        <!-- Exactly one of the two placements exists at a time, so each test id stays
+             unique: `!isDesktop` here, `isDesktop` in the pane's content-bar slot. -->
+        <ConversationActions v-if="!isDesktop"
+                             v-bind="conversationActions"
+                             @terminal="openTerminalTab"
+                             @desktop="toggleDesktopViewer" />
+        <!-- Theme + settings moved into the sidebar footer on desktop; they stay here for
+             mobile, where the sidebar footer is not reachable. -->
         <button
           data-test="theme-toggle"
           :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
@@ -855,12 +850,6 @@ onUnmounted(() => {
              leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[232px]',
              nothingSelected ? '' : 'max-lg:hidden',
            ]">
-        <!-- Brand lockup at the top of the sidebar (desktop): the global header no
-             longer shows it there, so the sidebar carries the product identity
-             itself. Mobile keeps the brand in the global top bar. -->
-        <div data-test="sidebar-brand" class="hidden h-11 shrink-0 items-center px-3 lg:flex">
-          <BrandLogo />
-        </div>
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
           <div class="flex items-center gap-2">
@@ -898,8 +887,7 @@ onUnmounted(() => {
               class="hidden w-5 shrink-0 items-center justify-center bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
               @click="leftCollapsed = false"><PanelLeftOpen :size="15" /></button>
 
-      <!-- Center: per-session tab strip (pinned Chat + closable file/diff/terminal tabs),
-           always full width of the remaining space. -->
+      <!-- Center: the open pane. -->
       <!-- min-w-0: let this flex child shrink to its share instead of growing to its
            widest content (a tool card's command/diff line), which would otherwise push
            the right panel off-screen. Wide tool content scrolls/wraps within instead. -->
@@ -914,12 +902,6 @@ onUnmounted(() => {
            pane only ever unmounts when its tab is closed (closeTab) or its session is
            cleared (clearSession). -->
       <div data-test="column" class="relative flex min-w-0 flex-1 flex-col" :class="nothingSelected ? 'max-lg:hidden' : ''">
-        <!-- Desktop-only standalone strip (the open tabs live in the mobile ⋯ sheet). The
-             wrapper — not a class on the strip — owns the responsive show/hide so the
-             strip's own `display:flex` never fights a `hidden`/`lg:flex` on the same node. -->
-        <div v-if="currentKey" class="hidden shrink-0 lg:block">
-          <CenterTabStrip :session-key="currentKey" @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
-        </div>
         <div class="relative min-h-0 flex-1">
           <DirectBotPane
             v-if="directBotsStore.isBotSelected"
@@ -927,15 +909,38 @@ onUnmounted(() => {
             @navigate-bot="onSelectBot"
             @navigate-group="onSelectGroup"
             @back="navigateBack"
-          />
-          <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" @back="navigateBack" />
+          >
+            <template #actions>
+              <ConversationActions v-if="isDesktop"
+                                   v-bind="conversationActions"
+                                   @terminal="openTerminalTab"
+                                   @desktop="toggleDesktopViewer" />
+            </template>
+          </DirectBotPane>
+          <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" @back="navigateBack">
+            <template #actions>
+              <ConversationActions v-if="isDesktop"
+                                   v-bind="conversationActions"
+                                   @terminal="openTerminalTab"
+                                   @desktop="toggleDesktopViewer" />
+            </template>
+          </GroupPane>
           <EmptySessionState v-else-if="nothingSelected" class="absolute inset-0"
                              :sessions="recentSessions" :instances="fabInstances"
                              @select="onSelect" @create="createSessionIn" />
           <ChatPane class="absolute inset-0"
                     :inert="directBotsStore.isBotSelected || groupsStore.isGroupSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"
                     v-show="!!currentKey && centerTabs.activeFor(currentKey) === 'chat'"
-                    @show-files="onShowFiles" />
+                    @show-files="onShowFiles">
+            <!-- ChatPane stays mounted behind the Bot / Group pane, so this slot must not
+                 render a second copy of the actions while those panes own the content bar. -->
+            <template #actions>
+              <ConversationActions v-if="isDesktop && !isBotSelected && !isGroupSelected"
+                                   v-bind="conversationActions"
+                                   @terminal="openTerminalTab"
+                                   @desktop="toggleDesktopViewer" />
+            </template>
+          </ChatPane>
           <template v-for="{ key, tab } in centerTabs.allOpenTabs()" :key="key + '|' + tab.id">
             <FileViewer v-if="tab.kind === 'file' || tab.kind === 'diff'" class="absolute inset-0 z-10"
                         v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
@@ -984,7 +989,9 @@ onUnmounted(() => {
              class="absolute inset-y-0 left-0 z-20 hidden w-1.5 cursor-col-resize touch-none select-none transition-colors lg:block"
              :class="rightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
              @pointerdown.prevent="rightResize.onPointerDown" />
-        <div class="flex h-9 shrink-0 items-center gap-1 px-2.5">
+        <!-- Desktop matches the content bar's 44px so both layers share one bottom edge;
+             the mobile drawer keeps its own 36px row. -->
+        <div class="flex h-9 lg:h-11 shrink-0 items-center gap-1 px-2.5">
           <button data-test="right-tab-files"
                   class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
                   :class="rightTab === 'files' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
