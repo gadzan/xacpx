@@ -144,3 +144,21 @@ required, then the operator's visual acceptance, then the squash merge with
 - 06/08 re-shot (m390 light+dark) plus the two `20-dialog-nested` shots at the
   correct paths; verified by eye. iPhone glass check on 03/06: no iPhone here,
   left to the designer.
+
+### Merged
+
+Visual acceptance granted on `861b0adf`; squash-merged to `main` as
+`4a434b100064bae2e1d1b625cedb3217683cb8c7` with
+`--match-head-commit 861b0adf`, so the guard proved the exact verified head.
+Trunk had moved to #592 (acpx 0.22.0 pin, no `relay-web` files) between
+verification and the merge; GitHub reported MERGEABLE CLEAN at merge time and
+the squash applied without conflict.
+
+One plan deviation, deliberate: the decided merge-time trim of `before/` and
+`after/` PNGs was not done. Removing them needs a commit, a commit is a new
+head, and a new head voids the acceptance that had just been granted at
+`861b0adf`. The pack therefore enters `main` at its trimmed 5.5M with the
+screenshots intact; `HANDOFF.md` records the intended trim.
+
+Post-merge check: main's push workflow re-runs the full suite at the merged
+tree.
