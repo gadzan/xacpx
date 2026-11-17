@@ -177,7 +177,7 @@ xacpx channel add relay --url relay.example.com --token <T> [--name home-pc]
 xacpx restart
 ```
 
-Point `--url` at the **same host as the dashboard** — a bare domain resolves to `wss://relay.example.com`, and the merged gateway shares that host. `xacpx plugin add` installs the connector from npm and pulls in its `@ganglion/xacpx-relay-protocol` dependency automatically. The instance's `xacpx` core must be **≥ 0.11.0** (the connector's peer requirement).
+Point `--url` at the **same host as the dashboard** — a bare domain resolves to `wss://relay.example.com`, and the merged gateway shares that host. `xacpx plugin add` installs the connector from npm and pulls in its `@ganglion/xacpx-relay-protocol` dependency automatically. The instance's `xacpx` core must be **≥ 0.24.10-beta.18** (the connector's peer requirement).
 
 ::: details Pairing from a source checkout (development)
 If you run the instance from a repo checkout, the workspace already links `channel-relay` and `relay-protocol` — skip `plugin add` and run `xacpx channel add relay …` directly.
@@ -203,7 +203,7 @@ Bare unbracketed IPv6 addresses are not supported. Use `[::1]:8787` instead.
 
 ### How pairing works
 
-On first connect the instance exchanges the access token for a long-lived per-instance credential, written (mode `0600`) to `<xacpx-home>/relay/credential.json`. The `config.json` keeps only the url/name — the token is **never** stored there. The token is used only at first pairing — all subsequent reconnects use the stored credential.
+On first connect the instance exchanges the access token for a long-lived per-instance credential, written (mode `0600`) to `<xacpx-home>/relay/credential.json`. The pairing token itself **is** persisted in `~/.xacpx/config.json` alongside the url/name — treat that file as secret, because the token is exactly what an attacker needs to impersonate the instance. The token is used only at first pairing — all subsequent reconnects use the stored credential.
 
 ::: tip One token, multiple instances
 Reuse the same token on several instances (e.g. `home-pc`, `work-laptop`). They all appear under the same user in the dashboard.
@@ -296,7 +296,7 @@ nginx — keep the proxying but stop logging these two locations:
 
 The regex location must be declared so it wins over `location /` for these paths (nginx prefers the longest literal prefix but regexes are checked in order — place it as shown, or use `location ^~ /desktop/` if you prefer a prefix match).
 
-Server-side setup for a supported RFB server (Linux/Windows) is in [`docs/desktop-rfb-setup.md`](https://github.com/gadzan/xacpx/blob/main/docs/desktop-rfb-setup.md); the terser operator runbook is `docs/relay-deployment.md`.
+Server-side setup for a supported RFB server is in [`docs/desktop-rfb-setup.md`](https://github.com/gadzan/xacpx/blob/main/docs/desktop-rfb-setup.md); the terser operator runbook is `docs/relay-deployment.md`.
 
 ::: details Advanced: dedicated gateway port (`--ws-port`)
 If you start the hub with `xacpx-relay start --ws-port 8788`, the instance gateway gets its own port instead of riding the HTTP port. You can then add a second proxied domain (`gateway.example.com` → `8788`) and point connectors at `wss://gateway.example.com`. This is only needed if you want to firewall the gateway apart from the dashboard.
@@ -342,7 +342,7 @@ Desktop is opt-in per instance, in the channel-relay config the connector alread
         "desktop": {
           "enabled": true,
           "port": 5900,
-          "connectTimeoutMs": 5000,
+          "connectTimeoutMs": 1500,
           "maxStreams": 1
         }
       }
@@ -355,8 +355,8 @@ Desktop is opt-in per instance, in the channel-relay config the connector alread
 |---|---|---|
 | `enabled` | `false` | Master switch. Omit or `false` → no stream state is created at all. |
 | `port` | `5900` | Integer 1–65535. This is the port the connector **dials** on loopback — the setup guidance and error messages report exactly this value. |
-| `connectTimeoutMs` | `5000` | 250–10000. Shared by the loopback TCP dial, the banner preflight, and the hub upgrade. |
-| `maxStreams` | `1` | Concurrent desktop streams for this instance. |
+| `connectTimeoutMs` | `1500` | 250–10000. Shared by the loopback TCP dial, the banner preflight, and the hub upgrade. |
+| `maxStreams` | `1` | Fixed at `1` for v1 (single-viewer) — any other value is rejected when the config is parsed. |
 
 `host` / `hostname` / `target` are **rejected** — the target is fixed to loopback, so the connector can never become a general TCP proxy.
 
@@ -398,7 +398,13 @@ Prefer `127.0.0.1:5900`. An `0.0.0.0` bind is not automatically wrong, but it mu
 
 ### macOS
 
-Not supported in Phase A. Apple Screen Sharing speaks ARD auth by default, which the connector rejects with `desktop-auth-unsupported`; ARD pre-auth is Phase B and needs a separate security review. Configure a standard VncAuth endpoint if you need a desktop on macOS today.
+macOS Screen Sharing is a supported path: the connector performs the Apple Remote Desktop (type 30) handshake on the instance (`desktop.ard-auth.v1`) and the browser sees an ordinary RFB 3.8 stream.
+
+1. System Settings › General › Sharing › **Screen Sharing**, and allow the account you intend to sign in with.
+2. Grant Screen Recording and Accessibility when macOS prompts.
+3. Unless you deliberately want the VNC-password path, turn off "VNC viewers may control screen with password" — a Mac that offers both takes the VNC password path.
+
+In the dashboard, click **Desktop**: the tab asks for the macOS account name (short or full name) and password. They travel over your already-authenticated control connection to that Mac's connector, are used only for the ARD handshake, and are then dropped — nothing is stored, and every reconnect asks again (the account name is prefilled). A connector build too old to do ARD pre-auth reports `desktop-auth-unsupported`; update `@ganglion/xacpx-channel-relay`.
 
 ### Diagnosing a failed open
 
@@ -410,8 +416,11 @@ Errors surface in the dashboard banner with a stable code plus the RFB server's 
 | `desktop-busy` | A viewer is already attached | Close the other Desktop tab |
 | `desktop-rfb-unavailable` | Loopback port refused | VNC server not started, or configured `port` is wrong — the message names **your** configured port |
 | `desktop-not-rfb` | Port answers, but it is not RFB | `desktop.port` points at a different service |
-| `desktop-auth-unsupported` | Auth scheme not accepted | Tight-only outer 16 / VeNCrypt / None / ARD — see the platform sections above |
-| `desktop-auth-failed` | VNC server rejected the password | Re-enter the password |
+| `desktop-auth-unsupported` | Auth scheme not accepted | Tight-only outer 16 / VeNCrypt / `None` / proprietary — see the platform sections above |
+| `desktop-credentials-required` | macOS wants an account name and password | The tab shows a form, not an error banner |
+| `desktop-credentials-rejected` | macOS rejected the account name or password | The form stays open; correct them, or allow the account in Screen Sharing |
+| `desktop-permission-denied` | Signed in, but macOS did not start the session | Check Screen Sharing, Screen Recording, and Accessibility |
+| `desktop-protocol-error` | The RFB handshake broke the protocol contract | Check the RFB server type and version; see the platform sections above |
 | `desktop-stream-timeout` | Tunnel or upgrade timed out | Transient; retry |
 | `desktop-instance-offline` | Instance went away | Wait for it to come back; retry |
 

@@ -200,7 +200,7 @@ xacpx-relay add token        # prints the access token once
 xacpx-relay start            # defaults: --host 0.0.0.0 --http-port 8787
 
 # On each instance host:
-xacpx plugin add @ganglion/xacpx-channel-relay   # requires xacpx >= 0.17.0-beta.6
+xacpx plugin add @ganglion/xacpx-channel-relay   # requires xacpx >= 0.24.10-beta.18
 xacpx channel add relay --url wss://relay.example.com --token <access-token> --name my-box
 xacpx restart
 ```
