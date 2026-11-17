@@ -978,7 +978,7 @@ test("recreating an alias with a different agent does not inherit transport agen
 
   const recreated = await service.createSession("foo", "claude", "backend");
 
-  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.90.0");
+  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.107.2");
   expect(recreated.modeId).toBeUndefined();
   expect(recreated.replyMode).toBeUndefined();
   expect(state.sessions.foo?.transport_agent_command).toBeUndefined();
@@ -1014,7 +1014,7 @@ test("resolveSession does not reuse a cached transport agent command from a diff
 
   const crossAgent = service.resolveSession("foo", "claude", "backend", "backend:foo");
   expect(crossAgent.agentCommand).toContain("acp-output-guard-main.");
-  expect(crossAgent.agentCommand).toContain("@agentclientprotocol/claude-agent-acp@0.90.0");
+  expect(crossAgent.agentCommand).toContain("@agentclientprotocol/claude-agent-acp@0.107.2");
 
   const sameAgent = service.resolveSession("foo", "codex", "backend", "backend:foo");
   expect(sameAgent.agentCommand).toBe("npx @zed-industries/codex-acp@^0.9.5");
