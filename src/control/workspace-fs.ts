@@ -4,16 +4,11 @@ import { homedir } from "node:os";
 import { readdir, realpath, stat, open, readFile, writeFile, mkdir, rename as fsRename, cp, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import writeFileAtomic from "write-file-atomic";
+import { expandHome } from "../util/path.js";
 
 const execFileAsync = promisify(execFile);
 
-/** Expand a leading `~` to the home directory (workspace cwds are often configured
- *  as `~` or `~/path`). */
-export function expandHome(p: string): string {
-  if (p === "~") return homedir();
-  if (p.startsWith("~/") || p.startsWith("~" + sep)) return resolve(homedir(), p.slice(2));
-  return p;
-}
+export { expandHome };
 
 // Read-only browser over a configured workspace's files + git diff, for the relay
 // web dashboard. Security model (deliberately the OPPOSITE of HAPI's fail-open one):

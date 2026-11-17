@@ -236,6 +236,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     /** Connector-local receive-order seq at turn-start; maps to `slotAfterId` after restart. */
     startedAfterSeq?: number;
     peerTriggerMessageId?: string;
+    /** The core's prompt-turn identity for this turn; a peer row is stamped with it
+     *  when the router appends that row AFTER turn-started. */
+    nodeId?: string;
     truncated?: boolean;
     notification?: TurnNotificationContext;
     /** Product-owned Conversation join. sessionAlias is legacy plumbing when set. */
@@ -539,7 +542,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         if (opts.promptRequestId) {
           // Pre-written web prompt with no queue marker: the row already exists — do
           // not duplicate it (the queue response may have been lost entirely).
-          if (messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId) !== undefined) {
+          // A peer turn's prompt request id is its Agent message id, and its row
+          // carries that id only inside the structured payload — the row already
+          // exists when the target was busy and this turn started later.
+          if (
+            messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId) !== undefined
+            || messages.findByPeerMessage(instanceId, sessionAlias, opts.promptRequestId) !== undefined
+          ) {
             return "correlated";
           }
         }
@@ -701,6 +710,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 ...(event.peerOrigin?.requestMessageId
                   ? { peerTriggerMessageId: event.peerOrigin.requestMessageId }
                   : {}),
+                ...(event.nodeId ? { nodeId: event.nodeId } : {}),
                 ...(notification ? { notification } : {}),
                 ...(event.conversation ? { conversation: event.conversation } : {}),
               });
@@ -914,6 +924,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 undefined,
                 new Date(event.message.createdAt).toISOString(),
               );
+              // A peer turn's inbound row is appended HERE, after its turn-started,
+              // so the reconcile that ran then had no row to stamp. The turn's
+              // buffer still holds the core's node id: stamp the row now or the Web
+              // never offers a fork on the prompt that triggered this turn.
+              const pending = turnBuffers.get(key(instanceId, event.sessionAlias));
+              if (pending?.nodeId && direction === "in") {
+                messages.attachNodeId(instanceId, event.sessionAlias, pending.nodeId, {
+                  peerMessageId: event.message.messageId,
+                });
+              }
             }
           } else if (event.type === "agent-message-completion") {
             // v0.3: completion-status PATCH. Only flips the terminal status on

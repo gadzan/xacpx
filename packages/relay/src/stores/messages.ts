@@ -308,7 +308,7 @@ export class MessageStore {
     instanceId: string,
     sessionAlias: string,
     nodeId: string,
-    correlation: { promptRequestId?: string; queueItemId?: string } = {},
+    correlation: { promptRequestId?: string; queueItemId?: string; peerMessageId?: string } = {},
   ): void {
     const lookup = (where: string, value: string): number | undefined =>
       this.db.get<{ id: number }>(
@@ -322,6 +322,14 @@ export class MessageStore {
         : undefined)
       ?? (correlation.promptRequestId !== undefined
         ? lookup("prompt_request_id", correlation.promptRequestId)
+          // A peer turn's prompt request id IS its Agent message id, and the row
+          // `agent-message` wrote carries that id only inside the structured
+          // payload (no `prompt_request_id`). This covers a peer turn that was
+          // queued behind a busy target: its row existed before turn-started.
+          ?? this.findByPeerMessage(instanceId, sessionAlias, correlation.promptRequestId)
+        : undefined)
+      ?? (correlation.peerMessageId !== undefined
+        ? this.findByPeerMessage(instanceId, sessionAlias, correlation.peerMessageId)
         : undefined);
     if (rowId !== undefined) {
       this.db.run("UPDATE messages SET node_id = ? WHERE id = ?", [nodeId, rowId]);
@@ -336,6 +344,20 @@ export class MessageStore {
        ) AND node_id IS NULL`,
       [nodeId, instanceId, sessionAlias],
     );
+  }
+
+  /** The inbound row carrying a peer Agent message's sender card. A peer turn's
+   *  prompt request id IS its Agent message id, and `agent-message` writes no
+   *  `prompt_request_id`, so this payload lookup is that row's only durable
+   *  correlation. */
+  findByPeerMessage(instanceId: string, sessionAlias: string, messageId: string): number | undefined {
+    return this.db.get<{ id: number }>(
+      `SELECT id FROM messages
+       WHERE instance_id = ? AND session_alias = ? AND direction = 'in'
+         AND json_extract(structured, '$.agentMessage.messageId') = ?
+       ORDER BY id DESC LIMIT 1`,
+      [instanceId, sessionAlias, messageId],
+    )?.id;
   }
 
   /** Promote a KNOWN inbound row (found via promptRequestId) to its execution position

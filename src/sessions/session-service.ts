@@ -36,6 +36,7 @@ import {
   resolveSessionAliasForInput,
   toDisplaySessionAlias,
 } from "../channels/channel-scope";
+import { expandHome } from "../util/path.js";
 
 interface SessionListItem {
   alias: string;
@@ -416,10 +417,11 @@ export class SessionService {
     // No usable explicit cwd: the physical target can only come from the
     // registered workspace. Both missing means nothing resolvable remains.
     const explicitCwd = binding.cwd !== undefined && binding.cwd.trim().length > 0;
-    const cwd = explicitCwd ? binding.cwd : workspaceConfig?.cwd;
-    if (cwd === undefined) {
+    const rawCwd = explicitCwd ? binding.cwd : workspaceConfig?.cwd;
+    if (rawCwd === undefined) {
       return null;
     }
+    const cwd = expandHome(rawCwd);
     const launch = resolveWorkerAgentLaunch(agentConfig, this.config.transport, binding);
     return {
       alias: workerSession,
@@ -1352,7 +1354,7 @@ export class SessionService {
       effectiveReplyMode,
       cwd: session.execution_worktree
         ? this.conversationWorktreeResolver?.(session) ?? (() => { throw new ConversationError("worktree_identity_mismatch", "worktree resolver is unavailable"); })()
-        : workspaceConfig.cwd,
+        : expandHome(workspaceConfig.cwd),
       archived: session.archived === true,
       archivedAt: session.archived_at,
     };
@@ -1788,7 +1790,7 @@ export class SessionService {
       model: agentConfig.model,
       workspace: input.workspace,
       transportSession: input.workerSession,
-      cwd: input.cwd ?? binding?.cwd ?? workspaceConfig.cwd,
+      cwd: expandHome(input.cwd ?? binding?.cwd ?? workspaceConfig.cwd),
     } as ResolvedSession;
     return this.resolveEngineByPhysicalGroup({
       noun: "worker binding",

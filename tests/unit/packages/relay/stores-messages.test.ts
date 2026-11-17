@@ -113,3 +113,26 @@ test("attachNodeId without a correlation stamps the newest inbound row only when
   ]);
   db.close();
 });
+
+test("attachNodeId stamps a peer sender-card row by its agent message id", async () => {
+  const db = await seeded();
+  const store = new MessageStore(db);
+  // `agent-message` appends the row without a prompt_request_id; the peer card's
+  // messageId inside the structured payload is its only durable correlation.
+  store.append("i1", "backend", "in", "schema changed", {
+    agentMessage: {
+      kind: "agent_message",
+      direction: "received",
+      messageId: "msg-peer-1",
+      conversationId: "conv-1",
+      peer: { handle: "agent:n1:sender", displayName: "Sender", agent: "codex" },
+      content: "schema changed",
+      createdAt: 1_000,
+      status: "delivered",
+    },
+  });
+  store.attachNodeId("i1", "backend", "node-peer", { peerMessageId: "msg-peer-1" });
+  const [row] = store.listBySession("a1", "i1", "backend").messages;
+  expect(row).toMatchObject({ direction: "in", text: "schema changed", nodeId: "node-peer" });
+  db.close();
+});

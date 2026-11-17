@@ -5,6 +5,7 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { promisify } from "node:util";
+import { expandHome } from "../util/path.js";
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
@@ -119,12 +120,6 @@ export interface GitWorktreeCreateResult {
   path: string;
   branch: string;
   linked: true;
-}
-
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith(`~${sep}`) || path.startsWith("~/")) return resolve(homedir(), path.slice(2));
-  return path;
 }
 
 export function worktreePathsEqual(
