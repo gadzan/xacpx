@@ -56,3 +56,33 @@ test("a peer turn's pre-written inbound row carries the node id", async () => {
   expect(inbound?.nodeId).toBe("node-peer");
   runtime.close();
 });
+
+test("a peer turn queued behind a busy target still stamps its row", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+
+  // The target was busy, so the message row was written at delivery time and the
+  // turn only starts later — its turn-started arrives with the row already there.
+  fire({ type: "agent-message", chatKey: "relay:agent-message:backend", sessionAlias: "backend", message: peerMessage });
+  fire({
+    type: "turn-started",
+    chatKey: "relay:agent-message:backend",
+    sessionAlias: "backend",
+    promptRequestId: "msg_peer_1",
+    nodeId: "node-queued",
+    peerOrigin: {
+      requestMessageId: "msg_peer_1",
+      completion: "none",
+      source: { nodeId: "n1", endpointId: "sender" },
+      target: { nodeId: "n1", endpointId: "target" },
+    },
+  });
+  fire({ type: "turn-output", chatKey: "relay:agent-message:backend", sessionAlias: "backend", chunk: "ack" });
+  fire({ type: "turn-finished", chatKey: "relay:agent-message:backend", sessionAlias: "backend", ok: true });
+
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.find((row) => row.direction === "in")?.nodeId).toBe("node-queued");
+  runtime.close();
+});

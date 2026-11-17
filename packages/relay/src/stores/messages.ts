@@ -322,12 +322,14 @@ export class MessageStore {
         : undefined)
       ?? (correlation.promptRequestId !== undefined
         ? lookup("prompt_request_id", correlation.promptRequestId)
+          // A peer turn's prompt request id IS its Agent message id, and the row
+          // `agent-message` wrote carries that id only inside the structured
+          // payload (no `prompt_request_id`). This covers a peer turn that was
+          // queued behind a busy target: its row existed before turn-started.
+          ?? this.findByPeerMessage(instanceId, sessionAlias, correlation.promptRequestId)
         : undefined)
-      // A peer Agent message row carries its sender-card messageId inside the
-      // structured payload; the row is appended by `agent-message`, which writes
-      // no prompt_request_id.
       ?? (correlation.peerMessageId !== undefined
-        ? this.findByPeerMessageId(instanceId, sessionAlias, correlation.peerMessageId)
+        ? this.findByPeerMessage(instanceId, sessionAlias, correlation.peerMessageId)
         : undefined);
     if (rowId !== undefined) {
       this.db.run("UPDATE messages SET node_id = ? WHERE id = ?", [nodeId, rowId]);
@@ -344,8 +346,11 @@ export class MessageStore {
     );
   }
 
-  /** The inbound row carrying a peer Agent message's sender card. */
-  private findByPeerMessageId(instanceId: string, sessionAlias: string, messageId: string): number | undefined {
+  /** The inbound row carrying a peer Agent message's sender card. A peer turn's
+   *  prompt request id IS its Agent message id, and `agent-message` writes no
+   *  `prompt_request_id`, so this payload lookup is that row's only durable
+   *  correlation. */
+  findByPeerMessage(instanceId: string, sessionAlias: string, messageId: string): number | undefined {
     return this.db.get<{ id: number }>(
       `SELECT id FROM messages
        WHERE instance_id = ? AND session_alias = ? AND direction = 'in'

@@ -542,7 +542,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         if (opts.promptRequestId) {
           // Pre-written web prompt with no queue marker: the row already exists — do
           // not duplicate it (the queue response may have been lost entirely).
-          if (messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId) !== undefined) {
+          // A peer turn's prompt request id is its Agent message id, and its row
+          // carries that id only inside the structured payload — the row already
+          // exists when the target was busy and this turn started later.
+          if (
+            messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId) !== undefined
+            || messages.findByPeerMessage(instanceId, sessionAlias, opts.promptRequestId) !== undefined
+          ) {
             return "correlated";
           }
         }
