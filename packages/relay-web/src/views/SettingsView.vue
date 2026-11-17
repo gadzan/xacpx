@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { ArrowLeft, Info, LogOut } from "lucide-vue-next";
 import { useRouter } from "vue-router";
-import { ArrowLeft, LogOut } from "lucide-vue-next";
 import { api } from "../api/client";
 import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
@@ -19,7 +19,7 @@ import {
   isDesktopNotificationsEnabled,
 } from "../lib/web-push";
 import AddInstanceDialog from "../components/AddInstanceDialog.vue";
-import UiButton from "../components/UiButton.vue";
+import Tooltip from "../components/Tooltip.vue";
 const auth = useAuthStore();
 const theme = useThemeStore();
 const router = useRouter();
@@ -119,6 +119,14 @@ const notifStateLabel = computed(() => ({
   subscribed: t("settings.notifOn"),
 }[notifState.value]));
 
+/** The explanations that used to stack under the notification row, now behind one ⓘ. */
+const notifHint = computed(() => {
+  const parts: string[] = [];
+  if (notifState.value === "denied") parts.push(t("settings.notifDeniedHint"));
+  if (isIos) parts.push(t("settings.notifIosHint"));
+  return parts.join(" ");
+});
+
 void onMounted(() => { void probeNotifications(); });
 </script>
 
@@ -178,9 +186,17 @@ void onMounted(() => { void probeNotifications(); });
 
       <section class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.retentionTitle") }}</h2>
-        <p class="text-right text-sm text-fg-muted" data-test="retention-body">
-          {{ $t("settings.retentionBody", { max: retention?.maxPerSession ?? "—", days: retention?.days ?? "—" }) }}
-        </p>
+        <div class="flex items-center gap-1.5">
+          <p class="text-right text-sm text-fg-muted" data-test="retention-body">
+            {{ $t("settings.retentionShort", { max: retention?.maxPerSession ?? "—", days: retention?.days ?? "—" }) }}
+          </p>
+          <Tooltip :text="$t('settings.retentionBody', { max: retention?.maxPerSession ?? '—', days: retention?.days ?? '—' })">
+            <button type="button" data-test="retention-info" :aria-label="$t('settings.moreInfo')" :title="$t('settings.moreInfo')"
+                    class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0">
+              <Info :size="14" />
+            </button>
+          </Tooltip>
+        </div>
       </section>
 
       <section class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
@@ -195,9 +211,9 @@ void onMounted(() => { void probeNotifications(); });
         </div>
       </section>
 
-      <section data-test="notif-setting" class="flex min-h-11 flex-wrap items-center justify-between gap-3 border-t border-hairline px-4 py-2">
+      <section data-test="notif-setting" class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.notifTitle") }}</h2>
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-1.5">
           <span data-test="notif-state" class="text-sm text-fg-muted">{{ notifStateLabel }}</span>
           <UiButton
             v-if="notifState === 'subscribed' || notifState === 'idle' || notifState === 'server-disabled'"
@@ -205,9 +221,13 @@ void onMounted(() => { void probeNotifications(); });
             :disabled="notifBusy"
             @click="toggleNotifications"
           >{{ notifState === "subscribed" ? $t("settings.notifDisable") : $t("settings.notifEnable") }}</UiButton>
+          <Tooltip v-if="notifHint" :text="notifHint">
+            <button type="button" data-test="notif-info" :aria-label="$t('settings.moreInfo')" :title="$t('settings.moreInfo')"
+                    class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0">
+              <Info :size="14" />
+            </button>
+          </Tooltip>
         </div>
-        <p v-if="notifState === 'denied'" class="w-full text-xs text-fg-muted">{{ $t("settings.notifDeniedHint") }}</p>
-        <p v-if="isIos" class="w-full text-xs text-fg-muted" data-test="notif-ios-hint">{{ $t("settings.notifIosHint") }}</p>
       </section>
 
       <section class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">

@@ -131,6 +131,9 @@ for (const [name, viewport] of [["d1440", { width: 1440, height: 900 }], ["m390"
     await botDialog(page).getByTestId("bot-dialog-remove").click();
     await expect(removalDialog(page)).toBeVisible();
     await page.waitForTimeout(300);
-    if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}/20-dialog-nested-light.png`, fullPage: true });
+    // UI_SHOTS_DIR already carries the viewport (…/after/<viewport>), the way
+    // ui-upgrade-before.spec.ts uses it. Only shoot the matching loop turn, or
+    // the m390 turn would overwrite the d1440 file and vice versa.
+    if (SHOTS && SHOTS.endsWith(`/${name}`)) await page.screenshot({ path: `${SHOTS}/20-dialog-nested-light.png`, fullPage: true });
   });
 }

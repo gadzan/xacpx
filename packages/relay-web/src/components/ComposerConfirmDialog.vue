@@ -11,7 +11,11 @@ const initialFocus = (): HTMLElement | null => cancelButton.value?.el ?? null;
 
 <template>
   <Teleport to="body">
+  <!-- level="top": this confirms over the composer and possibly an open drawer.
+       Pre-shell it was z-70; the dialog default (z-50) sits level with the
+       run-detail drawer. -->
   <DialogShell
+    level="top"
     panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4"
     :label="title"
     :initial-focus="initialFocus"

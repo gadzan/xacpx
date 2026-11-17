@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { AlertCircle, Clock, GitFork, MessageSquare } from "lucide-vue-next";
+import { AlertCircle, Clock, GitFork, ListTree, MessageSquare } from "lucide-vue-next";
 import type { ConversationMessageDto } from "@ganglion/xacpx-relay-protocol";
 import TranscriptRow from "./TranscriptRow.vue";
 import ConversationBubble from "./ConversationBubble.vue";
@@ -310,14 +310,9 @@ const noticeToneClass = computed(() => {
             class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
             @click="emit('openDetail', messageDetail)"
           >
-            <BotAvatar
-              :avatar="author?.avatar"
-              :driver="author?.driver"
-              :name="author?.name"
-              :size="16"
-              static
-              aria-hidden="true"
-            />
+            <!-- Linear icon, not the author avatar: the row already shows who
+                 spoke, and a 16px face does not read as a tappable entry. -->
+            <ListTree :size="14" aria-hidden="true" />
           </button>
         </Tooltip>
       </ConversationMeta>

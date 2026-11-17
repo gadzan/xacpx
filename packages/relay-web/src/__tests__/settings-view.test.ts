@@ -122,7 +122,9 @@ test("the retention and relay blocks render the server values", async () => {
   const wrapper = mountSettings();
   await flushPromises();
   expect(wrapper.get('[data-test="retention-body"]').text())
-    .toBe(i18n.global.t("settings.retentionBody", { max: RETENTION.maxPerSession, days: RETENTION.days }));
+    .toBe(i18n.global.t("settings.retentionShort", { max: RETENTION.maxPerSession, days: RETENTION.days }));
+  // The long sentence survives behind the info icon.
+  expect(wrapper.find('[data-test="retention-info"]').exists()).toBe(true);
   expect(wrapper.get('[data-test="relay-version"]').text())
     .toBe(i18n.global.t("settings.relayVersion", { version: VERSION.current }));
 });

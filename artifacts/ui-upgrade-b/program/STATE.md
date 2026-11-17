@@ -117,3 +117,30 @@ the id there would fail, not cover. Structural parity with the gated
 CopyButton recipe is the guarantee. Standing at `84cede67`: CI green
 required, then the operator's visual acceptance, then the squash merge with
 `--match-head-commit`. No merge has run.
+
+### Third review round (6 findings), code + design
+
+- Doc: the 1451-line Model Discovery V2 design doc rode in with WP-7's commit.
+  Removed from this branch; filed separately (branch + PR, path per the doc's
+  own header: `docs/superpowers/specs/2026-11-10-model-discovery-v2-design.md`).
+- Evidence: `dialog-shell.spec.ts` double-appended the viewport
+  (`after/m390/m390/20-dialog-nested-light.png` etc.); fixed to shoot only the
+  loop turn matching `UI_SHOTS_DIR`. Nested dirs + `tests/*.log` deleted
+  (7.6M -> ~5.5M). At merge, `before/`+`after/` PNGs are dropped; text evidence
+  stays. Decision recorded in HANDOFF.
+- `ComposerConfirmDialog` gains `level="top"` (restores pre-shell z-70; the
+  default z-50 sits level with the run-detail drawer).
+- `.glass-1`/`.glass-2` (zero callers) and `--glass-hover` (zero refs) deleted;
+  WP-9 marked partial in HANDOFF. The shared-selector cut briefly took
+  `.glass-control`'s blur with it; restored and re-verified (tsc + shots).
+- 06 (group mobile): meta row indented to the bubble edge (`ml-11`, `lg:ml-11`
+  where the avatar is desktop-only), process entry `BotAvatar` 16 -> `ListTree`
+  14, speaker button `justify-center` -> start (44px touch box kept). Real-DOM
+  probe: meta x16 vs bubble x60 (off by exactly the avatar column), glyph x71.
+- 08 (settings mobile): retention value shortened (`retentionShort`), both
+  explanations moved behind an info button (`Tooltip`, tap-to-show on touch);
+  notification row back to one line. New keys `retentionShort`/`moreInfo` in
+  en + zh-CN; three unit tests updated to the tooltip props.
+- 06/08 re-shot (m390 light+dark) plus the two `20-dialog-nested` shots at the
+  correct paths; verified by eye. iPhone glass check on 03/06: no iPhone here,
+  left to the designer.
