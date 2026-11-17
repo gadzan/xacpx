@@ -167,7 +167,7 @@ For identity rules, `workingDirectory` semantics, the full tool list, and troubl
 
 ## Relay hub — `xacpx-relay`
 
-A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). Until the relay packages are published to npm, invoke the subcommands as `node packages/relay/dist/cli.js <command>` from a repo checkout.
+A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). Install it with `npm i -g @ganglion/xacpx-relay` — the dashboard (`@ganglion/xacpx-relay-web`) is bundled inside that package, so there is nothing else to install or build.
 
 ```bash
 xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
@@ -177,6 +177,8 @@ xacpx-relay add invite [--label <note>] [--ttl <30m|12h|7d>] [--url <hub-base-ur
 xacpx-relay ls [--db <path>]
 xacpx-relay rm token <value-or-id> [--db <path>]
 xacpx-relay rm invite <code-or-id> [--db <path>]
+xacpx-relay push-keys generate
+xacpx-relay update [--check]
 ```
 
 | Command | Description |
@@ -187,6 +189,8 @@ xacpx-relay rm invite <code-or-id> [--db <path>]
 | `ls` | List tokens (short id, label, created date, connected instances) and pending/used invite codes. |
 | `rm token <value-or-id>` | Remove the user behind that token (cascades all data). |
 | `rm invite <code-or-id>` | Delete an invite code (does not affect accounts already redeemed from it). |
+| `push-keys generate` | Print a VAPID keypair for web push. Inject it via `XACPX_RELAY_VAPID_SUBJECT` / `XACPX_RELAY_VAPID_PUBLIC_KEY` / `XACPX_RELAY_VAPID_PRIVATE_KEY` or the `start` flags; unconfigured means push is disabled (WS delivery is unaffected). |
+| `update [--check]` | Self-update the hub package (`npm i -g @ganglion/xacpx-relay@latest`). `--check` only compares the running version against npm and prints the result. Restart the hub process afterwards. |
 
 **Example — mint a token:**
 
