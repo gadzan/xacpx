@@ -105,6 +105,26 @@ function walk(dir, out = []) {
   return out;
 }
 
+/**
+ * Every markdown file the brand guard scans: docs/, the VitePress site, and
+ * all package trees (the site mirrors the channel package READMEs, so a stale
+ * brand there contradicts its own site page). Historical record directories
+ * and the compat package legitimately quote the old brand.
+ */
+export function collectBrandFiles() {
+  const BRAND_SKIP = [
+    "docs/superpowers/**",
+    "docs/design/**",
+    "docs/research/**",
+    "docs/agents/**",
+    "packages/docs/node_modules/**",
+    "weacpx-compat/**",
+  ];
+  return [...walk(DOCS), ...walk(path.join(ROOT, "packages", "docs")), ...walk(path.join(ROOT, "packages"))].filter(
+    (f) => !matchesAny(f, BRAND_SKIP),
+  );
+}
+
 if (import.meta.main) {
   const strict = process.argv.includes("--strict");
   const failures = [];
@@ -135,10 +155,11 @@ if (import.meta.main) {
     else warnings.push(message);
   }
 
-  // Rule C: brand guard over docs/ and the VitePress site. Historical record
-  // directories (plans/specs/handoffs/designs) legitimately quote the old brand.
-  const BRAND_SKIP = ["docs/superpowers/**", "docs/design/**", "docs/research/**", "docs/agents/**", "packages/docs/node_modules/**"];
-  const brandFiles = [...walk(DOCS), ...walk(path.join(ROOT, "packages", "docs"))].filter((f) => !matchesAny(f, BRAND_SKIP));
+  // Rule C: brand guard over docs/, the VitePress site, and every package
+  // README (the site mirrors channel-* READMEs, so a stale brand in a README
+  // silently contradicts its own site page). Historical record directories
+  // (plans/specs/handoffs/designs) legitimately quote the old brand.
+  const brandFiles = collectBrandFiles();
   const brandHits = [];
   for (const rel of brandFiles) {
     const lines = readFileSync(path.join(ROOT, rel), "utf8").split("\n");

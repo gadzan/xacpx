@@ -77,7 +77,7 @@ class HelloChannel implements MessageChannelRuntime {
 const plugin: WeacpxPlugin = {
   apiVersion: 1,
   name: "xacpx-channel-hello",
-  minWeacpxVersion: "0.3.3",
+  minWeacpxVersion: "0.5.0",
   channels: [
     {
       type: "hello",
@@ -118,7 +118,7 @@ Recommended directory and file layout:
 
 ```
 my-channel/
-├── package.json           # name, peerDependencies: { xacpx: ">=0.3.x" }
+├── package.json           # name, peerDependencies: { xacpx: ">=0.24.10-beta.18" }
 ├── tsconfig.json          # extends the xacpx top-level tsconfig (first-party package) or a standalone config
 ├── README.md
 ├── src/
@@ -144,7 +144,7 @@ Key `package.json` fields:
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
   },
   "files": ["dist", "README.md"],
-  "peerDependencies": { "xacpx": ">=0.3.3" },
+  "peerDependencies": { "xacpx": ">=0.24.10-beta.18" },
   "peerDependenciesMeta": { "xacpx": { "optional": true } }
 }
 ```
@@ -172,7 +172,7 @@ export interface WeacpxPlugin {
 
 const plugin: WeacpxPlugin = {
   apiVersion: WEACPX_PLUGIN_API_VERSION,        // currently fixed at 1
-  minWeacpxVersion: WEACPX_PLUGIN_MIN_CORE_VERSION, // e.g. "0.3.3"
+  minXacpxVersion: XACPX_PLUGIN_MIN_CORE_VERSION, // e.g. "0.5.0"
   channels: [/* ... */],
 };
 
@@ -183,7 +183,7 @@ export default plugin;
 | --- | --- | --- |
 | `apiVersion` | Yes | Currently must be the literal `1`. A future breaking change in xacpx will bump the API version. The set of versions the current xacpx accepts can be read from `WEACPX_PLUGIN_API_SUPPORTED_VERSIONS`. |
 | `name` | No | Explicitly declares the plugin name. If set, it must equal the npm package name used at install time (including scope), otherwise startup validation rejects it. |
-| `minWeacpxVersion` | Recommended | The **minimum xacpx core version** this plugin works with (e.g. `"0.3.3"`). When the current xacpx is below this version, plugin loading fails with a prompt to `upgrade xacpx`. First-party plugins must declare it; third-party plugins are strongly encouraged to. |
+| `minWeacpxVersion` | Recommended | The **minimum xacpx core version** this plugin works with (e.g. `"0.5.0"`). When the current xacpx is below this version, plugin loading fails with a prompt to `upgrade xacpx`. First-party plugins must declare it; third-party plugins are strongly encouraged to. |
 | `compatibleWeacpxVersions` | No | Explicit xacpx compatibility range; supports `x.y.z` / `>=x.y.z` / `^x.y.z`. If declared together with `minWeacpxVersion`, both must be satisfied. |
 | `channels` | No | List of channel definitions. May be empty (reserved for future non-channel extension points). |
 
@@ -799,9 +799,9 @@ Top-level structure of `~/.xacpx/config.json`:
 
 Examples:
 
-- WeChat: `weixin:wxid_abc123` (note WeChat is compatible with the old format `wxid_abc123`, equivalent to `weixin:wxid_abc123`)
-- Feishu: `feishu:oc_xxxx`
-- Yuanbao: `yuanbao:<account>:<conv>`
+- WeChat: `weixin:<accountId>:<userId>` (group conversations use `weixin:<accountId>:group:<groupId>`)
+- Feishu: `feishu:<accountId>:<chatId>` (thread conversations append `:thread:<threadId>`)
+- Yuanbao: `yuanbao:<accountId>:<chatType>:<target>`
 
 Your channel **must**:
 

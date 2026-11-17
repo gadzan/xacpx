@@ -753,9 +753,9 @@ export interface ChannelRuntimeConfig {
 
 例：
 
-- 微信：`weixin:wxid_abc123`（注意微信兼容旧格式 `wxid_abc123`，等价于 `weixin:wxid_abc123`）
-- 飞书：`feishu:oc_xxxx`
-- 元宝：`yuanbao:<account>:<conv>`
+- 微信：`weixin:<accountId>:<userId>`（群聊使用 `weixin:<accountId>:group:<groupId>`）
+- 飞书：`feishu:<accountId>:<chatId>`（话题会话追加 `:thread:<threadId>`）
+- 元宝：`yuanbao:<accountId>:<chatType>:<target>`
 
 你的频道**必须**：
 

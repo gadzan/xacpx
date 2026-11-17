@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { globToRegExp, hashText } from "../../../scripts/sync-docs-site.mjs";
-import { IGNORE, ZH_EXEMPT, isBrandViolation } from "../../../scripts/check-doc-i18n.mjs";
+import { IGNORE, ZH_EXEMPT, collectBrandFiles, isBrandViolation } from "../../../scripts/check-doc-i18n.mjs";
 
 // Both doc gates shipped with real bugs on the first pass: the glob treated
 // `**` as a single path segment (so docs/superpowers/** never matched and 240
@@ -99,6 +99,20 @@ test("i18n: every translated-by-convention page has a zh counterpart", () => {
     .filter((rel) => !IGNORE.some((p) => matches(rel, p)) && !ZH_EXEMPT.includes(rel))
     .filter((rel) => !existsSync(join(ROOT, "docs/zh", `${rel.slice("docs/".length, -3)}_zh.md`)));
   expect(missing).toEqual([]);
+});
+
+test("brand: the guard scans package READMEs, not just docs/", () => {
+  // The two channel READMEs still said `weacpx plugin add …` for months: the
+  // brand rule only walked docs/ and packages/docs, while those READMEs are
+  // the sync-manifest sources for plugins/feishu.md and plugins/yuanbao.md.
+  const files = collectBrandFiles();
+  expect(files).toContain("packages/channel-feishu/README.md");
+  expect(files).toContain("packages/channel-yuanbao/README.md");
+  expect(files).toContain("packages/channel-discord/README.md");
+  expect(files).toContain("packages/relay/README.md");
+  // Historical records and the compat package keep quoting the old brand.
+  expect(files.some((f: string) => f.startsWith("docs/superpowers/"))).toBe(false);
+  expect(files.some((f: string) => f.startsWith("weacpx-compat/"))).toBe(false);
 });
 
 test("brand: violations are flagged, legacy contexts are exempt", () => {

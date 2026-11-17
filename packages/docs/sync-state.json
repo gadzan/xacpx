@@ -48,8 +48,8 @@
     "reconciledAt": "2026-11-17T11:46:58.154Z"
   },
   "docs/plugin-development.md": {
-    "hash": "60528d0eeee0a6177ce2903a7c1d5fa1cc7a9e547a13d224f8104255c5bc8838",
-    "reconciledAt": "2026-11-17T11:46:58.153Z"
+    "hash": "a64686bfac0c4d10efcc73ff396c893e074fb33f82dbd6564cebce92f819eacc",
+    "reconciledAt": "2026-11-17T14:23:23.938Z"
   },
   "docs/testing.md": {
     "hash": "15fd33bf47f78fc3754e4affa1278c8000c8ccfcdd3e2adfe648b20fac318ab3",
@@ -60,16 +60,16 @@
     "reconciledAt": "2026-11-17T11:46:58.158Z"
   },
   "packages/channel-discord/README.md": {
-    "hash": "441dff33eef8d965babfa33a9a493529c5d7ec0ee219c3c2ecc6d0198319e92a",
-    "reconciledAt": "2026-11-17T11:46:58.159Z"
+    "hash": "9e0f7ce27bbe23cb50eb1c91422af5b494be9687e082838383d05d0158d93bb9",
+    "reconciledAt": "2026-11-17T14:23:24.319Z"
   },
   "packages/channel-feishu/README.md": {
-    "hash": "bb30c708c14e78c11d91f7ed86c9f9e87041d4338c0c769e85fb0d4283911278",
-    "reconciledAt": "2026-11-17T11:46:58.158Z"
+    "hash": "166e610efd9a375f64266969440fe9a5a6f4dd06af1d4913a7d36dccf2c140fd",
+    "reconciledAt": "2026-11-17T14:23:24.068Z"
   },
   "packages/channel-yuanbao/README.md": {
-    "hash": "450fa75be8759a7c87ebaa4a024f3c461c7ac3417d93db73e39a40d4c632eff0",
-    "reconciledAt": "2026-11-17T11:46:58.158Z"
+    "hash": "32cb84e985783de7268f441e0ec503d478e7bac0ab5587d53c81b53a8b1c8170",
+    "reconciledAt": "2026-11-17T14:23:24.193Z"
   },
   "README.md": {
     "hash": "25e070be5386052f739fda8cc4571dabf4fe41ffe7faee0766772122876c2a7e",
