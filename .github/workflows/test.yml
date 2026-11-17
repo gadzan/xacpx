@@ -419,3 +419,26 @@ jobs:
       # `--agent` cannot take), legacy record backfill, and index repair.
       - name: acpx compat smoke (Windows)
         run: bun run test:compat:acpx
+
+  # Doc gates: pure Node, no dependencies, no build. Fails when a docs source
+  # of truth changed without its VitePress site page being reconciled, when a
+  # new docs page ships without a zh translation (or an explicit exemption),
+  # or when the retired `weacpx` brand leaks outside legacy/compat context.
+  docs:
+    name: Docs gates (site drift + i18n + brand)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Docs site drift gate
+        run: node ./scripts/sync-docs-site.mjs check
+
+      - name: Docs i18n + brand gate
+        run: node ./scripts/check-doc-i18n.mjs

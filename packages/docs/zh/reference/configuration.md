@@ -12,14 +12,15 @@
 | 运行时日志 | `~/.xacpx/runtime/app.log` | 应用日志 |
 | 性能日志 | `~/.xacpx/runtime/perf.log` | 性能调试日志（启用后生效） |
 
-环境变量覆盖：
+环境变量覆盖——规范前缀为 `XACPX_`：所有读取方优先取 `XACPX_<后缀>`，并回退到旧前缀 `WEACPX_<后缀>`：
 
 | 变量 | 说明 |
 |------|------|
-| `WEACPX_CONFIG` | 覆盖配置文件路径（默认：`~/.xacpx/config.json`） |
-| `WEACPX_STATE` | 覆盖状态文件路径（默认：`~/.xacpx/state.json`） |
-| `WEACPX_WEIXIN_SDK` | 强制指定 `weixin-agent-sdk` 入口文件路径 |
-| `WEACPX_ILINK_APP_ID` | 微信频道出站请求中发送的 `iLink-App-Id` 请求头；省略则不发送该头（向后兼容） |
+| `XACPX_CONFIG`（旧 `WEACPX_CONFIG`） | 覆盖配置文件路径（默认：`~/.xacpx/config.json`） |
+| `XACPX_STATE`（旧 `WEACPX_STATE`） | 覆盖状态文件路径（默认：`~/.xacpx/state.json`） |
+| `XACPX_ILINK_APP_ID`（旧 `WEACPX_ILINK_APP_ID`） | 微信频道出站请求中发送的 `iLink-App-Id` 请求头；省略则不发送该头（向后兼容） |
+
+不存在 `WEACPX_WEIXIN_SDK` 覆盖项——`weixin-agent-sdk` 入口由依赖解析，而非环境变量。
 
 ## 顶层结构
 
@@ -77,12 +78,13 @@
 
 ### `acpx` 二进制文件解析顺序
 
-未设置 `transport.command` 时，xacpx 按以下顺序查找 `acpx`：
+解析顺序（优先级从高到低）：
 
-1. `node_modules/.bin/acpx`（项目内置）
-2. shell `PATH` 中的 `acpx`
+1. `transport.command`——显式覆盖，直接获胜。
+2. **内置 `acpx` 依赖**——xacpx 自身 `node_modules/acpx`，精确锁版（当前 `0.22.0`，无 caret）。
+3. shell `PATH` 中的 `acpx`——没有内置依赖时的回退。
 
-显式设置 `transport.command` 将完全覆盖此查找逻辑。
+显式设置 `transport.command` 会完全跳过第 2、3 级。
 
 ### 减少冷启动（`queueOwnerTtlSeconds`）
 
@@ -102,15 +104,15 @@
 此注入不会修改 `.acpxrc.json`、`~/.acpx/config.json` 或替换 `acpx` 主目录，因此已有的会话、流式日志和索引映射均不受影响。
 
 注入命令解析顺序：
-1. 环境变量 `WEACPX_CLI_COMMAND`
-2. `WEACPX_DAEMON_ARG0` + 当前 Node 可执行文件
+1. 环境变量 `XACPX_CLI_COMMAND`（仍兼容旧名 `WEACPX_CLI_COMMAND`）
+2. `XACPX_DAEMON_ARG0` + 当前 Node 可执行文件（回退旧名 `WEACPX_DAEMON_ARG0`）
 3. `process.argv[1]` + 当前 Node 可执行文件
 4. `xacpx`
 
-若 xacpx 不是通过标准 CLI 或守护进程方式启动，请显式设置 `WEACPX_CLI_COMMAND`：
+若 xacpx 不是通过标准 CLI 或守护进程方式启动，请显式设置 `XACPX_CLI_COMMAND`：
 
 ```bash
-WEACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
+XACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
 ```
 
 ## 代理
@@ -141,6 +143,7 @@ WEACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
 | `kilocode` | `"kilocode"` |
 | `kimi` | `"kimi"` |
 | `kiro` | `"kiro"` |
+| `mcode` | `"mcode"` |
 | `mux` | `"mux"` |
 | `omp` | `"omp"` |
 | `opencode` | `"opencode"` |

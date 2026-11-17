@@ -177,3 +177,12 @@ dot directory.
 - Links must use repo-relative paths, never machine-specific absolute paths.
 - When adding/refactoring a subsystem: first update the corresponding `docs/*.md`, then add a navigation entry here.
 - Keep this file short; details exceeding one screen should migrate to `docs/` or `docs/code-wiki.md`.
+
+## Docs gates (CI-enforced)
+
+`docs/*.md` is the source of truth; `packages/docs/` is an editorially independent VitePress site, and `docs/zh/` holds translations. Two pure-Node gates run in CI (`docs` job of `test.yml`, plus `docs.yml` before deploy):
+
+- `node ./scripts/sync-docs-site.mjs check` — fails when a mapped source (`packages/docs/sync-manifest.json`) changed since its site page was last reconciled. After updating a site page run `node ./scripts/sync-docs-site.mjs reconcile` (or `npm run docs:reconcile`); `--source <glob>` / `--all` scope it. New `docs/<name>.md` pages must be registered in the manifest.
+- `node ./scripts/check-doc-i18n.mjs` — fails on a missing zh translation (unless listed in `ZH_EXEMPT` inside the script), and on `weacpx` brand usage outside legacy/compat context. Stale translations warn only; `--strict` fails.
+
+Editing a mapped docs page without touching the site is a CI failure by design: either port the change or reconcile with a no-impact note in the commit/PR.

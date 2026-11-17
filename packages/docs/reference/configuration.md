@@ -12,14 +12,15 @@
 | Runtime logs | `~/.xacpx/runtime/app.log` | Application log |
 | Performance log | `~/.xacpx/runtime/perf.log` | Performance debug log (when enabled) |
 
-Environment variable overrides:
+Environment variable overrides — the canonical prefix is `XACPX_`; every reader prefers `XACPX_<SUFFIX>` and falls back to the legacy `WEACPX_<SUFFIX>`:
 
 | Variable | Description |
 |----------|-------------|
-| `WEACPX_CONFIG` | Override the config file path (default: `~/.xacpx/config.json`) |
-| `WEACPX_STATE` | Override the state file path (default: `~/.xacpx/state.json`) |
-| `WEACPX_WEIXIN_SDK` | Force a specific `weixin-agent-sdk` entry file path |
-| `WEACPX_ILINK_APP_ID` | `iLink-App-Id` header sent with WeChat channel outbound requests; omit to suppress the header (backward-compatible) |
+| `XACPX_CONFIG` (legacy `WEACPX_CONFIG`) | Override the config file path (default: `~/.xacpx/config.json`) |
+| `XACPX_STATE` (legacy `WEACPX_STATE`) | Override the state file path (default: `~/.xacpx/state.json`) |
+| `XACPX_ILINK_APP_ID` (legacy `WEACPX_ILINK_APP_ID`) | `iLink-App-Id` header sent with WeChat channel outbound requests; omit to suppress the header (backward-compatible) |
+
+There is no `WEACPX_WEIXIN_SDK` override — the `weixin-agent-sdk` entry is resolved from the dependency, not from an env var.
 
 ## Top-level schema
 
@@ -77,12 +78,13 @@ Controls how xacpx communicates with the `acpx` backend.
 
 ### `acpx` binary resolution order
 
-When `transport.command` is not set, xacpx looks for `acpx` in this order:
+Resolution order (highest first):
 
-1. `node_modules/.bin/acpx` (bundled in the project)
-2. `acpx` on the shell `PATH`
+1. `transport.command` — the explicit override wins outright.
+2. The **bundled `acpx` dependency** — xacpx's own `node_modules/acpx`, pinned to an exact version (currently `0.22.0`; no caret).
+3. `acpx` on the shell `PATH` — the fallback when no bundled dependency exists.
 
-Setting `transport.command` explicitly overrides this lookup entirely.
+Setting `transport.command` explicitly skips tiers 2 and 3 entirely.
 
 ### Reducing cold starts (`queueOwnerTtlSeconds`)
 
@@ -102,15 +104,15 @@ Before sending a prompt to an `acpx` session, xacpx starts the `acpx` queue owne
 This injection does not modify `.acpxrc.json`, `~/.acpx/config.json`, or replace the `acpx` home directory, so existing sessions, stream logs, and index mappings are unaffected.
 
 Injection command resolution order:
-1. `WEACPX_CLI_COMMAND` environment variable
-2. `WEACPX_DAEMON_ARG0` + current Node executable
+1. `XACPX_CLI_COMMAND` environment variable (legacy `WEACPX_CLI_COMMAND` still honored)
+2. `XACPX_DAEMON_ARG0` + current Node executable (legacy `WEACPX_DAEMON_ARG0` fallback)
 3. `process.argv[1]` + current Node executable
 4. `xacpx`
 
-If xacpx is not launched via the standard CLI or daemon, set `WEACPX_CLI_COMMAND` explicitly:
+If xacpx is not launched via the standard CLI or daemon, set `XACPX_CLI_COMMAND` explicitly:
 
 ```bash
-WEACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
+XACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
 ```
 
 ## Agents
@@ -141,6 +143,7 @@ Built-in templates (use `driver` only; let `acpx` resolve the alias):
 | `kilocode` | `"kilocode"` |
 | `kimi` | `"kimi"` |
 | `kiro` | `"kiro"` |
+| `mcode` | `"mcode"` |
 | `mux` | `"mux"` |
 | `omp` | `"omp"` |
 | `opencode` | `"opencode"` |

@@ -1,0 +1,74 @@
+{
+  "docs/channel-management.md": {
+    "hash": "0699ffa24ac0f2bb36af9ec865cf4f5dfd90c5cac92788c24bbf203c3bbb7835",
+    "reconciledAt": "2026-11-17T11:46:58.154Z"
+  },
+  "docs/cli-reference.md": {
+    "hash": "03ff25fe663453f79df082a133683e1ed72dfc3ff416a2daafabafa104244de2",
+    "reconciledAt": "2026-11-17T11:46:58.147Z"
+  },
+  "docs/code-wiki.md": {
+    "hash": "68940c71ea4941c6057dc28a2e4eba01c0bf11755ae9480dd3de878d992279c2",
+    "reconciledAt": "2026-11-17T11:46:58.156Z"
+  },
+  "docs/commands-module.md": {
+    "hash": "051bc7fd15002ae09275eba870074bfe84aa4da75cf7c70d8a75a99dc28664a9",
+    "reconciledAt": "2026-11-17T11:46:58.156Z"
+  },
+  "docs/commands.md": {
+    "hash": "8d9575bc5c8292bfa7b5485a2df1bf3639af328b79a9e62115102b87409db72b",
+    "reconciledAt": "2026-11-17T11:46:58.151Z"
+  },
+  "docs/config-command.md": {
+    "hash": "de7dedfe4a789b0a4ed39e5b92d30c3786534a416841e1ae5f26197da5f12845",
+    "reconciledAt": "2026-11-17T11:46:58.152Z"
+  },
+  "docs/config-reference.md": {
+    "hash": "28f9b086bc96654a20150ba9ca2573121e2bcb1c0ba03922cd6b930a25fb7726",
+    "reconciledAt": "2026-11-17T11:46:58.151Z"
+  },
+  "docs/daemon-module.md": {
+    "hash": "e9759fd926222f74810826d52d73a4b2639db4a20f186e33e09c8c9394c3693b",
+    "reconciledAt": "2026-11-17T11:46:58.156Z"
+  },
+  "docs/developments.md": {
+    "hash": "534d1fd265bb65b05c71cedc3bd08c968f156eb815cd2d48482ee6985fbff7c2",
+    "reconciledAt": "2026-11-17T12:52:54.165Z"
+  },
+  "docs/external-mcp.md": {
+    "hash": "0a29553ae6b20d6239ac517f848112ef4f147beb6051e5a252180dbef2a635c2",
+    "reconciledAt": "2026-11-17T11:46:58.152Z"
+  },
+  "docs/later-command.md": {
+    "hash": "20f4a1c434f9b31095965b9bf042fbdc9655fb5934ffb3b30d99d5a1620131e2",
+    "reconciledAt": "2026-11-17T11:46:58.157Z"
+  },
+  "docs/native-sessions.md": {
+    "hash": "8e5f55366f3d054f4f13896b84547918765992316744f45beec79fe12c9e49b2",
+    "reconciledAt": "2026-11-17T11:46:58.154Z"
+  },
+  "docs/plugin-development.md": {
+    "hash": "60528d0eeee0a6177ce2903a7c1d5fa1cc7a9e547a13d224f8104255c5bc8838",
+    "reconciledAt": "2026-11-17T11:46:58.153Z"
+  },
+  "docs/testing.md": {
+    "hash": "15fd33bf47f78fc3754e4affa1278c8000c8ccfcdd3e2adfe648b20fac318ab3",
+    "reconciledAt": "2026-11-17T11:46:58.154Z"
+  },
+  "docs/xacpx-group-usage-guide.md": {
+    "hash": "f11974a5ecef52535722da63f6aa73141cfc5863b42e91561ac077a9dcf83aba",
+    "reconciledAt": "2026-11-17T11:46:58.158Z"
+  },
+  "packages/channel-discord/README.md": {
+    "hash": "441dff33eef8d965babfa33a9a493529c5d7ec0ee219c3c2ecc6d0198319e92a",
+    "reconciledAt": "2026-11-17T11:46:58.159Z"
+  },
+  "packages/channel-feishu/README.md": {
+    "hash": "bb30c708c14e78c11d91f7ed86c9f9e87041d4338c0c769e85fb0d4283911278",
+    "reconciledAt": "2026-11-17T11:46:58.158Z"
+  },
+  "packages/channel-yuanbao/README.md": {
+    "hash": "450fa75be8759a7c87ebaa4a024f3c461c7ac3417d93db73e39a40d4c632eff0",
+    "reconciledAt": "2026-11-17T11:46:58.158Z"
+  }
+}

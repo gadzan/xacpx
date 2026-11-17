@@ -47,11 +47,15 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 
 | Script | Purpose |
 | --- | --- |
-| `bun run build` | Main package: bundle `dist/cli.js`, `dist/bridge/bridge-main.js`, `dist/plugin-api.js`; emit `dist/plugin-api.d.ts` via `tsc -p tsconfig.plugin-api.json` |
+| `bun run build` | Main package: bundle `dist/cli.js`, `dist/bridge/bridge-main.js`, `dist/bridge/engine/runtime/runtime-worker-main.js`, the adapter guards (`dist/adapters/hermes-acp-shim.js`, `acp-output-guard-main.js`, `acp-read-only-guard-main.js`), `dist/conversations/default-router-main.js` and `dist/plugin-api.js`; emit `dist/plugin-api.d.ts` via `tsc -p tsconfig.plugin-api.json` |
 | `bun run build:plugin-api` | Refresh `dist/plugin-api.d.ts` only (use when changing public types) |
 | `bun run build:channel-feishu` | Main package + Feishu plugin |
 | `bun run build:channel-yuanbao` | Main package + Yuanbao plugin |
-| `bun run build:packages` | Main package + all `packages/*` |
+| `bun run build:channel-discord` | Main package + Discord plugin |
+| `bun run build:relay-protocol` | Wire protocol package (also a dependency of `build:plugin-api`) |
+| `bun run build:relay` | Relay hub; runs `build:relay-web` first and `bundle:relay-web` last, so the dashboard ships inside the hub package |
+| `bun run build:channel-relay` | Main package + relay connector plugin |
+| `bun run build:packages` | Main package + all of the above packages |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs` (run before every publish) |
 | `bun run dev` | Run main package source directly (no build needed) |
 | `bun run dry-run -- ...` | Dry-run entry point (no IM connection) |
@@ -61,6 +65,8 @@ Build notes:
 - `bun build --target node --external node-pty` — `node-pty` is not bundled; resolved from `node_modules` at runtime. `packages/*` similarly mark `xacpx` as external.
 - The only stable public API export is `xacpx/plugin-api`. Other paths (`xacpx/dist/*`, `xacpx/src/*`) are internal and may change at any time.
 - Plugin packages use `tsc -p packages/<name>/tsconfig.json` to emit `.d.ts` files separately, because `bun build` does not currently emit declaration files.
+- `packages/relay-web` is `private: true` and never published on its own: `bun run build:relay` copies its `dist/` into `packages/relay/dist/relay-web`, and `verify:publish` fails when the tarball lacks `dist/relay-web/index.html`.
+- `platform-packages/*` (the `@ganglion/xacpx-rmux-bridge-*` platform binaries) sit outside the root workspaces and are packed by `scripts/pack-rmux-bridge-platform.mjs`, not by `build:packages`.
 
 ### Three local run modes
 
@@ -107,18 +113,31 @@ Testing conventions:
 ```
 xacpx/
 ├── src/                # Main package source
-├── packages/           # First-party channel plugins
+├── packages/           # Bun workspaces: first-party plugins + relay stack + docs site
 │   ├── channel-feishu/
-│   └── channel-yuanbao/
+│   ├── channel-yuanbao/
+│   ├── channel-discord/
+│   ├── channel-relay/  # relay hub connector plugin
+│   ├── relay/          # relay hub (bin: xacpx-relay; bundles relay-web)
+│   ├── relay-protocol/ # wire protocol + DTOs (zero deps)
+│   ├── relay-web/      # dashboard SPA (private; bundled into relay)
+│   └── docs/           # VitePress docs site (this site)
+├── platform-packages/  # @ganglion/xacpx-rmux-bridge-* (NOT in root workspaces)
+├── weacpx-compat/      # deprecated shim package (forwards weacpx/plugin-api)
 ├── tests/
 │   ├── unit/           # Default unit tests
 │   ├── smoke/          # Real acpx / real account tests
+│   ├── compat/         # acpx compatibility smoke (real binary)
+│   ├── integration/    # cross-module tests
 │   ├── helpers/        # Shared fixtures and mocks
 │   └── fixtures/       # Static test data
 ├── docs/               # User docs, design documents, plans
-│   └── superpowers/    # plans/ and specs/
-├── packages/docs/      # VitePress docs site
-├── scripts/            # Test runner, publish preflight
+│   ├── agents/         # issue tracker / triage labels / domain / skills
+│   ├── design/         # Active design docs
+│   ├── research/       # Benchmarks and research notes
+│   ├── superpowers/    # plans/ and specs/
+│   └── zh/             # Chinese translations of docs/*.md
+├── scripts/            # Test runner, release automation, publish preflight
 ├── package.json        # npm workspaces root
 ├── bun.lock
 ├── tsconfig.json
@@ -178,13 +197,12 @@ Plugin package management (inside `~/.xacpx/plugins/`) uses automatic detection:
 
 ### Plugin home resolution
 
-1. `WEACPX_PLUGIN_HOME` environment variable.
+1. `XACPX_PLUGIN_HOME` environment variable (the legacy `WEACPX_PLUGIN_HOME` name is still honored as a fallback).
 2. Default: `~/.xacpx/plugins/` (isolated `package.json` + `node_modules`; separate from global or project `node_modules`).
 
 ### WeChat SDK resolution
 
-1. `WEACPX_WEIXIN_SDK` environment variable.
-2. Installed package `weixin-agent-sdk`.
+`src/weixin-sdk.ts:loadWeixinSdk` dynamically imports the in-repo implementation under `src/weixin/` (re-exported through `src/weixin/index.ts`). There is no env-var override and no `weixin-agent-sdk` package resolution: the WeChat runtime is vendored in this repository.
 
 ## Release and publishing notes
 
@@ -194,7 +212,7 @@ bun run verify:publish      # build:packages + scripts/verify-publish.mjs
 
 When releasing:
 - Bump `version` in `package.json`; if first-party plugins changed, bump `packages/*/package.json` too.
-- Add release notes to `docs/releases/`.
+- Write release notes into the root `CHANGELOG.md` — `node ./scripts/release.mjs notes` drafts the entry from commit subjects and `apply` splices it in.
 - Create a git tag.
 
 Publish commands:
