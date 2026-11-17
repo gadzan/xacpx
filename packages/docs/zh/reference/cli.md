@@ -167,7 +167,7 @@ xacpx mcp-stdio --coordinator-session <session> --source-handle <handle> --works
 
 ## Relay hub — `xacpx-relay`
 
-[自托管 Relay Hub](/zh/guide/relay-self-hosting) 用的**独立**命令（不属于 `xacpx` CLI）。在 relay 各包发布到 npm 之前，从仓库 checkout 用 `node packages/relay/dist/cli.js <命令>` 调用。
+[自托管 Relay Hub](/zh/guide/relay-self-hosting) 用的**独立**命令（不属于 `xacpx` CLI）。用 `npm i -g @ganglion/xacpx-relay` 安装——看板（`@ganglion/xacpx-relay-web`）已内嵌在该包中，无需单独安装或构建。
 
 ```bash
 xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
@@ -177,6 +177,8 @@ xacpx-relay add invite [--label <note>] [--ttl <30m|12h|7d>] [--url <hub-base-ur
 xacpx-relay ls [--db <path>]
 xacpx-relay rm token <value-or-id> [--db <path>]
 xacpx-relay rm invite <code-or-id> [--db <path>]
+xacpx-relay push-keys generate
+xacpx-relay update [--check]
 ```
 
 | 命令 | 说明 |
@@ -187,6 +189,8 @@ xacpx-relay rm invite <code-or-id> [--db <path>]
 | `ls` | 列出所有令牌（短 id、标签、创建时间、已连接实例数）及未用/已用邀请码。 |
 | `rm token <value-or-id>` | 删除该令牌对应的用户（级联删除所有关联数据）。 |
 | `rm invite <code-or-id>` | 删除邀请码（不影响已兑换出的账号）。 |
+| `push-keys generate` | 打印用于 Web Push 的 VAPID 密钥对。经 `XACPX_RELAY_VAPID_SUBJECT` / `XACPX_RELAY_VAPID_PUBLIC_KEY` / `XACPX_RELAY_VAPID_PRIVATE_KEY` 或 `start` 的 `--vapid-*` 参数注入；未配置则推送禁用（不影响 WS 通道）。 |
+| `update [--check]` | 自更新 hub 包（`npm i -g @ganglion/xacpx-relay@latest`）。`--check` 只比对当前版本与 npm 最新版并打印结果。更新后需自行重启 hub 进程。 |
 
 **示例——生成令牌：**
 
