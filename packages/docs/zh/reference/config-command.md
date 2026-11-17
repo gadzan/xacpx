@@ -60,6 +60,7 @@
 
 - `channel.type`（旧版单频道配置；多频道场景请使用 `xacpx channel ...`）
 - `channels[]`（多频道运行时配置；建议使用 `xacpx channel ...` 管理）
+- `wechat.replyMode`（已废弃别名；写入会映射到 `channel.replyMode`，接受值 `stream` / `final` / `verbose`）
 
 **动态字段**（命名目标必须已存在）：
 
@@ -110,6 +111,7 @@
 | 路径 | 接受的值 |
 |------|----------|
 | `channel.replyMode` | `stream`、`final`、`verbose` |
+| `channels.<id>.replyMode` | `stream`、`final`、`verbose` |
 | `transport.permissionMode` | `approve-all`、`approve-reads`、`deny-all` |
 | `transport.nonInteractivePermissions` | `deny`、`fail` |
 | `logging.maxFiles` | 正整数 |

@@ -60,6 +60,7 @@ Examples:
 
 - `channel.type` (old single-channel config; for multi-channel use `xacpx channel ...`)
 - `channels[]` (multi-channel runtime config; recommended to manage with `xacpx channel ...`)
+- `wechat.replyMode` (deprecated alias; writes are mapped to `channel.replyMode`, accepted values `stream` / `final` / `verbose`)
 
 **Dynamic fields** (the named target must already exist):
 
@@ -110,6 +111,7 @@ Each path validates its value against the expected type:
 | Path | Accepted values |
 |------|----------------|
 | `channel.replyMode` | `stream`, `final`, `verbose` |
+| `channels.<id>.replyMode` | `stream`, `final`, `verbose` |
 | `transport.permissionMode` | `approve-all`, `approve-reads`, `deny-all` |
 | `transport.nonInteractivePermissions` | `deny`, `fail` |
 | `logging.maxFiles` | Positive integer |

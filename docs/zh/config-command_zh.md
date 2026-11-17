@@ -67,6 +67,7 @@
 
 - `channel.type`（旧单频道配置；多频道请使用 `xacpx channel ...`）
 - `channels[]`（多频道运行配置；推荐使用 `xacpx channel ...` 管理）
+- `wechat.replyMode`（已废弃别名；写入会映射到 `channel.replyMode`，接受值 `stream` / `final` / `verbose`）
 
 飞书凭据和多频道配置请优先用电脑终端里的频道 CLI 管理，例如 `xacpx channel add feishu`。完整说明见 [`docs/channel-management.md`](./channel-management_zh.md)。
 

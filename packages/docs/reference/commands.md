@@ -219,6 +219,8 @@ Currently supported paths:
 
 > **Note:** Performance debug log settings (`logging.perf.*`) are not on the `/config set` whitelist. Edit `~/.xacpx/config.json` directly and restart the daemon for those to take effect.
 
+> **Note:** `channel.type` is disabled — `/config set channel.type` returns an error. The field is kept only as a legacy single-channel configuration for backward compatibility; use `xacpx channel ...` for multi-channel setups.
+
 ```text
 /config set channel.replyMode final
 /config set logging.level debug
