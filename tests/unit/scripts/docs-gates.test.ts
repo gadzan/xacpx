@@ -53,6 +53,44 @@ test("manifest: every mapped site page exists in both locales", () => {
   expect(missing).toEqual([]);
 });
 
+test("manifest: zh mappings point at the zh tree, not the en page", () => {
+  // Regression: the first manifest set site.zh === site.en, so the gate's
+  // existence check read the English page twice and all 20+ zh pages were
+  // silently unprotected.
+  const wrong: string[] = [];
+  for (const entry of MANIFEST.entries) {
+    if (!entry.site?.en || !entry.site?.zh) continue;
+    if (!entry.site.zh.startsWith("zh/")) wrong.push(`${entry.source}: zh → ${entry.site.zh}`);
+    if (entry.site.zh === entry.site.en) wrong.push(`${entry.source}: zh === en`);
+  }
+  expect(wrong).toEqual([]);
+});
+
+test("manifest: every site page is mapped from a source or declared site-only", () => {
+  const mapped = new Set<string>();
+  for (const entry of MANIFEST.entries) {
+    if (!entry.site) continue;
+    for (const locale of ["en", "zh"] as const) if (entry.site[locale]) mapped.add(entry.site[locale]);
+  }
+  const siteOnly = new Set<string>(MANIFEST.siteOnly ?? []);
+  const siteRoot = join(ROOT, "packages/docs");
+  const pages: string[] = [];
+  const walk = (dir: string, rel: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const child = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(join(dir, e.name), child);
+      else if (e.name.endsWith(".md")) pages.push(child);
+    }
+  };
+  for (const section of ["guide", "reference", "development", "plugins", "zh"]) {
+    const dir = join(siteRoot, section);
+    if (existsSync(dir)) walk(dir, section);
+  }
+  if (existsSync(join(siteRoot, "index.md"))) pages.push("index.md");
+  const unmapped = pages.filter((rel) => !mapped.has(rel) && !siteOnly.has(rel));
+  expect(unmapped).toEqual([]);
+});
+
 test("i18n: every translated-by-convention page has a zh counterpart", () => {
   const docs = readdirSync(join(ROOT, "docs"), { withFileTypes: true })
     .filter((e) => e.isFile() && e.name.endsWith(".md"))

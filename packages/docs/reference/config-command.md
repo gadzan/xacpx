@@ -64,6 +64,8 @@ Examples:
 
 > **Performance logging** (`logging.perf.*`) is not on the `/config set` whitelist. To enable it, edit `~/.xacpx/config.json` directly and restart the daemon — the perf tracer is bound at startup.
 
+> **Transport topology** (`transport.type`, `transport.command`) is written to disk but does not hot-apply: the live transport keeps its current values until the daemon restarts (`config.topology_pending_restart` is logged). Every other path above hot-applies. Restart with `xacpx restart`.
+
 > **Feishu credentials and multi-channel config** are best managed from the terminal: `xacpx channel add feishu`.
 
 ## Delete a value

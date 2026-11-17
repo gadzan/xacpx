@@ -8,8 +8,8 @@
     "reconciledAt": "2026-11-17T11:46:58.147Z"
   },
   "docs/code-wiki.md": {
-    "hash": "68940c71ea4941c6057dc28a2e4eba01c0bf11755ae9480dd3de878d992279c2",
-    "reconciledAt": "2026-11-17T11:46:58.156Z"
+    "hash": "f9ddb58311647a63f3002a9c793315a640cd2b38b27a3780e2b08f7d78032f69",
+    "reconciledAt": "2026-11-17T13:53:35.600Z"
   },
   "docs/commands-module.md": {
     "hash": "051bc7fd15002ae09275eba870074bfe84aa4da75cf7c70d8a75a99dc28664a9",
@@ -20,8 +20,8 @@
     "reconciledAt": "2026-11-17T11:46:58.151Z"
   },
   "docs/config-command.md": {
-    "hash": "de7dedfe4a789b0a4ed39e5b92d30c3786534a416841e1ae5f26197da5f12845",
-    "reconciledAt": "2026-11-17T11:46:58.152Z"
+    "hash": "2227d17e74c2c4be02096f849443d1dc47dc941f55a0f9bae18b50a1a8c734f3",
+    "reconciledAt": "2026-11-17T13:53:35.596Z"
   },
   "docs/config-reference.md": {
     "hash": "28f9b086bc96654a20150ba9ca2573121e2bcb1c0ba03922cd6b930a25fb7726",
@@ -70,5 +70,9 @@
   "packages/channel-yuanbao/README.md": {
     "hash": "450fa75be8759a7c87ebaa4a024f3c461c7ac3417d93db73e39a40d4c632eff0",
     "reconciledAt": "2026-11-17T11:46:58.158Z"
+  },
+  "README.md": {
+    "hash": "25e070be5386052f739fda8cc4571dabf4fe41ffe7faee0766772122876c2a7e",
+    "reconciledAt": "2026-11-17T13:52:53.988Z"
   }
 }

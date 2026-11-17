@@ -64,6 +64,8 @@
 
 > **性能日志**（`logging.perf.*`）不在 `/config set` 白名单中。若需启用，请直接编辑 `~/.xacpx/config.json` 并重启守护进程——性能追踪器在启动时绑定。
 
+> **传输拓扑**（`transport.type`、`transport.command`）会写入磁盘但不会热生效：守护进程重启前，运行时传输仍保持当前取值（会记录 `config.topology_pending_restart`）。上面其余路径均为热生效。使用 `xacpx restart` 重启。
+
 > **飞书凭据和多频道配置**最好在终端管理：`xacpx channel add feishu`。
 
 ## 删除某个值

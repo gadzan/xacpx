@@ -9,8 +9,10 @@
  * at the moment its site page(s) were last reconciled.
  *
  *   check       (default, CI) fail when a source changed since its last
- *               reconciliation, when a site page is missing, or when a docs/
- *               top-level page is not registered in the manifest.
+ *               reconciliation, when a site page is missing, when a docs/
+ *               top-level page is not registered in the manifest, or when a
+ *               site page is neither mapped from a source nor declared
+ *               site-only.
  *   reconcile   record the current hash for the given sources. Run AFTER
  *               updating the site page, or to explicitly accept a no-impact
  *               delta. Default targets: stale + unrecorded entries.
@@ -66,6 +68,25 @@ function listDocsTopLevel() {
     .map((e) => `docs/${e.name}`);
 }
 
+/** Every VitePress page (public/ holds assets, not pages). */
+function listSitePages() {
+  const out = [];
+  const walk = (dir, rel) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(path.join(dir, e.name), childRel);
+      else if (e.name.endsWith(".md")) out.push(childRel);
+    }
+  };
+  walk(path.join(SITE_DIR, "guide"), "guide");
+  walk(path.join(SITE_DIR, "reference"), "reference");
+  walk(path.join(SITE_DIR, "development"), "development");
+  walk(path.join(SITE_DIR, "plugins"), "plugins");
+  if (existsSync(path.join(SITE_DIR, "index.md"))) out.push("index.md");
+  walk(path.join(SITE_DIR, "zh"), "zh");
+  return [...new Set(out)].sort();
+}
+
 function parseArgs(argv) {
   const command = argv[0] && !argv[0].startsWith("--") ? argv[0] : "check";
   const rest = command === "check" && argv[0]?.startsWith("--") ? argv : argv.slice(1);
@@ -91,12 +112,12 @@ function main() {
 
   if (command === "status") return status(entries, state);
   if (command === "reconcile") return reconcile(entries, state, { all, sources });
-  if (command === "check") return check(entries, state, manifest.ignore ?? []);
+  if (command === "check") return check(entries, state, manifest.ignore ?? [], manifest.siteOnly ?? []);
   console.error(`unknown command: ${command} (expected check | reconcile | status)`);
   process.exit(2);
 }
 
-function check(entries, state, ignore) {
+function check(entries, state, ignore, siteOnly) {
   const problems = [];
 
   // Coverage: every docs/ top-level page is registered or explicitly ignored.
@@ -105,6 +126,22 @@ function check(entries, state, ignore) {
     if (matchesAny(rel, ignore)) continue;
     if (!registered.has(rel)) {
       problems.push(`unregistered docs source: ${rel} — add it to packages/docs/sync-manifest.json (with site pages or site: null)`);
+    }
+  }
+
+  // Coverage: every site page is mapped from some source or declared site-only.
+  // Without this a new (or renamed) page is invisible to the gate forever.
+  const mappedPages = new Set();
+  for (const entry of entries) {
+    if (!entry.site) continue;
+    for (const locale of ["en", "zh"]) {
+      if (entry.site[locale]) mappedPages.add(entry.site[locale]);
+    }
+  }
+  const siteOnlyPages = new Set(siteOnly);
+  for (const rel of listSitePages()) {
+    if (!mappedPages.has(rel) && !siteOnlyPages.has(rel)) {
+      problems.push(`unmapped site page: packages/docs/${rel} — map a source to it, or list it in sync-manifest.json siteOnly`);
     }
   }
 
