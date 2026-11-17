@@ -78,7 +78,7 @@ function onSelect(value: string): void {
             :disabled="disabled"
             class="items-center justify-between text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
             :class="compact
-              ? 'flex h-6 min-w-0 max-w-full gap-1 rounded-sm bg-surface-2 px-1.5 font-mono text-xs font-medium text-fg'
+              ? 'flex h-6 min-w-0 max-w-full gap-1 rounded-sm bg-surface-2 px-1.5 font-mono text-xs font-medium text-fg [@media(pointer:coarse)]:min-h-11'
               : 'flex h-9 w-full rounded-lg bg-surface-2 pl-3 pr-2 text-sm text-fg'"
             @click="dd.toggle()">
       <span class="min-w-0 truncate" :class="compact ? '' : (selectedLabel ? 'text-fg' : 'text-fg-muted')">

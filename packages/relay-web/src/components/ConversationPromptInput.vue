@@ -459,7 +459,15 @@ function fillDraft(text: string): void {
   caret.value = text.length;
   cmdDismissed.value = true;
 }
-defineExpose({ fillDraft });
+/** Whether the composer currently holds any draft text. The empty Bot page
+ *  hides its starter chips while this is true so a tap can never clobber one. */
+const hasDraft = computed(() => promptText.value.length > 0);
+/** Move keyboard focus into the textarea. Starter chips call this after filling
+ *  so the user can keep typing instead of tapping the field. */
+function focusInput(): void {
+  composer.value?.focus();
+}
+defineExpose({ fillDraft, focusInput, hasDraft });
 </script>
 <template>
   <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">

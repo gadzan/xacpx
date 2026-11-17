@@ -94,9 +94,14 @@ const starterCommands = computed(() => {
     .commandsFor({ instanceId, conversationId: activeConversationId, topicId: activeTopicId, botId: selectedBotId })
     .slice(0, 3);
 });
+/** Chips hide while the composer holds a draft: filling would overwrite it,
+ *  and the draft store is the same one the input writes, so this tracks live. */
+const draftActive = computed(() => composerRef.value?.hasDraft ?? false);
 function fillStarter(name: string): void {
   // Same shape the completion list inserts: slash, name, one trailing space.
+  // Then into the field: the tap means "keep writing".
   composerRef.value?.fillDraft(`/${name} `);
+  composerRef.value?.focusInput();
 }
 const instance = computed(() =>
   directBotsStore.instanceId ? instancesStore.byId(directBotsStore.instanceId) : undefined,
@@ -811,7 +816,7 @@ function handleStopAll(): void {
           <p v-if="bot" data-test="direct-empty-meta" class="text-xs text-fg-muted">
             {{ [bot.role?.trim(), bot.workspace, bot.agent].filter(Boolean).join(" · ") }}
           </p>
-          <div v-if="starterCommands.length" data-test="direct-empty-starters" class="mt-1 flex flex-wrap justify-center gap-2">
+          <div v-if="starterCommands.length && !draftActive" data-test="direct-empty-starters" class="mt-1 flex flex-wrap justify-center gap-2">
             <button
               v-for="command in starterCommands"
               :key="command.name"

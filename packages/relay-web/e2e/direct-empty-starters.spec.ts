@@ -110,6 +110,35 @@ test("empty Bot page offers the agent's advertised commands and a tap only fills
   await starters.getByRole("button", { name: "/review" }).click();
   await expect(input).toHaveValue("/review ");
   expect(prompts).toHaveLength(0);
+  // The filled draft retires the chips, and the tap lands focus in the field.
+  await expect(page.getByTestId("direct-empty-starters")).toHaveCount(0);
+  await expect(input).toBeFocused();
+  // Clearing the draft brings the chips back.
+  await input.fill("");
+  await expect(page.getByTestId("direct-empty-starters")).toBeVisible();
+});
+
+test("starter chips stay hidden while the composer already holds a draft", async ({ page, hub }) => {
+  const prompts = await openEmptyBot(page);
+  const input = page.locator('textarea[role="combobox"]');
+  await input.fill("keep me");
+  hub.send({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-commands",
+      chatKey: "direct:c1:t1",
+      sessionAlias: "s1",
+      conversation: { conversationId: "c1", topicId: "t1", botId: "b1", runId: "", memberTurnId: "" },
+      commands: [
+        { name: "review", description: "Review the working tree" },
+      ],
+    },
+  } as never);
+  await expect(page.getByTestId("direct-empty")).toBeVisible();
+  await expect(page.getByTestId("direct-empty-starters")).toHaveCount(0);
+  expect(prompts).toHaveLength(0);
+  await expect(input).toHaveValue("keep me");
 });
 
 test("with no advertisement the empty page keeps the hint and invents nothing", async ({ page }) => {

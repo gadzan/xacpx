@@ -52,6 +52,10 @@
   5. **手机群聊 06**：元信息行起点在行首、与气泡左缘差 44px（恰为头像列宽）；过程入口是 16px 头像不像可点；发言人按钮 `justify-center` 让名字浮在气泡边右 10px。已分别修：非 own 行 meta 加 `ml-11`（Direct 页按头像可见性取 `lg:ml-11`）；过程入口换 14px `ListTree` 线性图标；名字左对齐到气泡边，44px 触屏盒保留。
   6. **手机设置 08**：「历史保留」三行右对齐长句 → 值只留短结论（`{max} 条消息 · {days} 天`），长句收进 ⓘ；「桌面通知」的两段解释同样收进 ⓘ，该行恢复单行结构（标签＋状态/开关/ⓘ）。英文与中文各加 `retentionShort` / `moreInfo` 两个 key。
 - 已知失败（改代码前就有 / 新引入）：**无**。
+- 视觉复核的第四轮（3 条，未签通过前的收尾）同样在本分支修掉，08 手机浅 / 深按修复后重拍并目检通过：
+  1. **08 截图过期**：拍在补回 `UiButton` 导入之前，「添加实例」是裸文字、「退出」折行。修复后重拍手机浅 / 深 + 桌面 08，按钮与单行已恢复（截图里值为 “—” 是取证 harness 无服务端配置，属正常）。
+  2. **起步 chip 会覆盖已有草稿，且不聚焦输入框**：`DirectBotPane` 新增 `draftActive`（读输入框暴露的 `hasDraft`，同一 draft store，实时跟踪）；有草稿就隐藏 chips；点击 chip 先填入再调 `focusInput()`。`direct-empty-starters.spec.ts` 加到 3 用例（填入后 chips 消失 + 聚焦；清空恢复；先有草稿则 chips 不出现），双 project 6/6 通过。
+  3. **attempt 选择器仍是 24px**：`SelectMenu` compact 触发器（attempt 选择器与分支 picker 共用）加 `[@media(pointer:coarse)]:min-h-11`，桌面保持 h-6。`run-detail-drawer.spec.ts` 新增用例：trace 页带两个 attempt，抽屉头渲染选择器，`expectTouchTarget` 在手机 project 实测通过；`group-components.test.ts` 另 pin 住该类。
 
 ## 截图证据
 

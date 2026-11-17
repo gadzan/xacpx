@@ -2120,6 +2120,9 @@ describe("Group Components", () => {
       // a SelectMenu (no native <select>), so the row is a real button.
       const trigger = card().querySelector('[data-test="group-detail-attempt"]') as HTMLElement;
       expect(trigger).not.toBeNull();
+      // Scheme B touch rule: the compact 24px trigger must still offer a 44px
+      // box on coarse pointers; desktop keeps the dense row.
+      expect(trigger.className).toContain("[@media(pointer:coarse)]:min-h-11");
       trigger.click();
       await flushPromises();
       const option = document.body.querySelector('[data-test="group-detail-attempt-2"]') as HTMLElement;
