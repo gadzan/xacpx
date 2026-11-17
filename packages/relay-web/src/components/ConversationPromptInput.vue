@@ -24,8 +24,9 @@ import { useComposerStore } from "../stores/composer";
 import ComposerAttachments from "./ComposerAttachments.vue";
 import ComposerAttachPicker from "./ComposerAttachPicker.vue";
 import ConversationComposer from "./ConversationComposer.vue";
-import MobileSheet from "./MobileSheet.vue";
-import { useIsMobile } from "../lib/use-dropdown";
+import CompletionList, { type CompletionRow } from "./CompletionList.vue";
+import CompletionMenu from "./CompletionMenu.vue";
+import { useCompletionDismiss, useIsMobile } from "../lib/use-dropdown";
 
 const props = defineProps<{
   disabled?: boolean;
@@ -52,6 +53,9 @@ const composing = ref(false),
   page = ref(0);
 /** Below lg the completion selector is a bottom sheet, not a popover. */
 const isMobile = useIsMobile();
+/** The composer card this menu belongs to; a pointerdown outside it dismisses. */
+const rootEl = ref<HTMLElement | null>(null);
+useCompletionDismiss(rootEl, () => menuOpen.value, () => { cmdDismissed.value = true; });
 const scope = computed(() =>
   JSON.stringify([
     directBotsStore.instanceId,
@@ -163,6 +167,17 @@ const candidates = computed(() =>
 );
 const rows = computed(() =>
   candidates.value.slice(page.value * 8, page.value * 8 + 8),
+);
+
+/** The current page as list rows: one shape for slash commands and mentions. */
+const completionRows = computed<CompletionRow[]>(() =>
+  rows.value.map((row) => ({
+    key: row.key,
+    label: row.label,
+    detail: row.detail,
+    badge: row.kind === "skill" ? t("bot.prompt.skillCompletion") : undefined,
+    testId: "direct-cmd-item",
+  })),
 );
 const more = computed(
   () =>
@@ -437,9 +452,25 @@ function onInput(): void {
   cmdActiveIdx.value = 0;
   page.value = 0;
 }
+/** Put text in the draft without sending it. The empty Bot page's starter chips
+ *  call this: a tap fills the composer so the user can edit or add to it. */
+function fillDraft(text: string): void {
+  promptText.value = text;
+  caret.value = text.length;
+  cmdDismissed.value = true;
+}
+/** Whether the composer currently holds any draft text. The empty Bot page
+ *  hides its starter chips while this is true so a tap can never clobber one. */
+const hasDraft = computed(() => promptText.value.length > 0);
+/** Move keyboard focus into the textarea. Starter chips call this after filling
+ *  so the user can keep typing instead of tapping the field. */
+function focusInput(): void {
+  composer.value?.focus();
+}
+defineExpose({ fillDraft, focusInput, hasDraft });
 </script>
 <template>
-  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+  <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <!-- Disabled bot warning -->
     <div
       v-if="isBotDisabled"
@@ -463,7 +494,7 @@ function onInput(): void {
     <!-- Error Banner & Retry -->
     <div
       v-else-if="directBotsStore.promptError"
-      class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-danger/10 px-3 py-1.5 text-xs text-danger"
+      class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-danger/10 px-3 py-1.5 text-xs text-danger-text"
     >
       <div class="flex items-center gap-2 min-w-0">
         <AlertCircle :size="14" class="shrink-0" />
@@ -525,47 +556,32 @@ function onInput(): void {
         />
       </template>
       <template #menus>
-      <!-- Below lg the selector is a bottom sheet (rows are finger-sized); at lg
-           the inline popover above the composer stays exactly as it was. -->
-      <Teleport v-if="isMobile && menuOpen" to="body">
-        <MobileSheet :title="$t('bot.prompt.completions')" test-id="direct-cmd-sheet" @close="closeSelector">
-          <!-- The textarea keeps DOM focus while its listbox is open (it owns
-               aria-activedescendant), so the sheet must not move focus on mount:
-               this is the sheet's initial-focus target and is not focusable. -->
-          <span data-sheet-initial-focus aria-hidden="true" />
-          <div
-            id="direct-completion-menu"
-            role="listbox"
+      <CompletionMenu
+        :open="menuOpen"
+        :mobile="isMobile"
+        :title="$t('bot.prompt.completions')"
+        sheet-test-id="direct-cmd-sheet"
+        panel-class="max-h-80"
+        @close="closeSelector"
+      >
+        <template #default="{ mobile }">
+          <CompletionList
+            list-id="direct-completion-menu"
             :aria-label="$t('bot.prompt.completions')"
-            data-test="direct-cmd-menu"
-            class="w-full"
+            test-id="direct-cmd-menu"
+            item-test-id="direct-cmd-item"
+            item-id-prefix="direct-completion-"
+            :rows="completionRows"
+            :active-index="cmdActiveIdx"
+            :mobile="mobile"
+            :status-text="$t('bot.prompt.completion' + status)"
+            @pick="pickRow"
           >
-            <button
-              v-for="(row, index) in rows"
-              :id="'direct-completion-' + index"
-              :key="row.key"
-              type="button"
-              role="option"
-              :aria-selected="index === cmdActiveIdx"
-              data-test="direct-cmd-item"
-              class="flex min-h-[46px] w-full items-center gap-2 rounded-sm px-3 text-left text-sm"
-              :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-              @pointerdown.prevent
-              @click="pickRow(index)"
-            >
-              <span v-if="row.kind === 'skill'" class="text-accent">{{
-                $t("bot.prompt.skillCompletion")
-              }}</span>
-              <span class="font-medium text-fg">{{ row.label }}</span
-              ><span class="truncate text-fg-muted">{{ row.detail }}</span>
-            </button>
-            <div v-if="!rows.length" role="status" class="px-3 py-2 text-xs text-fg-muted">
-              {{ $t("bot.prompt.completion" + status) }}
-            </div>
             <button
               v-if="more"
               type="button"
-              class="flex min-h-[46px] w-full items-center px-3 text-left text-xs text-accent"
+              class="text-left text-xs text-accent-text"
+              :class="mobile ? 'flex min-h-[46px] w-full items-center px-3' : 'px-3 py-2'"
               @pointerdown.prevent
               @click="nextPage"
             >
@@ -574,74 +590,16 @@ function onInput(): void {
             <button
               v-if="status === 'error' || status === 'loading' || status === 'unavailable'"
               type="button"
-              class="flex min-h-[46px] w-full items-center px-3 text-left text-xs text-accent"
+              class="text-left text-xs text-accent-text"
+              :class="mobile ? 'flex min-h-[46px] w-full items-center px-3' : 'px-3 py-2'"
               @pointerdown.prevent
               @click="refresh()"
             >
               {{ $t("bot.prompt.retry") }}
             </button>
-          </div>
-        </MobileSheet>
-      </Teleport>
-
-      <!-- Desktop (>= lg): the inline popover. -->
-      <div
-        v-if="!isMobile && menuOpen"
-        id="direct-completion-menu"
-        role="listbox"
-        :aria-label="$t('bot.prompt.completions')"
-        data-test="direct-cmd-menu"
-        class="absolute bottom-full left-0 z-20 mb-2 max-h-80 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
-      >
-          <button
-            v-for="(row, index) in rows"
-            :id="'direct-completion-' + index"
-            :key="row.key"
-            type="button"
-            role="option"
-            :aria-selected="index === cmdActiveIdx"
-            data-test="direct-cmd-item"
-            class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-            :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-            @pointerdown.prevent
-            @click="pickRow(index)"
-          >
-            <span v-if="row.kind === 'skill'" class="text-accent">{{
-              $t("bot.prompt.skillCompletion")
-            }}</span>
-            <span class="font-medium text-fg">{{ row.label }}</span
-            ><span class="truncate text-fg-muted">{{ row.detail }}</span>
-          </button>
-          <div
-            v-if="!rows.length"
-            role="status"
-            class="px-3 py-2 text-xs text-fg-muted"
-          >
-            {{ $t("bot.prompt.completion" + status) }}
-          </div>
-          <button
-            v-if="more"
-            type="button"
-            class="px-3 py-2 text-xs text-accent"
-            @pointerdown.prevent
-            @click="nextPage"
-          >
-            {{ $t("bot.prompt.moreCompletions") }}
-          </button>
-          <button
-            v-if="
-              status === 'error' ||
-              status === 'loading' ||
-              status === 'unavailable'
-            "
-            type="button"
-            class="px-3 py-2 text-xs text-accent"
-            @pointerdown.prevent
-            @click="refresh()"
-          >
-            {{ $t("bot.prompt.retry") }}
-          </button>
-        </div>
+          </CompletionList>
+        </template>
+      </CompletionMenu>
       </template>
     </ConversationComposer>
   </div>

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { BotRemovalPreviewDto, LifecycleOperationDto } from "@ganglion/xacpx-relay-protocol";
 import { pushToast } from "../lib/use-toasts";
+import DialogShell from "./DialogShell.vue";
 
 const props = defineProps<{
   botName: string;
@@ -186,10 +187,14 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-[60] flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="emit('close')">
-    <div role="dialog" aria-modal="true" class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+  <DialogShell
+    panel-class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl"
+    labelledby="removal-title"
+    level="nested"
+    @close="emit('close')"
+  >
       <header class="px-5 py-3.5">
-        <h2 class="text-base font-semibold">{{ t("bot.removal.title", { name: botName }) }}</h2>
+        <h2 id="removal-title" class="text-base font-semibold">{{ t("bot.removal.title", { name: botName }) }}</h2>
       </header>
       <div class="flex-1 space-y-3 overflow-y-auto px-5 py-4 text-sm text-fg-muted-overlay">
         <p>{{ t("bot.removal.body") }}</p>
@@ -238,7 +243,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="freezeFlag('deleteDedicatedWorkspace')" />
           <span>
             {{ t("bot.removal.workspace") }}
-            <code data-test="removal-workspace-path" class="break-all text-[11px] opacity-70">{{ dedicatedWorkspace?.path }}</code>
+            <code data-test="removal-workspace-path" class="break-all text-xs opacity-70">{{ dedicatedWorkspace?.path }}</code>
           </span>
         </label>
         <p v-else-if="dedicatedWorkspace?.inUse && !finished" data-test="removal-workspace-in-use" class="text-xs">
@@ -260,6 +265,5 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           {{ needsRetry ? t("bot.removal.retry") : t("bot.removal.confirm") }}
         </button>
       </footer>
-    </div>
-  </div>
+  </DialogShell>
 </template>

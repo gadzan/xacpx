@@ -1,0 +1,70 @@
+
+  light
+  case                                    ratio    min  result
+  --------------------------------------------------------------
+  body text on canvas                     15.29    4.5  PASS
+  body text on sidebar                    14.61    4.5  PASS
+  body text on raised card                16.83    4.5  PASS
+  muted text on canvas                     5.26    4.5  PASS
+  muted text on sidebar                    5.03    4.5  PASS
+  muted text on raised card                5.79    4.5  PASS
+  blue text on canvas                      5.59    4.5  PASS
+  blue text on sidebar                     5.34    4.5  PASS
+  blue text on raised card                 6.15    4.5  PASS
+  text on accent button                    4.70    4.5  PASS
+  text on accent button (hover)            5.57    4.5  PASS
+  danger text on canvas                    5.48    4.5  PASS
+  danger text on raised card               6.03    4.5  PASS
+  run text on canvas                       4.85    4.5  PASS
+  run text on raised card                  5.33    4.5  PASS
+  warn text on canvas                      4.93    4.5  PASS
+  warn text on raised card                 5.43    4.5  PASS
+  danger text on raised card               4.83    4.5  PASS
+  text on danger button                    4.83    4.5  PASS
+  body text in overlay                    15.17    4.5  PASS
+  muted text in overlay                    5.46    4.5  PASS
+  danger text in overlay                   5.43    4.5  PASS
+  warn text in overlay                     5.55    4.5  PASS
+  run text in overlay                      5.45    4.5  PASS
+  blue text in overlay                     5.54    4.5  PASS
+  body text in header                     14.00    4.5  PASS
+  muted text in header                     4.82    4.5  PASS
+  blue text on accent tint                 4.84    4.5  PASS
+  body text on accent tint                13.26    4.5  PASS
+  muted text on accent tint                4.56    4.5  PASS
+
+  dark
+  case                                    ratio    min  result
+  --------------------------------------------------------------
+  body text on canvas                     17.21    4.5  PASS
+  body text on sidebar                    15.83    4.5  PASS
+  body text on raised card                13.88    4.5  PASS
+  muted text on canvas                     8.48    4.5  PASS
+  muted text on sidebar                    7.79    4.5  PASS
+  muted text on raised card                6.84    4.5  PASS
+  blue text on canvas                      6.62    4.5  PASS
+  blue text on sidebar                     6.09    4.5  PASS
+  blue text on raised card                 5.34    4.5  PASS
+  text on accent button                    6.52    4.5  PASS
+  text on accent button (hover)            7.52    4.5  PASS
+  danger text on canvas                    6.64    4.5  PASS
+  danger text on raised card               5.36    4.5  PASS
+  run text on canvas                       9.27    4.5  PASS
+  run text on raised card                  7.48    4.5  PASS
+  warn text on canvas                      9.12    4.5  PASS
+  warn text on raised card                 7.35    4.5  PASS
+  danger text on raised card               5.36    4.5  PASS
+  text on danger button                    6.50    4.5  PASS
+  body text in overlay                    14.61    4.5  PASS
+  muted text in overlay                    7.19    4.5  PASS
+  danger text in overlay                   6.44    4.5  PASS
+  warn text in overlay                     7.74    4.5  PASS
+  run text in overlay                      7.87    4.5  PASS
+  blue text in overlay                     6.52    4.5  PASS
+  body text in header                     15.31    4.5  PASS
+  muted text in header                     7.54    4.5  PASS
+  blue text on accent tint                 5.28    4.5  PASS
+  body text on accent tint                13.72    4.5  PASS
+  muted text on accent tint                6.75    4.5  PASS
+
+PASS: every pair meets its threshold.

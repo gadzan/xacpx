@@ -813,24 +813,27 @@ onUnmounted(() => {
          sheet that now carries files / tasks / terminal / desktop / the open
          center tabs. Desktop keeps the global header and the chip row untouched. -->
     <div v-if="mobileSessionBar" data-test="mobile-session-bar"
-         class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
+          class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1.5 bg-bg px-2 pt-[env(safe-area-inset-top)] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+              class="glass-control grid h-11 w-11 shrink-0 place-items-center rounded-full text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="navigateBack"><ArrowLeft :size="20" /></button>
-      <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-2">
-        <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
-      </span>
-      <!-- The title is the quick-switch trigger (<lg): tapping it opens the
-           half-screen with recent conversations + this instance's Bots / groups
-           (design mobile.md §6.1). Desktop keeps the sidebar for navigation. -->
+      <!-- The title is the quick-switch trigger (<lg): one glass capsule holding
+           the driver icon and both title lines, the same shape as the Direct and
+           Group bars. Tapping it opens the half-screen with recent conversations
+           + this instance's Bots / groups (design mobile.md §6.1). -->
       <button type="button" data-test="mobile-session-title" :aria-label='$t("quickSwitch.title")'
-              class="flex min-h-[44px] min-w-0 flex-1 flex-col items-start text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="glass-control flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-full py-1 pl-1 pr-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openQuickSwitch">
-        <span class="w-full truncate text-sm font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
-        <span data-test="mobile-session-subtitle" class="w-full truncate text-xs text-fg-muted">{{ sessionSubtitle }}</span>
+        <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-2">
+          <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
+        </span>
+        <span class="flex min-w-0 flex-1 flex-col">
+          <span class="w-full truncate text-xs font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
+          <span data-test="mobile-session-subtitle" class="w-full truncate text-xs text-fg-muted">{{ sessionSubtitle }}</span>
+        </span>
       </button>
       <button type="button" data-test="mobile-more" :aria-label='$t("common.more")'
-              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="glass-control grid h-11 w-11 shrink-0 place-items-center rounded-full text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
     </div>
     <!-- Connection strip sits directly under the mobile bar (only after the connection
@@ -847,7 +850,7 @@ onUnmounted(() => {
            session / bot / group is open it is hidden and ← in the top bar comes back here.
            One InstanceTree instance, no second copy with diverging local state. -->
       <div data-test="column" data-drawer="left"
-           class="flex shrink-0 flex-col bg-surface transition-[width] max-lg:relative max-lg:w-full lg:static"
+           class="flex shrink-0 flex-col bg-surface transition-[width] motion-reduce:transition-none max-lg:relative max-lg:w-full lg:static"
            :class="[
              leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[232px]',
              nothingSelected ? '' : 'max-lg:hidden',
@@ -969,7 +972,7 @@ onUnmounted(() => {
            fixed `w-72` drawer width applies. -->
       <div v-if="showRightColumn"
            data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden bg-surface shadow-float transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
+           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden bg-surface shadow-float transition-transform duration-150 ease-ui motion-reduce:transition-none pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'"
            :style="isDesktop ? { width: rightWidth + 'px' } : undefined">
         <!-- Resize handle: a thin grab strip on the panel's left edge (desktop only).
@@ -984,13 +987,13 @@ onUnmounted(() => {
         <div class="flex h-9 shrink-0 items-center gap-1 px-2.5">
           <button data-test="right-tab-files"
                   class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
-                  :class="rightTab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  :class="rightTab === 'files' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'files'">
             <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
                   class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
-                  :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}
           </button>
@@ -1058,7 +1061,7 @@ onUnmounted(() => {
     <MobileSheet v-if="activeSheet === 'tabs'" :title='$t("mobileBar.openTabs", { n: openTabCount })' test-id="open-tabs-sheet" @close="closeSheet">
       <div v-for="item in tabSheetItems" :key="item.id" data-test="open-tab-row" :data-tab-id="item.id"
            class="flex min-h-12 items-center rounded-lg pr-1"
-           :class="item.active ? 'bg-accent-soft text-accent' : 'text-fg'">
+           :class="item.active ? 'bg-accent-soft text-accent-text' : 'text-fg'">
         <button type="button" class="flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-lg px-3 text-left text-sm"
                 @click="switchTabFromSheet(item.id)">
           <component :is="item.icon" :size="18" class="shrink-0" />

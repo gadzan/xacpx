@@ -53,7 +53,7 @@ watch(() => props.active, (a) => { if (a !== undefined) expanded.value = a; });
       :aria-expanded="expanded"
       aria-controls="plan-list"
       :aria-label="$t('plan.togglePlan')"
-      class="mb-1 flex w-full items-center gap-1.5 text-xs font-semibold uppercase text-fg-muted hover:text-fg transition-colors"
+      class="mb-1 flex w-full items-center gap-1.5 text-xs font-medium text-fg-muted hover:text-fg transition-colors"
       @click="expanded = !expanded"
     >
       <ChevronDown v-if="expanded" :size="12" class="shrink-0" />

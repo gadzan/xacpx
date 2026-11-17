@@ -173,9 +173,12 @@ describe("composer completion selector", () => {
 
     expect(document.querySelector('[data-test="direct-cmd-sheet"]')).toBeNull();
     expect(document.querySelector('[data-test="sheet-grabber"]')).toBeNull();
-    const popover = w.find('[data-test="direct-cmd-menu"]');
-    expect(popover.exists()).toBe(true);
-    expect(popover.classes()).toContain("absolute");
+    // The list is rendered inside the shared popover surface (CompletionMenu).
+    const list = document.querySelector<HTMLElement>('[data-test="direct-cmd-menu"]');
+    expect(list).not.toBeNull();
+    const popover = list!.closest("[data-completion-surface]");
+    expect(popover).not.toBeNull();
+    expect(popover!.className).toContain("absolute");
     const row = w.find('[data-test="direct-cmd-item"]');
     expect(row.classes()).toContain("h-8");
     expect(row.classes()).not.toContain("min-h-[46px]");
@@ -326,7 +329,9 @@ describe("composer completion selector", () => {
     // Each popover is asserted in the state that opens it.
     const glassTokens = ["bg-glass-strong", "backdrop-blur-glass", "backdrop-saturate-glass", "shadow-glass-float"];
     const assertGlass = (testId: string): void => {
-      const popover = document.querySelector<HTMLElement>(`[data-test="${testId}"]`);
+      const list = document.querySelector<HTMLElement>(`[data-test="${testId}"]`);
+      expect(list, testId).not.toBeNull();
+      const popover = list!.closest<HTMLElement>("[data-completion-surface]");
       expect(popover, testId).not.toBeNull();
       const classes = popover!.className.split(/\s+/);
       for (const token of glassTokens) expect(classes, `${testId}: ${token}`).toContain(token);

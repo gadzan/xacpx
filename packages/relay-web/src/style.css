@@ -32,7 +32,10 @@
   --c-run-bright: 40 167 69;    /* #28A745 */
   --c-warn: 154 91 0;           /* #9A5B00 */
   --c-warn-dot: 255 149 0;      /* #FF9500 */
-  --c-danger: 217 45 32;        /* #D92D20 */
+  --c-danger: 217 45 32;        /* #D92D20 — solid fills and graphics only, never body text */
+  /* Danger TEXT. #C4180B passes 4.5 on canvas (5.48) and raised (6.03); #D92D20
+     does not clear canvas (4.39), so prose uses this token instead. */
+  --c-danger-text: 196 24 11;   /* #C4180B */
   --c-on-danger: 255 255 255;   /* text on a filled danger */
   --c-on-warn: 255 255 255;     /* text on a filled warn */
   --c-info: 0 113 227;          /* (= accent) */
@@ -115,7 +118,10 @@
   --c-run-bright: 48 209 88;
   --c-warn: 255 159 10;
   --c-warn-dot: 255 159 10;
-  --c-danger: 255 105 97;       /* #FF6961 */
+  --c-danger: 255 105 97;       /* #FF6961 — solid fills and graphics */
+  /* Danger TEXT. #FF6961 clears 4.5 on all dark surfaces (worst 5.36 on
+     raised); #FF7E76 would also pass but this reuses the solid token. */
+  --c-danger-text: 255 105 97;  /* #FF6961 */
   --c-on-danger: 42 10 8;       /* #2A0A08 */
   --c-on-warn: 11 20 34;        /* #0B1422 */
   --c-info: 64 156 255;
@@ -165,29 +171,39 @@ html, body, #app { height: 100%; }
 html, body { overflow-x: hidden; }
 body { @apply bg-bg text-fg font-sans antialiased; }
 
-/* Glass surfaces. The blur is static — never animated, and never applied to an
-   ancestor that holds a fixed/absolute overlay, because a backdrop-filtered
-   ancestor becomes the containing block for its positioned descendants. */
-.glass {
-  background: var(--glass-bg);
+/* Glass surfaces. The chrome-bar and floating tiers live as Tailwind utilities
+   (bg-glass-strong, backdrop-blur-glass, …) backed by the tokens below — the
+   old .glass-1/.glass-2 class aliases never gained a caller and are gone, so
+   panels keep their utility treatment instead of a second system. The one
+   remaining class recipe is .glass-control for small controls.
+
+   The blur is static — never animated, and never applied to an ancestor that
+   holds a fixed/absolute overlay, because a backdrop-filtered ancestor becomes
+   the containing block for its positioned descendants. */
+/* The small-control recipe: one blur, a top specular sheen,
+   a foreground hairline (6-8% alpha, not --c-border — at 1px that token draws
+   a hard ring) and one wide, low shadow. A round button or an avatar disc over
+   a photo still reads as raised glass. */
+.glass-control {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  box-shadow: inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border);
-}
-.glass-strong {
-  background: var(--glass-bg-strong);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  box-shadow: inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border), var(--glass-shadow);
+  background:
+    var(--glass-sheen),
+    var(--glass-control-bg);
+  border: 1px solid var(--glass-control-border);
+  box-shadow: var(--glass-control-shadow);
 }
 
 /* Glass tokens. Only the surfaces listed above get these. */
 :root {
-  --glass-bg: rgba(255, 255, 255, .72);         /* conversation header, mobile top bar */
-  --glass-bg-strong: rgba(255, 255, 255, .84);  /* composer, menus, tooltips, toasts, dialogs */
+  --glass-bg: rgba(255, 255, 255, .72);          /* chrome-bar utilities */
+  --glass-bg-strong: rgba(255, 255, 255, .84);   /* floating-surface utilities */
+  --glass-control-bg: rgba(255, 255, 255, .88);  /* glass-control: small controls */
+  --glass-control-border: rgb(var(--c-fg) / .08);
+  --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .55), rgb(255 255 255 / 0) 62%);
+  --glass-control-shadow: 0 1px 2px rgb(0 0 0 / .04), 0 10px 24px -12px rgb(0 0 0 / .20);
   --glass-border: var(--hairline);
   --glass-highlight: rgba(255, 255, 255, .90);
-  --glass-hover: var(--fill-hover);
   --glass-blur: 20px;
   --glass-saturate: 1.6;
   --glass-shadow: var(--shadow-pop);
@@ -196,23 +212,40 @@ body { @apply bg-bg text-fg font-sans antialiased; }
 .dark {
   --glass-bg: rgba(37, 38, 42, .72);
   --glass-bg-strong: rgba(37, 38, 42, .84);
+  --glass-control-bg: rgba(37, 38, 42, .88);
+  --glass-control-border: rgb(255 255 255 / .06);
+  --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .07), rgb(255 255 255 / 0) 62%);
+  --glass-control-shadow: 0 1px 2px rgb(0 0 0 / .32), 0 10px 24px -12px rgb(0 0 0 / .55);
   --glass-border: var(--hairline);
   --glass-highlight: rgba(255, 255, 255, .07);
-  --glass-hover: var(--fill-hover);
   --glass-blur: 20px;
   --glass-saturate: 1.6;
   --glass-shadow: var(--shadow-pop);
   --scrim: rgba(0, 0, 0, .45);
 }
 
-/* Without backdrop-filter the glass has nothing to blur, so it falls back to a
-   solid raised surface. Same for users who ask for reduced transparency. */
+/* Without backdrop-filter the glass has nothing to blur, so the utilities
+   fall back to a solid raised surface. Same for users who ask for reduced
+   transparency: the recipe stays countable, it just stops being see-through. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  :root, .dark { --glass-bg: rgb(var(--c-raised)); --glass-bg-strong: rgb(var(--c-raised)); }
+  :root, .dark {
+    --glass-bg: rgb(var(--c-raised));
+    --glass-bg-strong: rgb(var(--c-raised));
+    --glass-control-bg: rgb(var(--c-raised));
+    --glass-sheen: none;
+  }
 }
 @media (prefers-reduced-transparency: reduce) {
-  :root, .dark { --glass-bg: rgb(var(--c-raised)); --glass-bg-strong: rgb(var(--c-raised)); }
-  .glass, .glass-strong { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  :root, .dark {
+    --glass-bg: rgb(var(--c-raised));
+    --glass-bg-strong: rgb(var(--c-raised));
+    --glass-control-bg: rgb(var(--c-raised));
+    --glass-sheen: none;
+  }
+  .glass-control {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 
 /* Branded focus ring on interactive elements (gap + accent halo).
@@ -322,6 +355,15 @@ select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
   .stream-md.caret > :last-child::after { animation: none !important; }
 
   .stream-md.caret:has(> hr:last-child)::after { animation: none !important; }
+}
+
+/* Code is read, not typeset: JetBrains Mono ligatures turn `!==` into a single
+   glyph that reads as `≠`, and `->`/`>=`/`|>` into shapes that look like
+   different operators. Every code surface (markdown fences and inline code,
+   the diff rows, tool output, the CodeMirror editor) is mono, so one rule
+   covers them and no component has to remember. */
+code, pre, .font-mono, .cm-scroller, .cm-content {
+  font-variant-ligatures: none;
 }
 
 /* Transient flash when jumping to a line (content-search hit). The decoration is removed

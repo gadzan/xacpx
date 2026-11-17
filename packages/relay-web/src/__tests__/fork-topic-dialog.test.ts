@@ -146,9 +146,11 @@ describe("ForkTopicDialog", () => {
     wrapper.unmount();
   });
 
-  it("sits above the run-detail drawer and sheet layers", () => {
+  it("takes the top rung, above the run-detail drawer and sheet layers", () => {
     const { wrapper } = mountDialog();
-    expect(wrapper.element.className).toContain("z-[70]");
+    // The overlay, not the panel: DialogShell owns the scrim and the rung.
+    const overlay = wrapper.find("[data-test='fork-topic-dialog']").element.parentElement;
+    expect(overlay?.className).toContain("z-dialog-top");
     wrapper.unmount();
   });
 

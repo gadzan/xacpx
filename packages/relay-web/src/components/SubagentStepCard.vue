@@ -124,10 +124,10 @@ onBeforeUnmount(() => {
             class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-sm text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
             :aria-expanded="open" @click="onHeaderClick">
       <Bot :size="13" class="shrink-0 text-accent" />
-      <span class="shrink-0 font-medium text-xs text-accent">{{ $t("tools.subagent") }}</span>
+      <span class="shrink-0 font-medium text-xs text-accent-text">{{ $t("tools.subagent") }}</span>
       <span class="min-w-0 truncate font-mono text-xs text-fg-muted group-hover:text-fg">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
-        <span class="font-mono text-xs text-fg-muted/70">
+        <span class="font-mono text-xs text-fg-muted">
           <template v-if="hasTrace">{{ $t("tools.traceCount", { count: children.length }) }}</template>
           <template v-else-if="status === 'running'">{{ $t("tools.running") }} · {{ elapsedLabel }}</template>
           <template v-else>{{ status === "error" ? $t("tools.failed") : $t("tools.finished") }}</template>
@@ -140,13 +140,13 @@ onBeforeUnmount(() => {
       </span>
     </button>
 
-    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-border/40 pl-3 py-0.5 text-xs text-fg-muted/80">
+    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-hairline pl-3 py-0.5 text-xs text-fg-muted">
       <Transition v-if="hasTrace" name="activity-slide" mode="out-in">
         <div v-if="currentActivity" :key="currentActivity.toolCallId" class="flex min-w-0 items-center gap-2">
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="currentActivity.status === 'running' ? 'bg-accent' : currentActivity.status === 'error' ? 'bg-danger' : 'bg-run'" />
           <component :is="KIND_ICON[currentActivity.kind]" :size="12" class="shrink-0 text-fg-muted" />
           <span class="truncate font-mono text-xs text-fg-muted" :title="currentActivity.title" :dir="isPathTitle(currentActivity) ? 'rtl' : undefined">{{ currentActivity.title }}</span>
-          <span v-if="activity.length > 1" class="ml-auto shrink-0 font-mono text-xs tabular-nums text-fg-muted/70">
+          <span v-if="activity.length > 1" class="ml-auto shrink-0 font-mono text-xs tabular-nums text-fg-muted">
             {{ activityIndex % activity.length + 1 }}/{{ activity.length }}
           </span>
         </div>
@@ -162,14 +162,14 @@ onBeforeUnmount(() => {
         <Check v-else :size="12" class="shrink-0 text-run" />
         <span v-if="detailSnippet" data-test="subagent-detail-snippet" class="truncate font-mono">{{ detailSnippet }}</span>
         <span v-else>{{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}</span>
-        <span v-if="status === 'running'" class="ml-auto shrink-0 tabular-nums text-fg-muted/70">
+        <span v-if="status === 'running'" class="ml-auto shrink-0 tabular-nums text-fg-muted">
           {{ outputText ? $t("tools.updatedAgo", { ago: heartbeatLabel }) : elapsedLabel }}
         </span>
       </div>
     </div>
 
-    <div v-else data-test="subagent-timeline" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-2">
-      <ol v-if="hasTrace" class="relative ml-1 space-y-1.5 before:absolute before:bottom-2 before:left-[7px] before:top-2 before:w-px before:bg-border">
+    <div v-else data-test="subagent-timeline" class="ml-2.5 my-1.5 border-l-2 border-hairline pl-3 space-y-2">
+      <ol v-if="hasTrace" class="relative ml-1 space-y-1.5 before:absolute before:bottom-2 before:left-[7px] before:top-2 before:w-px before:bg-hairline">
         <li v-for="child in children" :key="child.toolCallId" class="relative flex min-w-0 items-center gap-2 pl-5">
           <span class="absolute left-0 grid h-3.5 w-3.5 place-items-center rounded-full bg-surface">
             <span class="h-1.5 w-1.5 rounded-full" :class="child.status === 'running' ? 'bg-accent' : child.status === 'error' ? 'bg-danger' : 'bg-run'" />
@@ -180,11 +180,11 @@ onBeforeUnmount(() => {
       </ol>
       <template v-else>
         <div v-if="promptText" class="mb-2.5">
-          <p class="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
+          <p class="mb-1 text-xs font-medium text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
           <p class="truncate font-mono text-xs text-fg-muted">{{ promptText }}</p>
         </div>
         <div v-if="outputText" data-test="subagent-report">
-          <p class="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.report") }}</p>
+          <p class="mb-1 text-xs font-medium text-fg-muted">{{ $t("tools.report") }}</p>
           <StreamMarkdown v-if="status !== 'running'" :text="outputText" />
           <pre v-else ref="streamEl" data-test="subagent-stream"
                class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-bg/60 p-2 font-mono text-xs leading-relaxed text-fg-muted">{{ outputText }}</pre>
@@ -194,7 +194,7 @@ onBeforeUnmount(() => {
         </p>
       </template>
       <button type="button" data-test="subagent-open-trace"
-              class="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs font-medium text-accent transition-colors hover:bg-fg/5"
+              class="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs font-medium text-accent-text transition-colors hover:bg-fg/5"
               @click="onOpenTrace">
         <ExternalLink :size="12" /> {{ $t("tools.viewFullTrace") }}
       </button>
@@ -206,7 +206,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .activity-slide-enter-active,
-.activity-slide-leave-active { transition: opacity 160ms ease, transform 160ms ease; }
+.activity-slide-leave-active { transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease); }
 .activity-slide-enter-from { opacity: 0; transform: translateY(4px); }
 .activity-slide-leave-to { opacity: 0; transform: translateY(-4px); }
 @media (prefers-reduced-motion: reduce) {

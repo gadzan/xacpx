@@ -5,6 +5,7 @@ import { Expand, Gauge, Maximize, Minimize, Monitor, Shrink, X } from "lucide-vu
 import { parseDesktopCredential } from "@ganglion/xacpx-relay-protocol";
 import { useDesktopStore } from "../stores/desktop";
 import { desktopErrorKey } from "../lib/desktop-error-i18n";
+import UiButton from "./UiButton.vue";
 
 const props = withDefaults(
   defineProps<{ instanceId: string; instanceName?: string; active?: boolean }>(),
@@ -227,15 +228,12 @@ onBeforeUnmount(() => {
                autocomplete="off"
                :placeholder="$t('desktop.macosPassword')"
                class="w-full rounded-sm bg-surface-2 px-2 py-1 text-ui text-fg outline-none" />
-        <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-xs text-danger">
+        <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-xs text-danger-text">
           {{ $t("desktop.macosRejected") }}
         </p>
-        <button data-test="desktop-macos-submit"
-                type="submit"
-                :disabled="!accountReady"
-                class="rounded-sm bg-accent px-3 py-1 text-ui font-medium text-on-accent disabled:opacity-40">
+        <UiButton type="submit" data-test="desktop-macos-submit" :disabled="!accountReady">
           {{ $t("desktop.connect") }}
-        </button>
+        </UiButton>
       </div>
     </form>
 
@@ -249,11 +247,9 @@ onBeforeUnmount(() => {
              :placeholder="$t('desktop.passwordPlaceholder')"
              class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-ui text-fg outline-none"
              @keydown.enter.prevent="submitPassword" />
-      <button data-test="desktop-password-submit"
-              type="button"
-              :disabled="!password"
-              class="shrink-0 rounded-sm bg-accent px-3 py-1 text-ui font-medium text-on-accent disabled:opacity-40"
-              @click="submitPassword">{{ $t("desktop.connect") }}</button>
+      <UiButton data-test="desktop-password-submit" :disabled="!password" @click="submitPassword">
+        {{ $t("desktop.connect") }}
+      </UiButton>
     </div>
   </div>
 </template>

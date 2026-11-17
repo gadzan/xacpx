@@ -43,7 +43,7 @@ const appearance = computed(() => {
     case "degraded":
       return { status, dot: "bg-warn", text: "text-warn", key: "connection.reconnecting" };
     case "lost":
-      return { status, dot: "bg-danger", text: "text-danger", key: "connection.reconnecting" };
+      return { status, dot: "bg-danger", text: "text-danger-text", key: "connection.reconnecting" };
     default:
       return {
         status,

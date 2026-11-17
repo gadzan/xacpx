@@ -1,0 +1,45 @@
+WP-12 handoff text + tooltip
+============================
+
+Handoff line
+------------
+Before: the button under a dispatching bot held two avatars and an sr-only copy
+of the full sentence. On a phone the assignment ("who → whom · what task") existed
+only in title/aria-label, which a thumb cannot open.
+
+After: `TimelineRow` renders the visual line inside the same button:
+
+    [avatar pair] → Reviewer · Review the release diff
+
+- 12px `text-fg-muted`, truncated with `min-w-0 truncate` and a `min(60vw, 24rem)` cap.
+- The sender stays in the accessible label (`aria-label` keeps the whole
+  "Lead → Reviewer · …" sentence) and in the avatar pair.
+- `data-test="timeline-handoff-text"` is the hook for the tests.
+- Touch: the button keeps the WP-4 44px box.
+
+Process entry ("查看 ○ 的过程")
+------------------------------
+Before: two text spans and a 16px avatar inside a button on its own meta line, so
+every bot reply carried a second visible line of chrome.
+
+After: an icon-only 28px button (44 on coarse pointers) on the meta line, whose
+label is a click/tap Tooltip built from `conversation.handoff.open`
+("Open the process for {name}").
+
+The dead `conversation.timeline.openDetailPrefix` / `openDetailSuffix` keys are
+deleted from en + zh-CN; `openDetail` stays for the drawer's own title.
+
+Tests
+-----
+unit: conversation-timeline.test.ts asserts the visible text is exactly
+"→ Bob · check the lock" and that the aria-label still names Ada; tooltip.test.ts
+(new) pins the bubble contract — 300ms hover delay, immediate show for a touch
+pointer, show on keyboard focus, hide on leave, teleported to <body>.
+e2e: conversation-timeline.spec.ts "handoff names the receiver and task on the line,
+on a phone" (chromium-mobile); group-dispatch.spec.ts and the desktop timeline test
+now assert the visible line + the aria-label instead of the old sr-only wording.
+
+Limit stated: the tooltip bubble is verified by the unit test, not by an e2e hover —
+a Playwright hover/tap on that icon did not surface the bubble in this harness
+(the click opens the drawer and re-renders the row), so the e2e asserts the visible
+text and the tooltip contract is unit-covered.

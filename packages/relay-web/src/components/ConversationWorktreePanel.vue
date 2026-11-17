@@ -76,7 +76,7 @@ onUnmounted(() => { epoch++; clearInterval(timer); });
   <div data-test="worktree-panel">
     <!-- Rendered outside the status gate: a failed first load has no status yet,
          so without this the user sees nothing at all and cannot retry manually. -->
-    <p v-if="error && !status" role="alert" class="px-4 py-2 text-xs text-danger">
+    <p v-if="error && !status" role="alert" class="px-4 py-2 text-xs text-danger-text">
       {{ error }}
       <button class="ml-2" :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
     </p>
@@ -85,7 +85,7 @@ onUnmounted(() => { epoch++; clearInterval(timer); });
       <p class="my-2 text-fg-muted">{{ t("group.worktree.boundary") }}</p>
       <p>{{ t("group.worktree.base") }}: <code>{{ status.baseCommitSha }}</code></p>
       <div v-for="r in status.resources" :key="r.id" class="my-1 break-all">{{ r.botId }} · {{ r.state }} · {{ r.worktreePath }}</div>
-      <p v-if="error" role="alert" class="my-2 text-danger">{{ error }}</p>
+      <p v-if="error" role="alert" class="my-2 text-danger-text">{{ error }}</p>
     <div class="my-2 flex flex-wrap gap-3">
       <button :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
       <button v-if="!status.integration && status.disposition === 'pending'" :disabled="busy" @click="operate('preview')">{{ t("group.worktree.preview") }}</button>
@@ -100,7 +100,7 @@ onUnmounted(() => { epoch++; clearInterval(timer); });
       <button class="my-2" :disabled="busy || !authorized" @click="operate('integrate')">{{ t("group.worktree.integrate") }}</button>
     </template>
     <p v-if="candidate" class="break-all">{{ t("group.worktree.candidate") }}: {{ candidate.branchRef }} · {{ status.integration?.candidateCommitSha }}</p>
-      <p v-if="status.integration?.state === 'conflicted'" role="alert" class="text-danger">{{ t("group.worktree.conflict") }}: {{ status.integration.conflictFiles.join(', ') }}</p>
+      <p v-if="status.integration?.state === 'conflicted'" role="alert" class="text-danger-text">{{ t("group.worktree.conflict") }}: {{ status.integration.conflictFiles.join(', ') }}</p>
     </details>
   </div>
 </template>

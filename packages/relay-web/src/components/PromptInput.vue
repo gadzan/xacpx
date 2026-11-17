@@ -835,7 +835,7 @@ function onKeydown(e: KeyboardEvent) {
             />
             <span class="max-w-[120px] truncate text-fg">{{ p.filename }}</span>
             <span v-if="p.status === 'uploading'" class="text-fg-muted">…</span>
-            <button v-else-if="p.status === 'error'" type="button" class="text-danger font-semibold"
+            <button v-else-if="p.status === 'error'" type="button" class="text-danger-text font-semibold"
               :aria-label="$t('common.retry')" :title="$t('common.retry')" @click="composer.retryAttachment(p.id)">↻</button>
             <button
               type="button"
@@ -851,7 +851,7 @@ function onKeydown(e: KeyboardEvent) {
         <span
           v-if="composer.rejection"
           data-test="attach-rejected"
-          class="block px-3 pt-2 text-xs text-danger"
+          class="block px-3 pt-2 text-xs text-danger-text"
         >
           {{
             composer.rejection.reason === "too-many"
@@ -904,7 +904,7 @@ function onKeydown(e: KeyboardEvent) {
             <div class="flex min-w-0 flex-1 flex-col">
               <div class="flex min-w-0 items-center justify-between gap-2">
                 <span
-                  class="font-semibold text-accent truncate"
+                  class="font-semibold text-accent-text truncate"
                   data-test="mention-primary"
                   >@{{ agentItem.displayName }}</span
                 >
@@ -954,7 +954,7 @@ function onKeydown(e: KeyboardEvent) {
                   : $t("chat.model")
               }}</span>
             <ChevronDown v-if="controls.modelAvailable.length" :size="12"
-                         class="shrink-0 transition-transform" :class="modelDd.open ? 'rotate-180' : ''" />
+                         class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="modelDd.open ? 'rotate-180' : ''" />
           </button>
           <DropdownPanel v-if="controls.modelAvailable.length"
                          :dd="modelDd" width="min-w-40" placement="top"
@@ -981,7 +981,7 @@ function onKeydown(e: KeyboardEvent) {
               <span class="font-mono font-medium text-fg">{{
                 controls.effortCurrent ?? $t("chat.effort")
               }}</span>
-              <ChevronDown :size="12" class="shrink-0 transition-transform" :class="effortDd.open ? 'rotate-180' : ''" />
+              <ChevronDown :size="12" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="effortDd.open ? 'rotate-180' : ''" />
             </button>
             <DropdownPanel :dd="effortDd" width="min-w-32" placement="top"
                            :title='$t("chat.effort")' test-id="effort-menu"
@@ -1013,7 +1013,7 @@ function onKeydown(e: KeyboardEvent) {
               "
             />
             <span
-              class="relative h-1 w-8 shrink-0 overflow-hidden rounded-full bg-border"
+              class="relative h-1 w-8 shrink-0 overflow-hidden rounded-full bg-fill-track"
             >
               <span
                 class="absolute inset-y-0 left-0 rounded-full"

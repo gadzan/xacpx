@@ -36,15 +36,15 @@ const completionChip = computed<CompletionChip | null>(() => {
   if (!completion || completion === "none") return null;
   const status = props.message.completionStatus;
   if (completion === "notify") {
-    if (status === "completed") return { key: "agentMessage.completed", icon: CheckCircle2, cls: "text-accent", test: "msg-status-completed" };
-    if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger", test: "msg-status-failed" };
-    if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger", test: "msg-status-cancelled" };
+    if (status === "completed") return { key: "agentMessage.completed", icon: CheckCircle2, cls: "text-accent-text", test: "msg-status-completed" };
+    if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger-text", test: "msg-status-failed" };
+    if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger-text", test: "msg-status-cancelled" };
     return { key: "agentMessage.waitingForCompletion", icon: Clock3, cls: "text-fg-muted", test: "msg-status-waiting", pulse: true };
   }
   // completion === "result"
-  if (status === "completed") return { key: "agentMessage.resultReturned", icon: CheckCircle2, cls: "text-accent", test: "msg-status-result-returned" };
-  if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger", test: "msg-status-failed" };
-  if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger", test: "msg-status-cancelled" };
+  if (status === "completed") return { key: "agentMessage.resultReturned", icon: CheckCircle2, cls: "text-accent-text", test: "msg-status-result-returned" };
+  if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger-text", test: "msg-status-failed" };
+  if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger-text", test: "msg-status-cancelled" };
   return { key: "agentMessage.waitingForResult", icon: Clock3, cls: "text-fg-muted", test: "msg-status-waiting", pulse: true };
 });
 </script>
@@ -52,7 +52,7 @@ const completionChip = computed<CompletionChip | null>(() => {
 <template>
   <div
     data-test="agent-message-card"
-    class="conversation-row group cv-row my-2 w-full max-w-2xl rounded-2xl transition-all"
+    class="conversation-row group cv-row my-2 w-full max-w-2xl rounded-2xl transition-colors"
     :class="[
       isSent
         ? 'bg-accent-soft'
@@ -64,10 +64,10 @@ const completionChip = computed<CompletionChip | null>(() => {
     <!-- Header -->
     <div
       class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3.5 py-2 text-ui"
-      :class="isSent ? 'text-accent' : 'text-fg-muted'"
+      :class="isSent ? 'text-accent-text' : 'text-fg-muted'"
     >
       <div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 font-medium">
-        <span v-if="isSent" data-test="direction-sent" class="inline-flex items-center gap-1 font-semibold text-accent">
+        <span v-if="isSent" data-test="direction-sent" class="inline-flex items-center gap-1 font-semibold text-accent-text">
           <ArrowRight :size="13" class="shrink-0" />
           <span>{{ $t("chat.sentTo") || "Sent to" }}</span>
         </span>
@@ -115,13 +115,13 @@ const completionChip = computed<CompletionChip | null>(() => {
           {{ $t(completionChip.key) }}
         </span>
         <template v-else>
-          <span v-if="message.status === 'failed'" data-test="msg-status-failed" class="inline-flex items-center gap-1 text-danger">
+          <span v-if="message.status === 'failed'" data-test="msg-status-failed" class="inline-flex items-center gap-1 text-danger-text">
             <AlertCircle :size="11" /> {{ $t("agentMessage.failed") }}
           </span>
           <span v-else-if="message.status === 'sending'" data-test="msg-status-sending" class="inline-flex items-center gap-1 text-fg-muted">
             <Send :size="11" class="animate-pulse" /> {{ $t("agentMessage.sending") }}
           </span>
-          <span v-else-if="message.status === 'delivered'" data-test="msg-status-delivered" class="inline-flex items-center gap-1 text-accent">
+          <span v-else-if="message.status === 'delivered'" data-test="msg-status-delivered" class="inline-flex items-center gap-1 text-accent-text">
             <CheckCircle2 :size="11" /> {{ $t("agentMessage.delivered") }}
           </span>
           <span v-else-if="isSent && (message.status === 'sent' || message.status === 'queued')" data-test="msg-status-sent" class="inline-flex items-center gap-1 text-fg-muted">

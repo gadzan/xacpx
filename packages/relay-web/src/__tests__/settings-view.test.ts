@@ -68,6 +68,23 @@ test("the automatic-collaboration section is gone and the other blocks stay", as
   expect(wrapper.find('[data-test="notif-setting"]').exists()).toBe(true);
 });
 
+test("action buttons resolve to the shared button component", async () => {
+  // A dropped UiButton import silently renders unknown-element soup: the rows
+  // look right in text assertions but lose every size and touch rule. The
+  // mobile touch gate caught it once; pin the resolution here too.
+  stubHub();
+  const wrapper = mountSettings();
+  await flushPromises();
+  // notif-toggle is intentionally absent here: this file stubs push support
+  // off, so the toggle hides. The notifications suite mounts it shown.
+  for (const testId of ["open-add-instance", "logout"]) {
+    const btn = wrapper.find(`[data-test="${testId}"]`);
+    expect(btn.exists()).toBe(true);
+    expect(btn.element.tagName).toBe("BUTTON");
+    expect(btn.classes()).toContain("inline-flex");
+  }
+});
+
 test("the theme and language blocks write their stores", async () => {
   stubHub();
   const theme = useThemeStore();
@@ -122,7 +139,9 @@ test("the retention and relay blocks render the server values", async () => {
   const wrapper = mountSettings();
   await flushPromises();
   expect(wrapper.get('[data-test="retention-body"]').text())
-    .toBe(i18n.global.t("settings.retentionBody", { max: RETENTION.maxPerSession, days: RETENTION.days }));
+    .toBe(i18n.global.t("settings.retentionShort", { max: RETENTION.maxPerSession, days: RETENTION.days }));
+  // The long sentence survives behind the info icon.
+  expect(wrapper.find('[data-test="retention-info"]').exists()).toBe(true);
   expect(wrapper.get('[data-test="relay-version"]').text())
     .toBe(i18n.global.t("settings.relayVersion", { version: VERSION.current }));
 });

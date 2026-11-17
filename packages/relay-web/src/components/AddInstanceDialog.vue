@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, ref } from "vue";
 import { Check, Copy, Loader2 } from "lucide-vue-next";
 import { api } from "../api/client";
 import { useInstancesStore } from "../stores/instances";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 
 /**
@@ -19,8 +20,6 @@ import { navigateBack } from "../lib/mobile-back";
 const emit = defineEmits<{ close: [] }>();
 
 const instancesStore = useInstancesStore();
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 type Step = 1 | 2 | 3;
 const step = ref<Step>(1);
@@ -126,18 +125,13 @@ function close(): void {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-[3px]"
-       @click.self="navigateBack">
-    <div
-      ref="dialogEl"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="add-instance-title"
-      tabindex="-1"
-      data-test="add-instance-dialog"
-      class="glass-strong w-full max-w-md rounded-2xl p-5"
-    >
-      <h3 id="add-instance-title" class="text-[17px] font-semibold text-fg">{{ $t("settings.addInstance") }}</h3>
+  <DialogShell
+    panel-class="w-full max-w-md rounded-2xl p-5"
+    labelledby="add-instance-title"
+    test-id="add-instance-dialog"
+    @close="emit('close')"
+  >
+      <h3 id="add-instance-title" class="text-base font-semibold text-fg">{{ $t("settings.addInstance") }}</h3>
 
       <!-- Step 1: name -->
       <div v-if="step === 1" class="mt-4">
@@ -147,28 +141,18 @@ function close(): void {
           type="text"
           data-test="add-instance-name"
           :placeholder="$t('settings.instanceNamePlaceholder')"
-          class="mt-3 w-full rounded-xl bg-surface-2 px-3 py-2 text-base text-fg outline-none placeholder:text-fg-muted focus-visible:ring-2 focus-visible:ring-accent"
+          class="mt-3 w-full rounded-2xl bg-surface-2 px-3 py-2 text-base text-fg outline-none placeholder:text-fg-muted focus-visible:ring-2 focus-visible:ring-accent"
           @keydown.enter.prevent="generateToken"
         />
-        <p v-if="error" data-test="add-instance-error" class="mt-2 text-xs text-danger">{{ error }}</p>
+        <p v-if="error" data-test="add-instance-error" class="mt-2 text-xs text-danger-text">{{ error }}</p>
         <div class="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            class="h-11 rounded-xl px-4 text-sm font-medium text-fg-muted hover:bg-raised"
-            @click="navigateBack"
-          >
+          <UiButton variant="ghost" @click="navigateBack">
             {{ $t("common.cancel") }}
-          </button>
-          <button
-            type="button"
-            data-test="add-instance-next"
-            :disabled="busy || !name.trim()"
-            class="h-11 rounded-xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50"
-            @click="generateToken"
-          >
+          </UiButton>
+          <UiButton data-test="add-instance-next" :disabled="busy || !name.trim()" @click="generateToken">
             <Loader2 v-if="busy" :size="14" class="animate-spin" />
             <span v-else>{{ $t("common.next") }}</span>
-          </button>
+          </UiButton>
         </div>
       </div>
 
@@ -179,7 +163,7 @@ function close(): void {
           {{ $t("settings.addInstanceWaiting") }}
         </p>
         <div class="mt-3 flex items-start gap-2">
-          <code class="min-w-0 flex-1 break-all rounded-xl bg-surface-2 p-3 text-xs text-fg" data-test="add-instance-command">
+          <code class="min-w-0 flex-1 break-all rounded-2xl bg-surface-2 p-3 text-xs text-fg" data-test="add-instance-command">
             {{ command }}
           </code>
           <button
@@ -187,7 +171,7 @@ function close(): void {
             data-test="add-instance-copy"
             :aria-label="$t('settings.copyCommand')"
             :title="$t('settings.copyCommand')"
-            class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-surface-2 text-fg transition-colors hover:bg-raised"
+            class="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-surface-2 text-fg transition-colors hover:bg-raised"
             @click="copyCommand"
           >
             <Check v-if="copied" :size="16" class="text-run" />
@@ -198,22 +182,12 @@ function close(): void {
           {{ $t("settings.addInstanceNotYet") }}
         </p>
         <div class="mt-4 flex items-center justify-between gap-2">
-          <button
-            type="button"
-            data-test="add-instance-later"
-            class="h-11 rounded-xl px-4 text-sm font-medium text-fg-muted hover:bg-raised"
-            @click="close"
-          >
+          <UiButton variant="ghost" data-test="add-instance-later" @click="close">
             {{ $t("settings.addInstanceLater") }}
-          </button>
-          <button
-            type="button"
-            data-test="add-instance-regenerate"
-            class="h-11 rounded-xl px-4 text-sm font-medium text-fg hover:bg-raised"
-            @click="copyCommand"
-          >
+          </UiButton>
+          <UiButton variant="secondary" data-test="add-instance-regenerate" @click="copyCommand">
             {{ $t("settings.addInstanceRegenerate") }}
-          </button>
+          </UiButton>
         </div>
       </div>
 
@@ -224,16 +198,10 @@ function close(): void {
           {{ $t("settings.addInstanceConnected", { name: connectedInstance?.name ?? name }) }}
         </p>
         <div class="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            data-test="add-instance-done"
-            class="h-11 rounded-xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
-            @click="close"
-          >
+          <UiButton data-test="add-instance-done" @click="close">
             {{ $t("settings.addInstanceDone") }}
-          </button>
+          </UiButton>
         </div>
       </div>
-    </div>
-  </div>
+  </DialogShell>
 </template>

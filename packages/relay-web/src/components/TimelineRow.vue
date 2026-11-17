@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { AlertCircle, Clock, GitFork, MessageSquare } from "lucide-vue-next";
+import { AlertCircle, Clock, GitFork, ListTree, MessageSquare } from "lucide-vue-next";
 import type { ConversationMessageDto } from "@ganglion/xacpx-relay-protocol";
 import TranscriptRow from "./TranscriptRow.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import BotAvatar from "./BotAvatar.vue";
+import Tooltip from "./Tooltip.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ThinkingDots from "./ThinkingDots.vue";
 import {
@@ -88,6 +89,8 @@ function handoffView(entry: TimelineMessageEntry) {
     key: entry.key,
     from,
     to,
+    toName: to?.name ?? handoff?.to ?? "Bot",
+    task: handoff?.task ?? "",
     label,
     detail: {
       ...(entry.runId ? { runId: entry.runId } : {}),
@@ -149,7 +152,7 @@ const noticeIcon = computed(() => {
 
 const noticeToneClass = computed(() => {
   if (props.row.kind !== "notice") return "text-fg-muted";
-  if (props.row.entry.tone === "failed") return "text-danger";
+  if (props.row.entry.tone === "failed") return "text-danger-text";
   return "text-fg-muted";
 });
 </script>
@@ -198,7 +201,7 @@ const noticeToneClass = computed(() => {
       :key="handoff.key"
       type="button"
       data-test="timeline-handoff"
-      class="flex items-center rounded-lg p-0.5 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      class="flex max-w-full items-center gap-1.5 rounded-lg p-0.5 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:px-1"
       :title="handoff.label"
       :aria-label="handoff.label"
       @click="emit('openDetail', handoff.detail)"
@@ -225,7 +228,11 @@ const noticeToneClass = computed(() => {
           />
         </span>
       </span>
-      <span class="sr-only">{{ handoff.label }}</span>
+      <!-- The task used to live only in the title/aria-label, which a thumb
+           can never reveal. Visible, truncated, 12px muted. -->
+      <span data-test="timeline-handoff-text" class="min-w-0 max-w-[min(60vw,24rem)] truncate text-xs text-fg-muted">
+        → {{ handoff.toName }}<span v-if="handoff.task"> · {{ handoff.task }}</span>
+      </span>
     </button>
   </div>
 
@@ -268,7 +275,7 @@ const noticeToneClass = computed(() => {
       <p
         v-if="row.entry.ownership === 'unresolved'"
         data-test="timeline-unresolved"
-        class="text-xs text-fg-muted/80"
+        class="text-xs text-fg-muted"
       >
         {{ $t("conversation.timeline.unresolved") }}
       </p>
@@ -287,25 +294,28 @@ const noticeToneClass = computed(() => {
             <GitFork :size="14" />
           </button>
         </template>
+        <!-- The process entry rides the timestamp row as an icon: on touch its label
+             is a tap-to-show tooltip, and it must not become a second line under
+             every bot reply. It sits in ConversationMeta's default slot, between the
+             time and the copy/fork operations, so it stays visible without hover. -->
+        <Tooltip
+          v-if="message.runId"
+          :text="$t('conversation.handoff.open', { name: author?.name ?? '' })"
+          placement="top"
+        >
+          <button
+            type="button"
+            data-test="timeline-open-detail"
+            :aria-label="$t('conversation.handoff.open', { name: author?.name ?? '' })"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+            @click="emit('openDetail', messageDetail)"
+          >
+            <!-- Linear icon, not the author avatar: the row already shows who
+                 spoke, and a 16px face does not read as a tappable entry. -->
+            <ListTree :size="14" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </ConversationMeta>
-      <button
-        v-if="message.runId"
-        type="button"
-        data-test="timeline-open-detail"
-        class="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-fg-muted transition-colors hover:text-fg"
-        @click="emit('openDetail', messageDetail)"
-      >
-        <span>{{ $t("conversation.timeline.openDetailPrefix") }}</span>
-        <BotAvatar
-          :avatar="author?.avatar"
-          :driver="author?.driver"
-          :name="author?.name"
-          :size="16"
-          static
-          aria-hidden="true"
-        />
-        <span v-if="$t('conversation.timeline.openDetailSuffix')">{{ $t("conversation.timeline.openDetailSuffix") }}</span>
-      </button>
     </template>
   </TranscriptRow>
 
@@ -402,7 +412,7 @@ const noticeToneClass = computed(() => {
       </button>
       <span
         v-if="stoppedOverflow > 0"
-        class="grid h-5 min-w-5 place-items-center rounded-full bg-surface-2 px-1 text-[10px] font-medium text-fg-muted"
+        class="grid h-5 min-w-5 place-items-center rounded-full bg-surface-2 px-1 text-xs font-medium tabular-nums text-fg-muted"
         style="box-shadow: 0 0 0 2px rgb(var(--c-bg))"
       >+{{ stoppedOverflow }}</span>
     </div>

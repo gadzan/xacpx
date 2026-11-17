@@ -121,7 +121,7 @@ function onPointerCancel(): void {
         :alt="current.alt ?? ''"
         draggable="false"
         class="absolute inset-0 m-auto max-h-full max-w-full object-contain"
-        :style="{ transform: `translateX(${dragDx}px)`, transition: dragging ? 'none' : 'transform 150ms ease-out' }"
+        :style="{ transform: `translateX(${dragDx}px)`, transition: dragging ? 'none' : 'transform var(--dur-base) var(--ease)' }"
       />
 
       <!-- Prev/next hidden at the ends (not merely disabled) so mobile users get an

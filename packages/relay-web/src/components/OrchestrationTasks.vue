@@ -30,7 +30,7 @@ async function cancel(taskId: string) {
 function statusClass(status: string): string {
   const s = status.toLowerCase();
   if (s.includes("run") || s.includes("active")) return "text-run";
-  if (s.includes("fail") || s.includes("error") || s.includes("cancel")) return "text-danger";
+  if (s.includes("fail") || s.includes("error") || s.includes("cancel")) return "text-danger-text";
   if (s.includes("wait") || s.includes("pending") || s.includes("block")) return "text-warn";
   return "text-fg-muted";
 }
@@ -38,7 +38,7 @@ function statusClass(status: string): string {
 
 <template>
   <div class="flex min-h-0 flex-col bg-surface">
-    <h3 class="shrink-0 px-3 pt-3 pb-2 text-xs font-semibold uppercase text-fg-muted">{{ $t("tasks.orchestration") }}</h3>
+    <h3 class="shrink-0 px-3 pt-3 pb-2 text-xs font-medium text-fg-muted">{{ $t("tasks.orchestration") }}</h3>
     <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto thin-scroll px-3 pb-3">
       <li v-for="t in visible" :key="t.taskId" class="flex items-center justify-between text-sm text-fg">
         <span class="flex min-w-0 items-center gap-1.5">

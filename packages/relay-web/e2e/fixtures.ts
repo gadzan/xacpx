@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { test as base, expect, type Page } from "@playwright/test";
 import { startMockHub, type MockHub } from "./mock-hub";
 
@@ -78,6 +79,72 @@ export async function loginAndShowInstances(page: Page): Promise<void> {
   await expect(sessionRow).toBeVisible({ timeout: 30_000 });
 }
 
+/**
+ * A hit box counts only if it is at least 44x44, lies inside the viewport, and
+ * every one of its four edge midpoints resolves back to the control. The
+ * midpoint taps are what catch a pseudo-element expansion (not part of the box)
+ * or a neighbour's overlay. `document.elementFromPoint` takes VIEWPORT
+ * coordinates, so the box must be on screen — an off-screen box would make every
+ * tap miss, and a `null?.closest()` result must never be read as a hit.
+ */
+export async function expectTouchTarget(page: Page, testId: string, min = 44): Promise<void> {
+  const el = page.getByTestId(testId).first();
+  await expect(el, testId).toBeVisible();
+  await el.scrollIntoViewIfNeeded();
+  // A sheet or a toast enters with a transform. Measuring mid-flight and then
+  // hit-testing a moment later would compare two different positions, so wait
+  // for the box to stop moving first.
+  let box = await el.boundingBox();
+  for (let i = 0; i < 20; i += 1) {
+    await page.waitForTimeout(50);
+    const next = await el.boundingBox();
+    if (next && box && next.x === box.x && next.y === box.y && next.width === box.width && next.height === box.height) break;
+    box = next;
+  }
+  expect(box, testId).not.toBeNull();
+  expect(box!.width, `${testId} width`).toBeGreaterThanOrEqual(min);
+  expect(box!.height, `${testId} height`).toBeGreaterThanOrEqual(min);
+  const viewport = page.viewportSize();
+  expect(viewport, `${testId} viewport`).not.toBeNull();
+  expect(box!.x, `${testId} left edge`).toBeGreaterThanOrEqual(0);
+  expect(box!.y, `${testId} top edge`).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width, `${testId} right edge`).toBeLessThanOrEqual(viewport!.width);
+  expect(box!.y + box!.height, `${testId} bottom edge`).toBeLessThanOrEqual(viewport!.height);
+  const points: Array<[number, number]> = [
+    [box!.width / 2, 2],
+    [box!.width / 2, box!.height - 2],
+    [2, box!.height / 2],
+    [box!.width - 2, box!.height / 2],
+  ];
+  const taps: Array<{ dx: number; dy: number; hit: boolean; top: string }> = [];
+  for (const [dx, dy] of points) {
+    // One evaluate: the hit answer AND whatever is actually on top, so a failure
+    // names the element that stole the tap instead of only saying "false".
+    const { hit, top } = await page.evaluate(
+      ({ id, x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        const owns = Boolean(el?.closest(`[data-test="${id}"]`));
+        const label = el instanceof HTMLElement
+          ? `${el.tagName.toLowerCase()}${el.dataset.test ? `[data-test=${el.dataset.test}]` : ""}.${el.className.toString().split(/\s+/).slice(0, 4).join(".")}`
+          : String(el);
+        return { hit: owns, top: label.slice(0, 140) };
+      },
+      { id: testId, x: box!.x + dx, y: box!.y + dy },
+    );
+    expect(hit, `${testId} at +${dx},+${dy} is covered by ${top}`).toBe(true);
+    taps.push({ dx, dy, hit, top });
+  }
+  // Evidence pack: TOUCH_RECORD=<path> appends one JSON line per measured target.
+  if (process.env.TOUCH_RECORD) {
+    appendFileSync(process.env.TOUCH_RECORD, `${JSON.stringify({
+      testId,
+      viewport,
+      deviceScaleFactor: await page.evaluate(() => window.devicePixelRatio),
+      box,
+      midpoints: taps,
+    })}\n`);
+  }
+}
 export async function loginAndOpenTerminal(page: Page): Promise<void> {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   // /api/me is stubbed as authenticated, so the login page is usually skipped.

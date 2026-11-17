@@ -134,15 +134,26 @@ describe("ConversationRunDetailContent.vue", () => {
     setActivePinia(createPinia());
   });
 
-  it("shows Run status, completion reason, failure and the consumed/max budget", () => {
+  it("leaves the Run status to the drawer header, and shows completion reason, failure and budget", () => {
     const wrapper = mountContent({
       run: run({ state: "failed", completionReason: "execution-failed" }),
     });
-    expect(wrapper.find('[data-test="run-detail-state"]').text().toLowerCase()).toContain("fail");
+    // The header owns the state chip for the live attempt; a second copy here would
+    // say "Failed" twice in the same drawer.
+    expect(wrapper.find('[data-test="run-detail-state"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="run-detail-completion"]').text()).toContain("A member failed");
     expect(wrapper.find('[data-test="run-detail-failure"]').text()).toContain("A member failed");
     expect(wrapper.find('[data-test="run-detail-budget"]').text()).toContain("3/6 member turns");
     expect(wrapper.find('[data-test="run-detail-budget"]').text()).toContain("Budget epoch 1");
+    wrapper.unmount();
+  });
+
+  it("renders the Run status itself for a historical attempt, where the header hides it", () => {
+    const wrapper = mountContent({
+      run: run({ state: "failed", completionReason: "execution-failed" }),
+      attempt: 2,
+    });
+    expect(wrapper.find('[data-test="run-detail-state"]').text()).toContain(i18n.global.t("bot.run.failed"));
     wrapper.unmount();
   });
 

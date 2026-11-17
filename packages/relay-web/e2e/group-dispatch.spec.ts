@@ -141,10 +141,10 @@ test("consecutive handoffs share one compact row, and the Run drawer lists every
   await expect(scroller.getByTestId("timeline-bot-message").first()).toContainText("Dispatching two reviews");
   await expect(scroller.getByTestId("timeline-handoffs")).toHaveCount(1);
   await expect(scroller.getByTestId("timeline-handoff")).toHaveCount(2);
-  await expect(scroller.getByTestId("timeline-handoff").nth(0)).toContainText("Lead");
   await expect(scroller.getByTestId("timeline-handoff").nth(0)).toContainText("Reviewer");
   await expect(scroller.getByTestId("timeline-handoff").nth(0)).toContainText("Review the release diff");
   await expect(scroller.getByTestId("timeline-handoff").nth(1)).toContainText("Test the release diff");
+  await expect(scroller.getByTestId("timeline-handoff").nth(0)).toHaveAttribute("aria-label", /Lead → Reviewer/);
   // The deleted aggregate/card surfaces must not come back.
   await expect(scroller.getByTestId("group-dispatch-row")).toHaveCount(0);
 

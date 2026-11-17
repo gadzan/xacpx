@@ -1,0 +1,57 @@
+WP-15 empty Bot page + WP-17 run detail drawer
+==============================================
+
+WP-15: empty Bot page
+---------------------
+Before: an empty Direct page was one grey sentence ("Send a message to start a
+conversation with this bot.") pinned near the top of the scroller, with no Bot
+identity. Nothing told you which Bot you had opened or what it can do.
+
+After (`DirectBotPane` renders the timeline's new `#empty` slot):
+
+  avatar disc 56 (same size as the mobile bar's)
+  Bot name
+  role · workspace · agent
+  up to 3 starter chips  <- the agent's own advertisement only
+  the hint sentence (kept, same i18n key)
+
+- Chips read `conversation-commands` for this exact instance / conversation /
+  topic / bot. That store is fed by the Hub's `agent-commands` control event and
+  by `state-snapshot.conversationCommands`; nothing in the web app invents a
+  command. No advertisement -> no chips (second shot).
+- A chip tap calls a new `fillDraft()` exposed by `ConversationPromptInput`: it
+  writes `/<name> ` into the draft, moves the caret to the end and keeps the
+  completion list dismissed. It never sends — the e2e asserts the prompt RPC was
+  not called.
+- Vertical centring came from making the empty block `min-h-full` flex; `my-auto`
+  never centred inside a block-level scroll container. Group's empty state shares
+  that container, so it is centred now too.
+
+Evidence: after/{m390,d1440}/11-empty-* (no data) and 11-empty-starters-* (data),
+both themes; e2e/direct-empty-starters.spec.ts (desktop + mobile, 4 tests).
+
+WP-17: run detail drawer + interaction form
+-------------------------------------------
+- One state chip per drawer. `ConversationRunDetailContent` used to print the run
+  state again under the header's chip. The header owns it; the body keeps a chip
+  only for a historical attempt, where the header deliberately hides its own.
+  Unit: conversation-run-drawer.test.ts covers both branches. E2e: the drawer spec
+  now asserts `group-detail-state` says Running and `run-detail-state` is absent.
+- No card around the summary: `rounded-2xl bg-surface/50 p-2.5` became a plain
+  block of outcome / failure / budget lines.
+- Member list is a hairline-divided list (`divide-y divide-hairline`), no rounded
+  row chips; selection is `bg-fill-strong`, hover `bg-fill-hover`.
+- Interaction form: outer card is now the `.agent-bubble` family — `rounded-card`
+  + `border-hairline` + `shadow-card` + `bg-raised` — instead of
+  `rounded-2xl border bg-surface shadow-sm`. Options (boolean / single / multi) sit
+  on `bg-fill-track` with `rounded-item`; selection is `accent-soft` +
+  `accent-text` with the `ring-1 ring-accent` halo and the left colour bar gone.
+
+Evidence: after/{m390,d1440}/07-drawer-*; e2e/run-detail-drawer.spec.ts (2 tests).
+
+Honest gap: the before pack has no 07 shot (the drawer scene was added during this
+pass, after the baseline capture). The before state is the code at commit
+c38f4b69, and the interaction form's before look is visible in
+`before/d1440/07-drawer-*` absence — i.e. it cannot be shown as an image. The
+form's restyle is covered by class-level assertions in the component tests rather
+than a pixel diff.

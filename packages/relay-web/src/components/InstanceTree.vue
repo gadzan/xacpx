@@ -778,7 +778,7 @@ const rowSwipes = computed(() => {
         <button
           type="button"
           data-test="instance-nav-sessions"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
           :class="navMode === 'sessions' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
           @click="setMode('sessions')"
         >
@@ -788,7 +788,7 @@ const rowSwipes = computed(() => {
         <button
           type="button"
           data-test="instance-nav-bots"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
           :class="navMode === 'bots' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
           @click="setMode('bots')"
         >
@@ -798,7 +798,7 @@ const rowSwipes = computed(() => {
         <button
           type="button"
           data-test="instance-nav-groups"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
           :class="navMode === 'groups' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
           @click="setMode('groups')"
         >
@@ -824,7 +824,7 @@ const rowSwipes = computed(() => {
                 :aria-expanded="isExpanded(inst.id)"
                 data-test="instance-header-toggle"
                 @click="toggle(inst.id)">
-          <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform duration-150" :class="isExpanded(inst.id) ? 'rotate-90' : ''" />
+          <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="isExpanded(inst.id) ? 'rotate-90' : ''" />
           <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
           <span class="truncate text-ui font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
                 :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
@@ -914,7 +914,7 @@ const rowSwipes = computed(() => {
               class="bot-disabled-toggle mt-1 flex h-7 w-full items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
               @click="toggleDisabledBots(inst.id)"
             >
-              <ChevronRight :size="11" class="shrink-0 transition-transform duration-150" :class="disabledBotsOpen.has(inst.id) ? 'rotate-90' : ''" />
+              <ChevronRight :size="11" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="disabledBotsOpen.has(inst.id) ? 'rotate-90' : ''" />
               <span>{{ $t("bot.list.disabledToggle", { count: botsWithEnabled(inst.id, false).length }) }}</span>
             </button>
             <div
@@ -971,7 +971,7 @@ const rowSwipes = computed(() => {
             <button
               type="button"
               data-test="new-bot-button"
-              class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft transition-colors"
+              class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent-text hover:bg-accent-soft transition-colors"
               @click="botDialogFor = { instanceId: inst.id, instanceName: inst.name }"
             >
               <Plus :size="12" />
@@ -1007,7 +1007,7 @@ const rowSwipes = computed(() => {
             <span>{{ $t("group.list.loadFailed") }}</span>
             <button type="button"
                     data-test="groups-retry"
-                    class="ml-1.5 font-medium text-accent hover:underline"
+                    class="ml-1.5 font-medium text-accent-text hover:underline"
                     @click="retryGroupsLoad(inst.id)">
               {{ $t("common.retry") }}
             </button>
@@ -1063,7 +1063,7 @@ const rowSwipes = computed(() => {
             <button
               type="button"
               data-test="new-group-button"
-              class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent-soft"
+              class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent-text transition-colors hover:bg-accent-soft"
               @click="groupDialogFor = { instanceId: inst.id, instanceName: inst.name }"
             >
               <Plus :size="12" />
@@ -1075,7 +1075,7 @@ const rowSwipes = computed(() => {
         <!-- SESSIONS MODE -->
         <template v-else-if="navMode === 'sessions'">
         <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
-                class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs font-medium text-accent hover:bg-accent-soft"
+                class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs font-medium text-accent-text hover:bg-accent-soft"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
           <ChevronRight :size="11" />{{ $t("instance.loadSessions") }}
         </button>
@@ -1089,7 +1089,7 @@ const rowSwipes = computed(() => {
             <button data-test="group-header" :aria-expanded="!isGroupCollapsed(inst, grp.key)"
                     class="flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 text-left transition-colors hover:bg-fg/5"
                     @click="toggleGroup(inst, grp.key)">
-              <ChevronRight :size="11" class="shrink-0 text-fg-muted transition-transform duration-150" :class="isGroupCollapsed(inst, grp.key) ? '' : 'rotate-90'" />
+              <ChevronRight :size="11" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="isGroupCollapsed(inst, grp.key) ? '' : 'rotate-90'" />
               <Folder v-if="groupModeOf(inst) === 'workspace'" :size="12" class="shrink-0 text-fg-muted" />
               <AgentIcon v-else :driver="driverForAgentName(inst, grp.key)" :title="grp.key" :size="13" />
               <span data-test="group-name" class="min-w-0 truncate text-xs font-semibold text-fg-muted">{{ grp.key }}</span>
@@ -1115,8 +1115,8 @@ const rowSwipes = computed(() => {
                  blocks. Swiping right→left translates the track left to reveal them. -->
             <div
               data-test="swipe-track"
-              class="flex touch-pan-y ease-out"
-              :class="draggingKey === `${inst.id}:${s.alias}` ? '' : 'transition-transform duration-200'"
+              class="flex touch-pan-y"
+              :class="draggingKey === `${inst.id}:${s.alias}` ? '' : 'transition-transform duration-150 ease-ui motion-reduce:transition-none'"
               :style="{ transform: rowTransform(inst.id, s) }"
               v-on="inst.online ? rowSwipes[`${inst.id}:${s.alias}`] ?? {} : {}"
             >
@@ -1151,7 +1151,7 @@ const rowSwipes = computed(() => {
                     <span
                       v-if="hasOpenTerminal(inst.id, s.alias)"
                       data-test="terminal-open-marker"
-                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-[2px] bg-surface text-accent ring-1 ring-accent"
+                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent"
                       :title="$t('instance.sessionTerminalOpenTitle')"
                       :aria-label="$t('instance.sessionTerminalOpenTitle')"
                     ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
@@ -1162,7 +1162,7 @@ const rowSwipes = computed(() => {
                   <span
                     v-else-if="hasOpenTerminal(inst.id, s.alias)"
                     data-test="terminal-open-marker"
-                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-[2px] bg-surface text-accent ring-1 ring-accent"
+                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent"
                     :title="$t('instance.sessionTerminalOpenTitle')"
                     :aria-label="$t('instance.sessionTerminalOpenTitle')"
                   ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
@@ -1233,7 +1233,7 @@ const rowSwipes = computed(() => {
               <div v-if="grp.archivedState?.loading" data-test="group-archived-loading"
                    class="py-0.5 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
               <button v-else-if="grp.archivedState?.hasMore" data-test="group-load-more"
-                      class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent transition-colors hover:bg-surface-2"
+                      class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent-text transition-colors hover:bg-surface-2"
                       @click.stop="loadMoreGroupArchived(inst, grp.key)">
                 {{ $t("instance.loadMoreSessions") }}
               </button>
@@ -1259,7 +1259,7 @@ const rowSwipes = computed(() => {
               <!-- Instance-level ACTIVE-list load-more, deliberately NOT mode-gated: grouped modes
                    still page active sessions 20 at a time, and this is their only "next page" entry. -->
               <button v-if="inst.sessionsHasMore && !inst.sessionsLoading" data-test="sessions-load-more"
-                class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent transition-colors hover:bg-surface-2"
+                class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent-text transition-colors hover:bg-surface-2"
                 @click.stop="store.loadMoreSessions(inst.id).catch(() => {})">
           {{ $t("instance.loadMoreSessions") }}
         </button>

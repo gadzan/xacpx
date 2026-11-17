@@ -182,6 +182,73 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - `src/components/Tooltip.vue` —— hover 300ms / 键盘聚焦显示、触屏 2s 的提示气泡
   （`bg-fg text-bg text-xs rounded-sm px-2 py-1`），用于冷会话指示器等（SVG `title` 触屏不显示，已移除）。
 
+## 对话框外壳（`DialogShell.vue`）与叠层 z-index 阶梯
+
+居中模态共用一个外壳，替代各对话框里重复的 scrim/面板/无障碍样板：
+
+- `src/components/DialogShell.vue` —— 负责遮罩（`bg-scrim` + 模糊）、面板玻璃底、焦点陷阱、
+  `Esc`、焦点还原、安全区内边距与叠层 rung。内部复用 `use-modal-a11y`，因此对话框和手机返回手势
+  走同一个层栈：只关最上面一层。
+- 面板样式由调用方通过 `panel-class` 传入（宽度确实不同：确认框 380、表单 `md`/`xl`、外观视图
+  `3xl`），外壳只叠加底座类，避免两份冲突的 Tailwind 按样式表顺序决胜。
+- 根节点是普通元素。（不内置 `Teleport`）需要脱离侧栏 `transform` 的对话框在调用处自己包
+  `<Teleport to="body">`，外壳保持就地可测。
+- 关闭一律 `@close="emit('close')"`，**不要**把 `navigateBack` 传给外壳：外壳本身就是层栈里的
+  那一层，`navigateBack` 会回调该层的 `close`，形成自递归。
+- 其他 prop：`labelledby`/`label`（可访问名）、`test-id`（渲染成面板上的 `data-test`；名字不叫
+  `data-test` 是为了不让这个属性透传到外壳根节点上、盖住面板选择器）、`level`（叠层 rung）、
+  `safe-area`（整屏对话框）、`blur-class`、`initial-focus`。`focusChild(selector)` 暴露给需要在
+  挂载后移动焦点的调用方（如实例管理对话框的 tab 漫游）。
+- 未迁移：`CommandPalette`（顶部对齐、无居中面板）、`MobileSheet`（底部抽屉，自带层）、
+  `TraceOverlayDrawer`/`ScheduledTasks`（侧边抽屉）、`ImageLightbox`（全屏黑底、自带键盘导航）、
+  `SubagentTraceDialog`（绝对定位 scrim，位于另一套容器内）、`TopicSwitcher` 的确认/隔离浮层
+  （带 `data-dd-panel` 的下拉所有权）、`UsagePopover`。
+- z-index 阶梯定义在 `tailwind.config.js` 的 `zIndex`：`z-sheet`(40) < `z-dialog`(50) <
+  `z-dialog-nested`(60，从对话框里打开的对话框/选择器) < `z-dialog-top`(70，要压过抽屉或 sheet
+  栈的对话框) < `z-confirm`(100，全局确认队列)。新的浮层从中选一档，不再写 `z-[60]` 这类裸值。
+
+## 按钮（`UiButton.vue`）
+
+主路径的实心 / 次级 / 幽灵 / 危险按钮收敛到一个组件：
+
+- `variant`：`primary`（`bg-accent` + `text-on-accent`）、`secondary`（`border-hairline` +
+  `bg-raised`）、`ghost`（`fg-muted`，hover 才上底色）、`danger`（实心 `bg-danger`）、
+  `danger-ghost`（`text-danger-text`，用于「删除 Bot / 删除群组」这类行内破坏性入口）。
+- `size`：`sm` 28 高 / `md` 32 高，圆角 `rounded-btn`(8)。`mobile-block` 是对话框页脚的形状
+  （`<lg` 全宽 44 高，`≥lg` 收紧），属于布局而非尺寸。
+- 触屏命中：`[@media(pointer:coarse)]:min-h-11` 把命中区抬到 44，视觉高度不变；桌面密度不受影响。
+- `el` 通过 `defineExpose` 暴露，给需要自己管焦点的调用方（确认框的「取消」默认焦点）。
+- 未迁移：Composer / GroupComposer 的发送按钮（动画外壳受保护，见方案 B 4.6）、登录页整宽主按钮
+  （自带 `login-btn` 形态）、以及分段控件 / 芯片（它们是切换态，不是按钮：主题、语言、source、
+  workspace 模式、分组模式）。
+
+## 玻璃三档（`style.css`）
+
+全站只有三套玻璃配方，定义在 `style.css` 顶部，按角色命名：
+
+| class | 用途 | 透明度 token（浅 / 深） |
+| --- | --- | --- |
+| `.glass-1` | 铬条：面板头、桌面对话头 | `--glass-bg`（.72） |
+| `.glass-2` | 浮层：composer、菜单、tooltip、toast、对话框 | `--glass-bg-strong`（.84） |
+| `.glass-control` | 小控件：手机顶栏圆钮、名称胶囊、头像盘 | `--glass-control-bg`（.88）+ `--glass-sheen` + `--glass-control-shadow` |
+
+三档共用同一个 `--glass-blur`(20px) + `--glass-saturate`；区别只有透明度与阴影，不是第二套视觉体系。
+遮罩统一 `backdrop-blur-scrim`（3px，Tailwind `backdropBlur.scrim`），对话框、sheet、抽屉、命令面板、
+确认框全用它，不再出现 `backdrop-blur-sm` / `backdrop-blur-[3px]` 混用。
+
+降级：`@supports not (backdrop-filter)` 与 `prefers-reduced-transparency: reduce` 都只改 token
+（三档一起变实色 `--c-raised`，sheen 归零），类名与数量不变；后一种情况还会去掉 `backdrop-filter`。
+
+`DirectBotPane` 里手机顶栏的 `.glass-btn` / `.glass-disc` / `.glass-chip` 现在只是「在 `.glass-control`
+之上补交互态与头像盘实底」的局部规则，配方本身只有一处在全局。
+
+## 设置页（`views/SettingsView.vue`）
+
+一个 raised 卡(`rounded-card border-hairline bg-raised`)装七行:外观、语言、添加实例、保留策略、
+Relay 版本、通知、账户。行高 `min-h-11`、行间 `border-t border-hairline`,标签是 12px+ 的 medium
+`text-fg`,值右对齐 `text-fg-muted`;通知的 iOS 提示与拒绝提示留在本行内整行换行。顶栏返回是对话页
+同款 `glass-control` 玻璃圆钮(44)。分段仍是深/浅两项,没有「跟随系统」。
+
 ## Composer 的模型与 effort 控件
 
 - 会话切换时 `session-controls` store 并行读取 `control.session.model.get` 与
@@ -421,6 +488,13 @@ Conversation 的 slash 列表来自现有 `agent-commands` 事件，按 `convers
 的命令。菜单只显示该 Bot 运行时广告的命令，不显示 xacpx 管理命令目录。Group 在未明确选中一名成员时
 只提示先选择成员，Enter/Tab 不发送。
 
+**空 Bot 页**：`ConversationTimeline` 的 `#empty` 插槽由 `DirectBotPane` 接管，渲染头像盘（56）、Bot 名、
+`role · workspace · agent`，以及最多 3 颗起步 chip。chip 只来自 `conversation-commands` 中当前
+`instance × conversation × topic × bot` 那一行的真实广告（即 `agent-commands` 事件 /
+`state-snapshot.conversationCommands`）；没有广告就只留提示句，绝不画假命令。点 chip 调
+`ConversationPromptInput` 暴露的 `fillDraft()`：写入 `/<name> `、光标置尾、收起补全列表，**不发送**。
+空态容器用 `min-h-full` 在滚动区内垂直居中（旧的 `my-auto` 在块级滚动容器里不生效）。
+
 **补全选择器的移动形态**：Direct（`ConversationPromptInput.vue`）与 Group（`GroupComposer.vue`）的
 斜杠 / @ 候选列表在 `<lg` 时不再用输入框上方的行内浮层，而是整体渲染进 `MobileSheet`
 （Teleport 到 `body`，`test-id` 为 `direct-cmd-sheet` / `group-cmd-sheet`），行高 `min-h-[46px]`；
@@ -461,6 +535,15 @@ Jev 路由配置收拢在“Jev 路由”折叠区，包含 endpoint、API key�
 终端不是热切换，和文件写入开关不同，原因在启动期建立的三个不变量：能力集 `terminal.rmux.recovery.v1` / `terminal.multi-view.v1` 只在握手时上报（hub 按 socket 身份落库，改能力必须重连并重新握手）；`bootstrapTerminal()` 一次完成 registry → RMUX sidecar → reconcile，`onRequest` 的路由判断读的是启动期赋值的 `this.terminal` / `terminalReady`；关闭方向还要求 durable registry 先 reaping 再销毁 sidecar（`retireRelayTerminals`），中途打断会留下 tombstone。要热切换就得让 channel 在同一进程内重建 sidecar 并重发能力，而 hub 侧握手的实例记录只在连接时更新，等于变相重启 channel——所以维持「保存即持久化、重启 channel 生效」。
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
+
+## 执行过程浮层（Run 明细）
+
+抽屉 / 手机 sheet 的头部由 `GroupRunDetailHeader` 渲染状态 chip，正文
+`ConversationRunDetailContent` 不再重复一颗：正文只在「选中的是历史尝试」这一种情况自己渲染
+（那时头部故意隐藏 chip）。成员列表是 `divide-y divide-hairline` 的行，选中用 `bg-fill-strong`，
+不再有外层卡片。`ConversationInteractionForm` 的外壳与 `.agent-bubble` 同族
+（`rounded-card` + `border-hairline` + `shadow-card` + `bg-raised`），选项用 `bg-fill-track` +
+`rounded-item`，选中是 `accent-soft` + `accent-text`，没有描边光晕与左侧色条。
 
 ## Agent 提问表单（elicitation）
 
@@ -524,15 +607,21 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     入口加了 `lg:hidden`，所以移动端行为不变，桌面不重复渲染。侧栏宽度 232px（`lg:w-[232px]`）。
   - **选中会话 / Direct Bot**：全局顶栏（品牌、连接徽标、搜索、终端/桌面/主题/设置）在 `<lg` 隐藏
     （`:class="mobileSingleBar ? 'hidden lg:flex' : 'flex'"`，纯 CSS，桌面不受影响），改为**一条 52px 顶栏**
-    （`h-[calc(3.25rem+env(safe-area-inset-top))]`）：左按钮 `←` 44px（返回首页列表，`data-test="mobile-back"`）、
-    中间头像（会话 = `AgentIcon`，Bot = `BotAvatar` 32）+ 标题（`text-base`）+ 副标题（`text-xs`：
-    `实例 · agent · 分支`，缺项跳过，不会出现前导或连续 `·`）、右侧 `⋯` 40px 打开底部弹出菜单
-    （`components/MobileSheet.vue`：`bg-raised rounded-t-[24px] shadow-float`，backdrop / Esc 关闭，
-    `useModalA11y` 负责焦点进入与归还，条目 ≥48px；`dd-panel` 把面板标成「打开的下拉拥有的浮层」，
-    只有下拉 / 行菜单自己的 sheet 才开，见「统一下拉框」）。会话栏由 `DashboardView` 渲染；Bot 栏由
-    `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；
-    Group 栏由 `GroupPane` 渲染（副标题同样是当前话题，`⋯` 只带编辑群组条目），`DashboardView` 不再渲染
-    群组静态标题条，`mobileSingleBar` 也因此把群组选择算进去（全局顶栏在 `<lg` 让位）。
+    （`h-[calc(3.25rem+env(safe-area-inset-top))]`）。三条手机顶栏（会话 / Direct Bot / 群组）现在是
+    同一套「悬浮玻璃控件」语言：左侧 `←` 圆钮 44（`data-test="mobile-back"`）、中间一枚
+    `glass-control` 名称胶囊（会话 = `AgentIcon`，Direct = `BotAvatar` 56 头像盘，群组 = 拼合头像盘，
+    胶囊里只有名字），右侧 `⋯` 圆钮 44（会话 = `data-test="mobile-more"`，Bot = `mobile-bot-more`，
+    群组 = `mobile-group-more`）。圆钮与胶囊都取自全局 `.glass-control` 配方（见「玻璃三档」），
+    不再用 `bg-surface` 实心条 + `hover:bg-surface-2` 的方块按钮。群组栏的话题 pill 单独占一格，
+    **不能包在玻璃里**：`backdrop-filter` 会成为 fixed 后代的包含块，把话题弹层与行菜单困住；
+    这一格用 `overflow-hidden` + `[&_button]:max-w-full` 把触发器宽度压回轨道（否则它比轨道宽，
+    尾巴压在 `⋯` 下面）。触屏上圆钮与成员盘都是 44。
+    弹出菜单仍是 `components/MobileSheet.vue`（backdrop / Esc 关闭，`useModalA11y` 负责焦点进入与归还，
+    条目 ≥48px；`dd-panel` 把面板标成「打开的下拉拥有的浮层」，只有下拉 / 行菜单自己的 sheet 才开，
+    见「统一下拉框」）。会话栏由 `DashboardView` 渲染；Bot 栏由 `DirectBotPane` 渲染（它自己拥有
+    edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；Group 栏由 `GroupPane` 渲染
+    （副标题同样是当前话题，`⋯` 只带编辑群组条目），`DashboardView` 不再渲染群组静态标题条，
+    `mobileSingleBar` 也因此把群组选择算进去（全局顶栏在 `<lg` 让位）。
   - **`←` 返回**（会话 / Bot / 群组页通用）：不再直接清选择，而是弹掉浏览器历史里我们自己的条目，
     由 popstate 关掉一层（sheet → 右抽屉/全屏标签 → 首页）。没有自有条目时（冷启动 / 深链 /
     PWA 恢复）直接 `router.replace` 回首页，绝不离站。完整规则见下文「手机端返回：浏览器历史即层栈」。

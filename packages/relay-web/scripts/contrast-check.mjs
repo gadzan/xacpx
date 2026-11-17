@@ -143,16 +143,17 @@ const cases = [
   { fg: "--c-on-accent", surface: "accent", min: 4.5, what: "text on accent button" },
   { fg: "--c-on-accent", surface: "accent-hover", min: 4.5, what: "text on accent button (hover)" },
 
-  // Status text on the surfaces it legitimately appears on. Danger text is
-  // never placed on the bare canvas: #D92D20 is only 4.39:1 there, so it
-  // always lives in a card, a glass panel, or a dialog.
+  // Status text on the surfaces it legitimately appears on. Bare --c-danger
+  // is only 4.39:1 on the light canvas, so prose uses --c-danger-text; the
+  // solid token stays for fills and graphics that clear 3:1.
+  { fg: "--c-danger-text", surface: "canvas", min: 4.5, what: "danger text on canvas" },
+  { fg: "--c-danger-text", surface: "raised", min: 4.5, what: "danger text on raised card" },
   { fg: "--c-run", surface: "canvas", min: 4.5, what: "run text on canvas" },
   { fg: "--c-run", surface: "raised", min: 4.5, what: "run text on raised card" },
   { fg: "--c-warn", surface: "canvas", min: 4.5, what: "warn text on canvas" },
   { fg: "--c-warn", surface: "raised", min: 4.5, what: "warn text on raised card" },
   { fg: "--c-danger", surface: "raised", min: 4.5, what: "danger text on raised card" },
   { fg: "--c-on-danger", surface: "danger", min: 4.5, what: "text on danger button" },
-
   // Text inside an overlay (dialog, menu, tooltip, toast). The scrim darkens
   // the surface, so these use the overlay token variants.
   { fg: "--c-fg", surface: "overlay", min: 4.5, what: "body text in overlay" },

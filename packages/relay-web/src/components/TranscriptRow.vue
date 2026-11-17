@@ -57,11 +57,13 @@ const emit = defineEmits<{ speakerClick: [] }>();
         :class="own ? 'flex max-w-[80%] flex-col items-end' : 'flex-1 space-y-2.5'"
       >
         <div v-if="!own && speaker" class="flex items-center gap-2" :class="hideIdentityOnMobile ? 'hidden lg:flex' : ''">
+          <!-- Touch keeps the 44px box, but the text starts at the bubble edge:
+               centered text floats ~10px right and reads as avatar/name gap. -->
           <button
             v-if="speakerClickable"
             type="button"
             data-test="transcript-speaker"
-            class="text-xs font-semibold text-fg transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            class="text-xs font-semibold text-fg transition-colors hover:text-accent-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:inline-flex [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11 [@media(pointer:coarse)]:items-center"
             @click.stop="emit('speakerClick')"
           >{{ speaker }}</button>
           <span v-else class="text-xs font-semibold text-fg">{{ speaker }}</span>
@@ -76,8 +78,12 @@ const emit = defineEmits<{ speakerClick: [] }>();
          max-w-[80%] / content-visibility column: on iOS Safari that column keeps
          its bubble width and paint-clips a wider time+copy row, cutting the
          timestamp. Out here the meta's containing block is the full-width row, so
-         fit-content can never spill past it in any engine. -->
-    <slot name="meta" />
+         fit-content can never spill past it in any engine. Non-own rows indent
+         by the avatar column (ml-11) so the time starts at the bubble's edge;
+         the lg: variant mirrors the avatar, which only takes space on desktop. -->
+    <div v-if="$slots.meta" class="flex" :class="own ? 'justify-end' : (hideLeadingAvatar ? '' : (hideIdentityOnMobile ? 'lg:ml-11' : 'ml-11'))">
+      <slot name="meta" />
+    </div>
   </div>
 </template>
 

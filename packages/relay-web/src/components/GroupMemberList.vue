@@ -76,7 +76,7 @@ function stateLabel(state: (typeof props.rows)[number]["state"]): string {
           <span
             v-if="row.isLead"
             data-test="group-member-lead"
-            class="shrink-0 rounded-sm bg-accent-soft px-1 py-px text-[10px] font-medium text-accent-text"
+            class="shrink-0 rounded-sm bg-accent-soft px-1 py-px text-xs font-medium text-accent-text"
           >{{ $t("group.panel.lead") }}</span>
         </span>
         <span v-if="row.role" data-test="group-member-role" class="truncate text-xs text-fg-muted">{{ row.role }}</span>

@@ -386,9 +386,11 @@ function onSelect(field: InteractionFieldDto, value: string): void {
 </script>
 
 <template>
+  <!-- Same family as `.agent-bubble`: foreground hairline, one card shadow, one
+       radius step up from the rows inside. No second card inside the drawer's card. -->
   <div
     data-test="interaction-form"
-    class="w-full rounded-xl border border-border bg-surface p-4 shadow-sm space-y-4"
+    class="w-full rounded-card border border-hairline bg-raised p-4 shadow-card space-y-4"
   >
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0 flex-1 space-y-1">
@@ -521,10 +523,10 @@ function onSelect(field: InteractionFieldDto, value: string): void {
             v-for="option in [true, false]"
             :key="String(option)"
             type="button"
-            class="rounded-sm px-3 py-1 text-xs transition-colors"
+            class="rounded-item bg-fill-track px-3 py-1.5 text-xs transition-colors"
             :class="String(hasAnswer(answers, field.key) ? answers[field.key] : '') === String(option)
-              ? 'bg-accent-soft text-accent ring-1 ring-accent'
-              : 'text-fg hover:bg-surface'"
+              ? 'bg-accent-soft text-accent-text'
+              : 'text-fg hover:bg-fill-hover'"
             @click="emit('answer', field.key, option)"
           >
             {{ option ? t('bot.interaction.yes') : t('bot.interaction.no') }}
@@ -539,29 +541,29 @@ function onSelect(field: InteractionFieldDto, value: string): void {
             type="button"
             :data-test="`interaction-option-${option.value}`"
             :aria-pressed="isSelected(field, option.value)"
-            class="rounded-md border border-border bg-surface px-3 py-2 text-sm transition-colors"
+            class="rounded-item bg-fill-track px-3 py-2 text-sm transition-colors"
             :class="isSelected(field, option.value)
-              ? 'border-accent bg-accent-soft text-accent ring-1 ring-accent'
-              : 'text-fg hover:bg-surface-2'"
+              ? 'bg-accent-soft text-accent-text'
+              : 'text-fg hover:bg-fill-hover'"
             @click="onSelect(field, option.value)"
           >
             {{ option.label }}
           </button>
         </div>
 
-        <!-- Multi-select: the answer is a string[] of option VALUES, so the
-          renderer must produce an array. A single value here would be rejected by
-          core after the form had already closed. -->
         <div v-else-if="field.kind === 'multi-select'" class="space-y-1">
+          <!-- Multi-select: the answer is a string[] of option VALUES, so the
+            renderer must produce an array. A single value here would be rejected by
+            core after the form had already closed. -->
           <button
             v-for="option in field.options ?? []"
             :key="option.value"
             type="button"
             :data-test="`interaction-multi-${option.value}`"
-            class="mr-1 mb-1 rounded-sm px-2 py-1 text-xs transition-colors"
+            class="mr-1 mb-1 rounded-item bg-fill-track px-2 py-1 text-xs transition-colors"
             :class="(Array.isArray(hasAnswer(answers, field.key) ? answers[field.key] : undefined) ? answers[field.key] as string[] : []).includes(option.value)
-              ? 'bg-accent-soft text-accent ring-1 ring-accent'
-              : 'text-fg hover:bg-surface'"
+              ? 'bg-accent-soft text-accent-text'
+              : 'text-fg hover:bg-fill-hover'"
             @click="onMultiToggle(field, option.value)"
           >
             {{ option.label }}
@@ -600,7 +602,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
       <!-- Field-level problems the renderer can see. Surfaced BEFORE Submit, while
         the form is still open: the interaction resolves on submit, so an answer
         core rejects afterwards is one the user cannot correct. -->
-      <div v-if="invalidFields.length > 0" data-test="interaction-invalid" class="text-xs text-danger">
+      <div v-if="invalidFields.length > 0" data-test="interaction-invalid" class="text-xs text-danger-text">
         <div v-for="entry in invalidFields" :key="entry.field.key">
           {{ t('bot.interaction.fieldInvalid', {
             title: entry.field.title,
@@ -613,7 +615,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
         {{ t('bot.interaction.requiredMissing', { fields: requiredMissing.map((f) => f.title).join(', ') }) }}
       </div>
 
-      <div v-if="errorCode" data-test="interaction-error" class="text-xs font-medium text-danger">
+      <div v-if="errorCode" data-test="interaction-error" class="text-xs font-medium text-danger-text">
         {{ errorCode === 'interactionGone' ? t('bot.interaction.errorGone')
           : errorCode === 'connectorOutdated' ? t('bot.interaction.errorOutdated')
           : t('bot.interaction.errorFailed') }}

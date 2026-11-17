@@ -26,6 +26,9 @@ export default {
         "run-bright": "rgb(var(--c-run-bright) / <alpha-value>)",
         warn: "rgb(var(--c-warn) / <alpha-value>)",
         danger: "rgb(var(--c-danger) / <alpha-value>)",
+        // Danger TEXT. One step deeper than `danger` in light mode so prose
+        // clears 4.5:1. `danger` stays for solid fills and passing graphics.
+        "danger-text": "rgb(var(--c-danger-text) / <alpha-value>)",
         // An rgba token, not an RGB triple: it composites over whatever sits
         // under it. It therefore takes no `/50` opacity modifier.
         "accent-soft": "var(--accent-soft)",
@@ -60,6 +63,8 @@ export default {
         card: "12px",
         dialog: "16px",
         item: "5px",
+        // `pill` is the 999px capsule: the mobile name chips and the starter chips.
+        pill: "999px",
       },
       fontSize: {
         xs: ["12px", "18px"],
@@ -80,6 +85,8 @@ export default {
       },
       backdropBlur: {
         glass: "var(--glass-blur)",
+        // One blur for every dimming layer (dialog, sheet, drawer, palette).
+        scrim: "3px",
       },
       backdropSaturate: {
         glass: "var(--glass-saturate)",
@@ -93,6 +100,17 @@ export default {
         dialog: "var(--shadow-dialog)",
         glass: "inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border)",
         "glass-float": "inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border), var(--glass-shadow)",
+      },
+      zIndex: {
+        // The overlay ladder. Tailwind's numeric scale stops at 50, so the
+        // stacked layers need names: a sheet sits under a dialog, a dialog
+        // opened from another dialog sits above it, and a confirm sits above
+        // both. Anything outside `fixed` positioning should not use these.
+        sheet: "40",
+        dialog: "50",
+        "dialog-nested": "60",
+        "dialog-top": "70",
+        confirm: "100",
       },
     },
   },

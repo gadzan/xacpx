@@ -34,6 +34,7 @@ import MobileConnStrip from "./MobileConnStrip.vue";
 import GroupAvatarStack from "./GroupAvatarStack.vue";
 import GroupMemberPanel from "./GroupMemberPanel.vue";
 import MobileSheet from "./MobileSheet.vue";
+import UiButton from "./UiButton.vue";
 import { useIsMobile } from "../lib/use-dropdown";
 import { backInFlight } from "../lib/mobile-back";
 import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
@@ -651,28 +652,37 @@ const worktreeRunId = computed(() => {
 
 <template>
   <div class="flex h-full flex-col bg-bg text-fg">
-    <!-- Mobile single top bar (<lg): group tile + title, the topic as a tappable subtitle
-         (opens the topic sheet), and ⋯ for the desktop header's edit entry. The topic
-         popover / confirm dialog live in TopicSwitcher, which stays clear of any
-         backdrop-filtered ancestor (see the desktop header below). -->
-    <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
+    <!-- Mobile single top bar (<lg): the same floating language as the Direct pane —
+         ← disc, one glass name capsule (the collage opens the member panel), the topic
+         pill (opens the topic sheet) and ⋯. One text line per control: a 44px pill
+         inside a 52px bar cannot also hold a caption. The topic popover / confirm
+         dialog live in TopicSwitcher, which stays clear of any backdrop-filtered
+         ancestor (see the desktop header below). -->
+    <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1.5 bg-bg px-2 pt-[env(safe-area-inset-top)] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+              class="glass-control grid h-11 w-11 shrink-0 place-items-center rounded-full text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
-      <!-- The collage opens the member panel: it is the Group's membership at a
-           glance, and the panel is the full list behind it. -->
-      <button type="button" data-test="group-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              @click="memberPanelOpen = true">
-        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
-                          :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
-                          :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
-                          style="--avatar-ring: rgb(var(--c-surface))" />
-      </button>
-      <div class="flex min-w-0 flex-1 flex-col">
-        <div class="flex min-w-0 items-center gap-2"><span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span></div>
+      <div class="glass-control flex min-w-0 shrink items-center gap-2 rounded-full py-1 pl-1 pr-3">
+        <button type="button" data-test="group-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
+                class="grid h-9 w-9 shrink-0 place-items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+                @click="memberPanelOpen = true">
+          <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="28" :name="group?.title ?? $t('group.nav.title')"
+                            :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
+                            :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
+                            style="--avatar-ring: transparent" />
+        </button>
+        <span class="max-w-32 truncate text-xs font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span>
+      </div>
+      <!-- NOT glass: a backdrop-filtered ancestor becomes the containing block for
+           fixed descendants and would trap TopicSwitcher's popover and row menu.
+           Only the name capsule is glass; the pill keeps its own surface. -->
+      <!-- `[&_button]:max-w-full` + `overflow-hidden` keep the trigger inside its
+           slot: it lays out wider than the flex track (127 vs 117 at 390px wide), and
+           the ⋯ disc is painted after it, so the overhang sat under a neighbour — found
+           by the 390x844 midpoint hit test. The popover is fixed-positioned, so the
+           clip does not trap it. -->
+      <div v-if="timelineSupported && isMobile && !needsFirstTopic" data-test="group-topic-slot" class="min-w-0 flex-1 overflow-hidden [&_button]:max-w-full">
         <TopicSwitcher
-          v-if="timelineSupported && isMobile && !needsFirstTopic"
           :topics="groupsStore.currentTopics"
           :active-topic-id="groupsStore.activeTopicId"
           :executing-topic-ids="groupsStore.executingTopicIds"
@@ -691,7 +701,7 @@ const worktreeRunId = computed(() => {
         />
       </div>
       <button type="button" data-test="mobile-group-more" :aria-label='$t("common.more")'
-              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="glass-control grid h-11 w-11 shrink-0 place-items-center rounded-full text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="activeSheet = 'more'"><MoreHorizontal :size="20" /></button>
     </div>
     <MobileConnStrip />
@@ -753,7 +763,7 @@ const worktreeRunId = computed(() => {
     </header>
 
 
-    <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
+    <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>
       <button type="button" @click="groupsStore.generalError = null; groupsStore.generalErrorCode = null">
         <X :size="14" />
@@ -787,15 +797,10 @@ const worktreeRunId = computed(() => {
       <MessageSquare :size="22" class="text-fg-muted" />
       <p class="text-sm font-semibold">{{ $t("group.firstTopic.title") }}</p>
       <p class="max-w-sm text-xs text-fg-muted">{{ $t(perMemberGroup ? "group.firstTopic.hintPerMember" : "group.firstTopic.hint") }}</p>
-      <button
-        type="button"
-        data-test="group-first-topic-button"
-        class="mt-1 flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:opacity-90"
-        @click="newTopicDialogOpen = true"
-      >
+      <UiButton size="sm" class="mt-1" data-test="group-first-topic-button" @click="newTopicDialogOpen = true">
         <Plus :size="13" />
         <span>{{ $t("group.firstTopic.action") }}</span>
-      </button>
+      </UiButton>
     </div>
     <!-- One timeline for Group and Direct: the timeline state the upgrade gate
          above did not already claim. -->
@@ -847,7 +852,7 @@ const worktreeRunId = computed(() => {
       </button>
     </div>
     <div v-if="groupsStore.historyError && groupsStore.activeTopicId"
-         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
+         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
       <span>{{ groupsStore.historyErrorDetail ?? groupsStore.historyError }}</span>
       <button type="button"
               class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"

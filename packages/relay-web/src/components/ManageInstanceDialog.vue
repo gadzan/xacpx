@@ -4,8 +4,9 @@ import { useI18n } from "vue-i18n";
 import { X } from "lucide-vue-next";
 import type { ConversationRouterUpdatePayload, JevUpdatePayload } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
-import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
+import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import WorkspacesManager from "./WorkspacesManager.vue";
 import AgentsManager from "./AgentsManager.vue";
 
@@ -41,7 +42,7 @@ function onTabKeydown(e: KeyboardEvent): void {
   e.preventDefault();
   tab.value = TABS[next];
   void nextTick(() => {
-    dialogEl.value?.querySelector<HTMLElement>(`#tab-${TABS[next]}`)?.focus();
+    shell.value?.focusChild(`#tab-${TABS[next]}`);
   });
 }
 
@@ -65,10 +66,9 @@ async function saveName(): Promise<void> {
   }
 }
 
-// Accessibility (shared composable): trap focus inside the dialog, close on Esc, and
-// restore focus to whatever was focused before the dialog opened.
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
+// Dialog focus trap, Escape, and focus restore live in DialogShell; the shell
+// handle is only here to move focus between tabs.
+const shell = ref<InstanceType<typeof DialogShell> | null>(null);
 
 // Automatic collaboration. One panel model per instance from the store; the switch
 // reads the persisted `config.enabled`, never the resolved availability, because
@@ -303,9 +303,13 @@ onMounted(async () => {
   <!-- Teleport to body: the mobile instance drawer uses `transform`, which would
        otherwise trap this fixed overlay inside the narrow off-canvas drawer. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
-    <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="manage-instance-title"
-         class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none" data-test="manage-instance-dialog">
+  <DialogShell
+    ref="shell"
+    panel-class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl focus:outline-none"
+    labelledby="manage-instance-title"
+    test-id="manage-instance-dialog"
+    @close="emit('close')"
+  >
       <header class="flex shrink-0 items-center justify-between px-5 py-3">
         <h2 id="manage-instance-title" class="truncate text-base font-semibold text-fg">{{ $t("instance.manageTitle", { name }) }}</h2>
         <button class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label="$t('instance.close')" @click="navigateBack"><X :size="16" /></button>
@@ -332,8 +336,10 @@ onMounted(async () => {
                 <input v-model="name" data-test="rename-name" :placeholder="$t('instance.renamePlaceholder')"
                        class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                        @keyup.enter="saveName" />
-                <button data-test="rename-save" class="shrink-0 rounded-sm bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
-                        :disabled="renaming || !name.trim()" @click="saveName">{{ renaming ? $t("instance.renameSaving") : $t("instance.renameSave") }}</button>
+                <UiButton data-test="rename-save"
+                          :disabled="renaming || !name.trim()" @click="saveName">
+                  {{ renaming ? $t("instance.renameSaving") : $t("instance.renameSave") }}
+                </UiButton>
               </div>
             </section>
             <section class="space-y-2">
@@ -359,7 +365,7 @@ onMounted(async () => {
                         class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         :class="routerEnabled ? 'bg-accent' : 'bg-surface-2'"
                         @click="toggleRouter">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform"
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
                         :class="routerEnabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
                 </button>
                 <p data-test="router-status" class="text-sm text-fg-muted">{{ routerStatus }}</p>
@@ -381,7 +387,7 @@ onMounted(async () => {
                         class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         :class="terminalSettings?.enabled ? 'bg-accent' : 'bg-surface-2'"
                         @click="toggleTerminal">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform"
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
                         :class="terminalSettings?.enabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
                 </button>
                 <p data-test="terminal-settings-status" class="text-sm text-fg-muted">
@@ -401,7 +407,7 @@ onMounted(async () => {
                         class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         :class="filesSettings?.enabled ? 'bg-accent' : 'bg-surface-2'"
                         @click="toggleFiles">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform"
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
                         :class="filesSettings?.enabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
                 </button>
                 <p data-test="files-settings-status" class="text-sm text-fg-muted">{{ filesStatusText }}</p>
@@ -409,7 +415,7 @@ onMounted(async () => {
               <p data-test="files-settings-hint" class="text-xs text-fg-muted">{{ $t("instance.filesSettingsHint") }}</p>
               <p v-if="filesError" data-test="files-settings-error" class="text-xs text-danger-overlay">{{ filesError }}</p>
             </section>
-            <details v-if="jevEditable || jevUpgradeNotice" data-test="jev-details" class="rounded-lg border border-border/70 px-3 py-2">
+            <details v-if="jevEditable || jevUpgradeNotice" data-test="jev-details" class="rounded-lg border border-hairline px-3 py-2">
               <summary class="cursor-pointer text-sm font-semibold text-fg">{{ $t("instance.jevTitle") }}</summary>
               <p v-if="jevUpgradeNotice" data-test="jev-upgrade-notice" class="mt-2 text-xs text-fg-muted">{{ $t(jevUpgradeNotice) }}</p>
               <div v-if="jevEditable" data-test="jev-settings" class="mt-2 space-y-2">
@@ -448,15 +454,13 @@ onMounted(async () => {
                 <p data-test="jev-model" class="font-mono text-xs text-fg">{{ jevSettings?.model }}</p>
               </div>
               <div class="flex flex-wrap items-center gap-2">
-                <button data-test="jev-save" type="button"
-                        class="rounded-sm bg-accent px-3 py-1.5 text-xs text-on-accent hover:bg-accent-hover disabled:opacity-50"
-                        :disabled="jevSaving || !instanceOnline" @click="saveJev">
+                <UiButton size="sm" data-test="jev-save"
+                          :disabled="jevSaving || !instanceOnline" @click="saveJev">
                   {{ jevSaving ? $t("instance.jevSaving") : $t("instance.jevSave") }}
-                </button>
-                <button data-test="jev-test" type="button"
-                        class="rounded-sm px-3 py-1.5 text-xs text-fg hover:bg-fg/5 disabled:opacity-50"
-                        :disabled="jevPanel.phase !== 'editable' || jevPanel.test.kind === 'testing' || !instanceOnline"
-                        @click="testJev">{{ $t("instance.jevTestButton") }}</button>
+                </UiButton>
+                <UiButton variant="ghost" size="sm" data-test="jev-test"
+                          :disabled="jevPanel.phase !== 'editable' || jevPanel.test.kind === 'testing' || !instanceOnline"
+                          @click="testJev">{{ $t("instance.jevTestButton") }}</UiButton>
                 <span v-if="jevTestView" data-test="jev-test-result" class="text-xs"
                       :class="jevTestView.kind === 'ok' ? 'text-success' : jevTestView.kind === 'failed' ? 'text-error' : 'text-fg-muted'">
                   {{ jevTestView.kind === 'testing' ? $t("instance.jevTesting") : jevTestView.text }}
@@ -477,7 +481,6 @@ onMounted(async () => {
           <div v-else-if="tab === 'agents'" id="tabpanel-agents" role="tabpanel" aria-labelledby="tab-agents"><AgentsManager :instance-id="instanceId" /></div>
         </div>
       </template>
-    </div>
-  </div>
+  </DialogShell>
   </Teleport>
 </template>

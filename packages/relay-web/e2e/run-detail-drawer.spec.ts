@@ -8,7 +8,7 @@ import type {
   MemberTurnSummaryDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
-import { test, expect, loginAndShowInstances } from "./fixtures";
+import { test, expect, loginAndShowInstances, expectTouchTarget } from "./fixtures";
 import type { MockHub } from "./mock-hub";
 
 /**
@@ -284,7 +284,9 @@ test("Run-wide drawer: entries, member switch, scoped Stop, approval, budget, li
   await expect(drawer(page).getByTestId("run-detail")).toBeVisible();
   await expect(drawer(page).getByTestId("run-member-row")).toHaveCount(3);
   await expect(drawer(page).getByTestId("run-detail-budget")).toContainText("2/6 member turns");
-  await expect(drawer(page).getByTestId("run-detail-state")).toContainText("Running");
+  // One state chip per drawer: the header owns it.
+  await expect(drawer(page).getByTestId("group-detail-state")).toContainText("Running");
+  await expect(drawer(page).getByTestId("run-detail-state")).toHaveCount(0);
   // Stop all lives in the status bar; the drawer only has the scoped stop.
   await expect(drawer(page).getByTestId("group-stop-run-button")).toHaveCount(0);
   await drawer(page).getByTestId("group-detail-close").click();
@@ -402,4 +404,29 @@ test("roundtable never offers a per-member Stop in the drawer", async ({ page, h
   await drawer(page).getByTestId("run-member-row").filter({ hasText: "Bob" }).click();
   await expect(drawer(page).getByTestId("run-selected-member")).toHaveAttribute("data-member-turn-id", "turn_reviewer");
   await expect(drawer(page).getByTestId("run-stop-member")).toHaveCount(0);
+});
+
+test("retried attempt selector is a 44px touch target", async ({ page, hub }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-mobile", "coarse pointer only");
+  await openDrawer(page, hub, "fanout");
+  // A retried member: the trace page carries two attempts, so the header
+  // renders the compact attempt SelectMenu this test measures.
+  await page.route("**/api/instances/i1/rpc", async (route) => {
+    const body = route.request().postDataJSON() as { type: string; payload?: Record<string, unknown> };
+    if (body.type !== "control.runs.trace.get") return route.fallback();
+    await route.fulfill({ json: { result: {
+      memberTurnId: String(body.payload?.memberTurnId ?? ""),
+      attempt: 1,
+      recordingState: "recording",
+      events: [],
+      nextSeq: 0,
+      hasMore: false,
+      attempts: [1, 2],
+      plan: [],
+    } } });
+  });
+  await page.getByTestId("timeline-open-detail").click();
+  await expect(drawer(page).getByTestId("run-detail")).toBeVisible();
+  await expect(drawer(page).getByTestId("group-detail-attempt")).toBeVisible();
+  await expectTouchTarget(page, "group-detail-attempt");
 });

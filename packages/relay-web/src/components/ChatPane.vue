@@ -202,7 +202,7 @@ onUnmounted(() => clearInterval(timer));
                 :title='$t("chat.browseFiles")'
                 @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-warn" /><span>{{ currentSession.workspace }}</span></button>
         <span v-if="instance?.name" data-test="ctx-chip-instance"
-              class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><span class="font-mono text-accent">@</span><span>{{ instance.name }}</span></span>
+              class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><span class="font-mono text-accent-text">@</span><span>{{ instance.name }}</span></span>
         <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
               class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
         <button v-if="files.gitSummary" data-test="git-summary"
@@ -218,7 +218,7 @@ onUnmounted(() => clearInterval(timer));
       </div>
     </div>
     <div v-if="chat.error" data-test="chat-error"
-         class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger">
+         class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger-text">
       <AlertTriangle :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
       <div class="min-w-0 flex-1">
         <p class="max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-ui leading-relaxed">{{ modelRestore ? $t('chat.modelRestoreFailed', { model: modelRestore.modelId ?? '' }) : chat.error }}</p>
@@ -235,7 +235,7 @@ onUnmounted(() => clearInterval(timer));
          class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
       <template v-if="currentSession?.createError">
         <AlertTriangle :size="22" class="text-danger" aria-hidden="true" />
-        <p class="text-sm font-medium text-danger">{{ $t("session.startFailed") }}</p>
+        <p class="text-sm font-medium text-danger-text">{{ $t("session.startFailed") }}</p>
         <p class="max-w-sm break-words text-xs text-fg-muted">{{ currentSession.createError }}</p>
         <button data-test="booting-dismiss" class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg hover:bg-fg/5"
                 @click="dismissBooting">{{ $t("common.dismiss") }}</button>
@@ -339,6 +339,12 @@ onUnmounted(() => clearInterval(timer));
 .composer-layer-leave-to {
   opacity: 0;
   transform: translateY(8px) scale(0.98);
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-layer-enter-active,
+  .composer-layer-leave-active {
+    transition: none;
+  }
 }
 /* Deliberately NO `.composer-layer-move` rule. TransitionGroup's move transition is a
    FLIP: Vue records each child's rect before the update and writes the delta as an inline

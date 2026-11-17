@@ -6,7 +6,8 @@ import type { BotSummaryDto, ConversationRunStateDto, GroupSummaryDto } from "@g
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
 import { supportsGroupDefaultRouting, supportsGroupPublicMemorySwitch, supportsGroupWorkspaceMode, supportsHandoffMemorySummary, useInstancesStore } from "../stores/instances";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { pushToast } from "../lib/use-toasts";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
@@ -43,9 +44,6 @@ const supportsPublicMemorySwitch = computed(() => supportsGroupPublicMemorySwitc
 // An older core drops `defaultRouting` from the payload and never sends it
 // back, so the setting is hidden rather than silently discarded.
 const supportsDefaultRouting = computed(() => supportsGroupDefaultRouting(instancesStore.byId(props.instanceId)));
-
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 // The edit baseline is what the dialog opened with. The prop may be a live
 // store row, and diffing against a row that a remote edit already moved would
@@ -384,15 +382,13 @@ async function confirmDelete(): Promise<void> {
 <template>
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-scrim p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
-       @click.self="navigateBack">
-    <div ref="dialogEl"
-         role="dialog"
-         aria-modal="true"
-         aria-labelledby="group-dialog-title"
-         tabindex="-1"
-         data-test="group-dialog"
-         class="flex max-h-full w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-2xl bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+  <DialogShell
+    panel-class="flex max-h-full w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-2xl"
+    labelledby="group-dialog-title"
+    test-id="group-dialog"
+    safe-area
+    @close="emit('close')"
+  >
       <div class="flex shrink-0 items-center justify-between px-5 py-3.5">
         <h2 id="group-dialog-title" class="text-base font-semibold text-fg">
           {{ isEditing ? $t("group.manage.editTitle") : $t("group.manage.createTitle") }}
@@ -467,7 +463,7 @@ async function confirmDelete(): Promise<void> {
           <button v-if="!memberWorkLoading"
                   type="button"
                   data-test="group-dialog-member-work-refresh"
-                  class="font-medium text-accent hover:underline"
+                  class="font-medium text-accent-text hover:underline"
                   @click="locateMemberWork">
             {{ $t("group.manage.refresh") }}
           </button>
@@ -578,7 +574,7 @@ async function confirmDelete(): Promise<void> {
                  data-test="group-dialog-bots-error"
                  class="flex items-center justify-between gap-2 py-2 text-xs text-danger-overlay">
               <span>{{ $t("group.manage.botsLoadFailed", { msg: catalogError }) }}</span>
-              <button type="button" class="font-medium text-accent hover:underline" @click="loadCatalog">
+              <button type="button" class="font-medium text-accent-text hover:underline" @click="loadCatalog">
                 {{ $t("common.retry") }}
               </button>
             </div>
@@ -587,13 +583,10 @@ async function confirmDelete(): Promise<void> {
                    data-test="group-dialog-need-bots"
                    class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-accent-soft p-3 text-xs">
                 <span class="flex-1 leading-relaxed">{{ $t("group.manage.needBots", { count: memberCandidates.length }) }}</span>
-                <button type="button"
-                        data-test="group-dialog-create-bot"
-                        class="flex shrink-0 items-center gap-1 rounded-sm bg-accent px-2 py-1 font-medium text-on-accent hover:opacity-90"
-                        @click="emit('createBot')">
+                <UiButton size="sm" data-test="group-dialog-create-bot" @click="emit('createBot')">
                   <Plus :size="12" />
                   <span>{{ $t("bot.actions.newBot") }}</span>
-                </button>
+                </UiButton>
               </div>
               <div class="max-h-56 space-y-px overflow-y-auto rounded-lg bg-bg p-1 thin-scroll">
                 <label v-for="bot in memberCandidates"
@@ -602,7 +595,7 @@ async function confirmDelete(): Promise<void> {
                        class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-raised">
                   <input type="checkbox"
                          :checked="memberIds.includes(bot.id)"
-                         class="rounded-sm border-border text-accent focus:ring-accent"
+                         class="rounded-sm border-hairline text-accent focus:ring-accent"
                          @change="toggleMember(bot.id)" />
                   <span class="flex min-w-0 flex-1 flex-col">
                     <span class="truncate text-sm" :class="bot.enabled ? 'text-fg' : 'text-fg-muted'">
@@ -620,7 +613,7 @@ async function confirmDelete(): Promise<void> {
                        :key="id"
                        :data-test="`group-dialog-member-${id}`"
                        class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-raised">
-                  <input type="checkbox" checked class="rounded-sm border-border" @change="toggleMember(id)" />
+                  <input type="checkbox" checked class="rounded-sm border-hairline" @change="toggleMember(id)" />
                   <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">{{ id }}</span>
                 </label>
               </div>
@@ -735,37 +728,26 @@ async function confirmDelete(): Promise<void> {
       </form>
 
       <div class="flex shrink-0 items-center justify-between gap-2.5 px-5 py-3">
-        <button v-if="isEditing && !isDeleting"
-                type="button"
-                data-test="group-dialog-delete"
-                :disabled="confirmingDelete || deletingNow || submitting"
-                class="flex items-center gap-1 rounded-btn px-2 py-1.5 text-xs font-medium text-danger-overlay transition-colors hover:bg-danger/10 disabled:opacity-50"
-                @click="askDelete">
+        <UiButton v-if="isEditing && !isDeleting"
+                  variant="danger-ghost"
+                  size="sm"
+                  data-test="group-dialog-delete"
+                  :disabled="confirmingDelete || deletingNow || submitting"
+                  @click="askDelete">
           <Trash2 :size="13" />
           <span>{{ $t("group.manage.delete") }}</span>
-        </button>
+        </UiButton>
         <span v-else />
         <div class="flex items-center gap-2.5">
-          <button
-            type="button"
-            class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover"
-            @click="navigateBack"
-          >
+          <UiButton variant="secondary" @click="navigateBack">
             {{ $t("common.cancel") }}
-          </button>
-          <button
-            type="button"
-            data-test="group-dialog-save"
-            :disabled="!canSave"
-            class="flex h-8 items-center gap-1.5 rounded-btn bg-accent px-4 text-ui font-semibold text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
-            @click="submit"
-          >
+          </UiButton>
+          <UiButton data-test="group-dialog-save" :disabled="!canSave" @click="submit">
             <Loader2 v-if="submitting" :size="13" class="animate-spin" />
             <span>{{ isEditing ? $t("common.save") : $t("common.create") }}</span>
-          </button>
+          </UiButton>
         </div>
       </div>
-    </div>
-  </div>
+  </DialogShell>
   </Teleport>
 </template>

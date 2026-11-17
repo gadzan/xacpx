@@ -47,7 +47,7 @@ const showErrorBanner = computed(() => {
     </div>
     <template v-else>
       <div v-if="showErrorBanner" data-test="tool-step-error"
-           class="mb-1.5 flex items-start gap-1.5 rounded-sm bg-danger/10 px-2 py-1.5 text-danger font-mono text-xs">
+           class="mb-1.5 flex items-start gap-1.5 rounded-sm bg-danger/10 px-2 py-1.5 text-danger-text font-mono text-xs">
         <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
         <span class="whitespace-pre-wrap break-words leading-relaxed">{{ step.error }}</span>
       </div>

@@ -37,7 +37,7 @@ const dateTime = computed(() => {
 <style scoped>
 .conversation-operations {
   opacity: 0;
-  transition: opacity 120ms;
+  transition: opacity var(--dur-fast) var(--ease);
 }
 .conversation-meta:hover .conversation-operations,
 .conversation-meta:focus-within .conversation-operations,

@@ -5,7 +5,8 @@ import { X, Loader2, AlertCircle, ChevronLeft, Pencil } from "lucide-vue-next";
 import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, supportsBotDedicatedWorkspaceUpdate, useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import type { BotAvatarState } from "../lib/bot-avatar-state";
@@ -32,9 +33,6 @@ const instancesStore = useInstancesStore();
 const directBotsStore = useDirectBotsStore();
 
 const inst = computed(() => instancesStore.byId(props.instanceId));
-
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 const isEditing = computed(() => !!props.bot);
 // The Bot's own daemon-allocated workspace. It is private: the instance never
@@ -469,15 +467,12 @@ function describeSubmitError(err: unknown): string {
 <template>
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-scrim p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
-       @click.self="navigateBack">
-    <div ref="dialogEl"
-         role="dialog"
-         aria-modal="true"
-         :aria-labelledby="'bot-dialog-title'"
-         tabindex="-1"
-       class="relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
-       :class="view === 'appearance' ? 'max-w-3xl' : 'max-w-lg'">
+  <DialogShell
+    :panel-class="`relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl ${view === 'appearance' ? 'max-w-3xl' : 'max-w-lg'}`"
+    labelledby="bot-dialog-title"
+    safe-area
+    @close="emit('close')"
+  >
       <!-- Header -->
       <div class="flex shrink-0 items-center justify-between gap-2 px-5 py-3.5">
         <div class="flex min-w-0 items-center gap-1.5">
@@ -540,7 +535,7 @@ function describeSubmitError(err: unknown): string {
             <button type="button" data-test="bot-avatar-quick-view"
                     :aria-label="$t('bot.avatar.quickView')"
                     aria-haspopup="dialog"
-                    class="block rounded-xl outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent"
+                    class="block rounded-2xl outline-none transition-transform duration-150 ease-ui motion-reduce:transition-none hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent"
                     @click="avatarQuickView = true">
               <BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="56" static />
             </button>
@@ -678,7 +673,7 @@ function describeSubmitError(err: unknown): string {
                 v-model="enabled"
                 @change="enabledDirty = true"
                 type="checkbox"
-                class="rounded-sm border-border text-accent focus:ring-accent"
+                class="rounded-sm border-hairline text-accent focus:ring-accent"
               />
               <span class="font-medium text-xs">{{ $t("bot.fields.enabled") }}</span>
             </label>
@@ -701,35 +696,33 @@ function describeSubmitError(err: unknown): string {
 
       <!-- Footer -->
       <div class="flex shrink-0 items-center justify-end gap-2.5 px-5 py-3">
-        <button
+        <UiButton
           v-if="isEditing && props.bot && props.bot.retired !== true"
-          type="button"
+          variant="danger-ghost"
+          size="sm"
           data-test="bot-dialog-remove"
-          class="mr-auto rounded-btn px-3 py-1.5 text-xs font-medium text-danger-overlay transition-colors hover:bg-danger/10"
+          class="mr-auto"
           @click="removalOpen = true"
         >
           {{ $t("bot.removal.action") }}
-        </button>
-        <button
-          type="button"
-          class="h-8 rounded-btn border border-hairline bg-raised px-3 text-xs font-medium text-fg transition-colors hover:bg-fill-hover hover:text-fg"
-          @click="navigateBack"
-        >
+        </UiButton>
+        <UiButton variant="secondary" size="sm" @click="navigateBack">
           {{ $t("common.cancel") }}
-        </button>
-        <button
-          type="button"
+        </UiButton>
+        <UiButton
+          size="sm"
           :disabled="submitting || !name.trim() || nameNeedsWorkspaceChars || (isEditing && !!props.bot && !detailHydrated)"
-          class="flex h-8 items-center gap-1.5 rounded-btn bg-accent px-4 text-xs font-semibold text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
           @click="submit"
         >
           <Loader2 v-if="submitting" :size="13" class="animate-spin" />
           <span>{{ isEditing ? $t("common.save") : $t("common.create") }}</span>
-        </button>
+        </UiButton>
       </div>
       <BotAvatarQuickView v-if="avatarQuickView" :avatar="avatar" :driver="avatarDriver" :name="name"
                           @close="avatarQuickView = false" />
-    </div>
+  </DialogShell>
+    <!-- Sibling, not a child: the removal dialog must not be clipped by the
+         panel's `overflow-hidden`, and it stacks one rung higher. -->
     <BotRemovalDialog
       v-if="removalOpen && props.bot"
       :bot-name="props.bot.name"
@@ -741,6 +734,5 @@ function describeSubmitError(err: unknown): string {
       @close="removalOpen = false"
       @removed="removalOpen = false; emit('close')"
     />
-  </div>
   </Teleport>
 </template>

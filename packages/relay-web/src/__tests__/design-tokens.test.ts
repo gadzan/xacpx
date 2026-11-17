@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { contrastRatio, parseCssColor } from "../lib/wcag-contrast";
@@ -92,6 +92,8 @@ const CONTRAST_CASES: Array<[string, string, Surface, number]> = [
   ["warn text on canvas", "--c-warn", "canvas", 4.5],
   ["warn text on raised card", "--c-warn", "raised", 4.5],
   ["danger text on raised card", "--c-danger", "raised", 4.5],
+  ["danger-text token on canvas", "--c-danger-text", "canvas", 4.5],
+  ["danger-text token on raised card", "--c-danger-text", "raised", 4.5],
   ["body text in overlay", "--c-fg", "overlay", 4.5],
   ["muted text in overlay", "--c-fg-muted-overlay", "overlay", 4.5],
   ["danger text in overlay", "--c-danger-overlay", "overlay", 4.5],
@@ -121,6 +123,12 @@ describe("design tokens", () => {
     expect(light["--c-accent"]).not.toBe(light["--c-accent-text"]);
     expect(contrastRatio(resolve(light, "--c-accent", [255, 255, 255]), resolve(light, "--c-bg", [255, 255, 255]))).toBeLessThan(4.5);
     expect(contrastRatio(resolve(light, "--c-accent-text", [255, 255, 255]), resolve(light, "--c-bg", [255, 255, 255]))).toBeGreaterThanOrEqual(4.5);
+  });
+  it("gives light danger prose a deeper colour than the solid danger", () => {
+    // #D92D20 as text on the canvas is 4.39:1, below AA. Prose uses #C4180B.
+    // The dark theme reuses #FF6961 for both roles because it clears AA as text.
+    expect(light["--c-danger"]).not.toBe(light["--c-danger-text"]);
+    expect(dark["--c-danger-text"]).toBe("255 105 97");
   });
   it("gives the dark theme a dark on-accent colour, not white", () => {
     // #409CFF with white text is 2.61:1.
@@ -163,6 +171,40 @@ describe("composer motion", () => {
       expect(transition[1]).not.toContain("backdrop");
       expect(transition[1]).not.toContain("shadow");
     }
+  });
+});
+
+describe("motion tokens", () => {
+  // One motion vocabulary outside the composer. The composer is frozen by
+  // design (it keeps its own 200ms ease-out and its two transition-all), so the
+  // rules below are checked against every other source file.
+  const srcDir = join(here, "..");
+  const sources = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
+    .filter((f) => /\.(vue|ts|css)$/.test(f) && !f.includes("__tests__"))
+    .map((f) => ({ file: f, text: readFileSync(join(srcDir, f), "utf8") }))
+    .filter(({ file }) => file !== "components/ConversationComposer.vue");
+
+  it("declares the three duration tokens plus the shared easing", () => {
+    expect(light["--dur-fast"]).toBe("120ms");
+    expect(light["--dur-base"]).toBe("150ms");
+    expect(light["--dur-sheet"]).toBe("180ms");
+    expect(light["--ease"]).toBe("cubic-bezier(.23, 1, .32, 1)");
+    expect(tailwindConfig).toContain('ui: "cubic-bezier(.23,1,.32,1)"');
+  });
+
+  it("keeps transition-all out of every non-composer component", () => {
+    const offenders = sources.filter(({ text }) => text.includes("transition-all")).map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("guards every transform transition against reduced motion", () => {
+    // A rotate/translate that ignores prefers-reduced-motion defeats the guard.
+    // Position-only `-translate-*` utilities are geometry, not motion.
+    const offenders = sources
+      .filter(({ text }) => /transition-transform/.test(text))
+      .filter(({ text }) => !/motion-reduce:transition-none|prefers-reduced-motion/.test(text))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
   });
 });
 

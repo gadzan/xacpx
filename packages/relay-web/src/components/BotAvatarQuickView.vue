@@ -23,7 +23,7 @@ useModalA11y(dialogEl, () => emit("close"));
 
 <template>
   <Teleport to="body">
-    <div class="fixed inset-0 z-[60] grid place-items-center bg-black/60 p-4"
+    <div class="fixed inset-0 z-dialog-nested grid place-items-center bg-scrim p-4"
          data-test="bot-avatar-quick-view-overlay"
          @click.self="emit('close')">
       <div ref="dialogEl"

@@ -9,6 +9,7 @@ import type {
 import { fmtTime } from "../lib/format";
 import { memberStateKey, memberStateTone, runStateKey, runStateTone, type StateTone } from "../lib/run-state-label";
 import { useLiveDuration, memberDurationClock } from "../lib/run-duration";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 const props = defineProps<{
   run: ConversationRunDto;
@@ -42,9 +43,9 @@ const tone = computed<StateTone>(() => {
 
 const toneClass = computed(() => {
   switch (tone.value) {
-    case "active": return "bg-accent/[0.14] text-accent";
+    case "active": return "bg-accent/[0.14] text-accent-text";
     case "done": return "bg-run/[0.14] text-run";
-    case "failed": return "bg-danger/[0.14] text-danger";
+    case "failed": return "bg-danger/[0.14] text-danger-text";
     case "waiting": return "bg-warn/[0.16] text-warn";
     case "idle": return "bg-surface-2 text-fg-muted";
   }
@@ -64,6 +65,15 @@ const attemptLabel = computed(() => {
   if (props.attempts && props.attempts.length > 1) return undefined;
   return selected > 1 ? t("group.detail.attempt", { attempt: selected }) : undefined;
 });
+
+/** The retried attempts as one SelectMenu group; picking one re-reads its trace. */
+const attemptGroups = computed<SelectGroup[]>(() => [{
+  options: (props.attempts ?? []).map((available) => ({
+    value: String(available),
+    label: t("group.detail.attempt", { attempt: available }),
+    testId: `group-detail-attempt-${available}`,
+  })),
+}]);
 
 const meta = computed(() => {
   const parts: string[] = [];
@@ -119,7 +129,7 @@ const ariaLabel = computed(() =>
           v-if="stopAvailable"
           type="button"
           data-test="group-stop-run-button"
-          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-danger/[0.14] font-medium text-danger transition-colors hover:bg-danger/20 disabled:opacity-60"
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-danger/[0.14] font-medium text-danger-text transition-colors hover:bg-danger/20 disabled:opacity-60"
           :class="dense ? 'h-7 px-2 text-xs' : 'min-h-11 px-3 text-sm'"
           :disabled="stopPending === true"
           :title="$t('group.detail.stopAllMembers')"
@@ -175,21 +185,22 @@ const ariaLabel = computed(() =>
       </template>
     </div>
 
-    <label
+    <div
       v-if="attempts && attempts.length > 1"
-      class="mt-2 inline-flex items-center gap-1.5 text-xs text-fg-muted"
+      class="mt-2 flex items-center gap-1.5 text-xs text-fg-muted"
     >
-      {{ $t("group.detail.attemptLabel") }}
-      <select
+      <label for="group-detail-attempt">{{ $t("group.detail.attemptLabel") }}</label>
+      <SelectMenu
+        id="group-detail-attempt"
         data-test="group-detail-attempt"
-        class="rounded-sm bg-surface-2 px-1.5 py-1 text-fg"
-        :value="attempt ?? memberTurn?.attempt"
-        @change="emit('attempt', Number(($event.target as HTMLSelectElement).value))"
-      >
-        <option v-for="availableAttempt in attempts" :key="availableAttempt" :value="availableAttempt">
-          {{ $t("group.detail.attempt", { attempt: availableAttempt }) }}
-        </option>
-      </select>
-    </label>
+        compact
+        placement="bottom"
+        :model-value="String(attempt ?? memberTurn?.attempt ?? '')"
+        :groups="attemptGroups"
+        :aria-label="$t('group.detail.attemptLabel')"
+        :title="$t('group.detail.attemptLabel')"
+        @update:model-value="(value) => emit('attempt', Number(value))"
+      />
+    </div>
   </header>
 </template>

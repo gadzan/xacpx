@@ -44,13 +44,13 @@ async function create() {
   <div class="shrink-0 bg-surface p-3">
     <div class="mb-2 flex items-center gap-1.5">
       <CalendarClock :size="13" class="shrink-0 text-fg-muted" />
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.scheduled") }}</h3>
+      <h3 class="text-xs font-medium text-fg-muted">{{ $t("tasks.scheduled") }}</h3>
       <span v-if="tasks.scheduled.length" class="rounded-full bg-bg px-1.5 font-mono text-xs tabular-nums text-fg-muted">{{ tasks.scheduled.length }}</span>
       <button type="button" data-test="scheduled-compose-toggle" :title="$t('tasks.newScheduled')" :aria-label="$t('tasks.newScheduled')"
               class="ml-auto grid h-6 w-6 place-items-center rounded-sm transition-colors hover:bg-raised hover:text-fg"
               :class="composerOpen ? 'bg-raised text-fg' : 'text-fg-muted'"
               @click="composerOpen = !composerOpen">
-        <Plus :size="14" class="transition-transform" :class="composerOpen ? 'rotate-45' : ''" />
+        <Plus :size="14" class="transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="composerOpen ? 'rotate-45' : ''" />
       </button>
     </div>
 
@@ -60,7 +60,7 @@ async function create() {
     </ul>
 
     <button v-if="overflow > 0" type="button" data-test="scheduled-view-all"
-            class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-sm bg-bg px-2 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-accent-soft hover:text-accent"
+            class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-sm bg-bg px-2 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-accent-soft hover:text-accent-text"
             @click="drawerOpen = true">
       {{ $t("tasks.viewAll", { count: tasks.scheduled.length }) }}
       <ChevronDown :size="12" />
@@ -69,11 +69,11 @@ async function create() {
     <!-- create form: tucked behind the "+" toggle so the panel stays compact by default -->
     <form v-if="composerOpen" data-test="scheduled-composer" class="mt-2 space-y-2 rounded-lg bg-bg p-2.5" @submit.prevent="create">
       <label class="flex flex-col gap-1">
-        <span class="text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.whenLabel") }}</span>
+        <span class="text-xs font-medium text-fg-muted">{{ $t("tasks.whenLabel") }}</span>
         <input v-model="executeAt" type="datetime-local" class="w-full min-w-0 rounded-sm bg-surface-2 px-2 py-1 text-xs text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent" />
       </label>
       <label class="flex flex-col gap-1">
-        <span class="text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.messageLabel") }}</span>
+        <span class="text-xs font-medium text-fg-muted">{{ $t("tasks.messageLabel") }}</span>
         <input v-model="message" :placeholder="$t('tasks.messagePlaceholder')" class="w-full rounded-sm bg-surface-2 px-2 py-1 text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent" />
       </label>
       <div class="flex items-center gap-1.5 pt-0.5">
@@ -87,11 +87,11 @@ async function create() {
          to the right edge so the sidebar stays compact. -->
     <Teleport to="body">
       <Transition
-        enter-active-class="transition-opacity duration-200 ease-out motion-reduce:transition-none"
+        enter-active-class="transition-opacity duration-150 ease-ui motion-reduce:transition-none"
         enter-from-class="opacity-0"
-        leave-active-class="transition-opacity duration-150 ease-in motion-reduce:transition-none"
+        leave-active-class="transition-opacity duration-150 ease-ui motion-reduce:transition-none"
         leave-to-class="opacity-0">
-        <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-scrim backdrop-blur-sm" @click.self="navigateBack" @keydown.esc="navigateBack">
+        <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-scrim backdrop-blur-scrim" @click.self="navigateBack" @keydown.esc="navigateBack">
           <aside class="flex h-full w-full max-w-md flex-col bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass" role="dialog" :aria-label="$t('tasks.allScheduled')">
             <header class="flex items-center justify-between px-4 py-3">
               <h2 class="text-sm font-semibold text-fg">{{ $t("tasks.scheduledCount", { count: tasks.scheduled.length }) }}</h2>

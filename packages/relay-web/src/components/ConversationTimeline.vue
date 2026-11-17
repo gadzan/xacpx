@@ -168,7 +168,7 @@ defineExpose({ scrollToBottom });
         v-if="forkSourceAvailable"
         type="button"
         data-test="topic-fork-banner-source"
-        class="font-medium text-accent underline-offset-2 hover:underline"
+        class="font-medium text-accent-text underline-offset-2 hover:underline"
         @click="emit('openSourceTopic')"
       >
         {{ $t("group.topic.forkSource") }}
@@ -197,12 +197,14 @@ defineExpose({ scrollToBottom });
       <div
         v-if="!loading && rows.length === 0"
         data-test="timeline-empty"
-        class="my-auto flex flex-col items-center justify-center gap-2 py-12 text-center"
+        class="flex min-h-full flex-col items-center justify-center gap-2 py-12 text-center"
       >
-        <MessagesSquare :size="22" class="text-fg-muted" />
-        <p data-test="timeline-empty-hint" class="text-xs text-fg-muted">
-          {{ emptyHint ?? $t("conversation.timeline.empty") }}
-        </p>
+        <slot name="empty" :hint="emptyHint ?? $t('conversation.timeline.empty')">
+          <MessagesSquare :size="22" class="text-fg-muted" />
+          <p data-test="timeline-empty-hint" class="text-xs text-fg-muted">
+            {{ emptyHint ?? $t("conversation.timeline.empty") }}
+          </p>
+        </slot>
       </div>
 
       <div v-else class="mx-auto max-w-3xl space-y-5">
@@ -220,7 +222,7 @@ defineExpose({ scrollToBottom });
         />
       </div>
 
-      <p v-if="error" data-test="timeline-error" class="mt-3 text-center text-xs text-danger">
+      <p v-if="error" data-test="timeline-error" class="mt-3 text-center text-xs text-danger-text">
         {{ error }}
       </p>
     </div>

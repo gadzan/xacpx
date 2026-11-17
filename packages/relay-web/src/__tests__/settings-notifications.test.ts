@@ -25,6 +25,7 @@ vi.mock("../lib/use-confirm", () => ({ confirm: vi.fn() }));
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import SettingsView from "../views/SettingsView.vue";
+import Tooltip from "../components/Tooltip.vue";
 import { i18n } from "../i18n";
 
 function mountSettings() {
@@ -144,7 +145,9 @@ describe("settings notifications section", () => {
     await w.find('[data-test="notif-toggle"]').trigger("click");
     await flush();
     expect(w.find('[data-test="notif-state"]').text()).toBe("Notification permission denied");
-    expect(w.text()).toContain("browser site settings");
+    expect(w.find('[data-test="notif-info"]').exists()).toBe(true);
+    const texts = w.findAllComponents(Tooltip).map((tip) => String(tip.props("text")));
+    expect(texts.join(" ")).toContain("browser site settings");
     vi.unstubAllGlobals();
   });
 
@@ -185,19 +188,19 @@ describe("settings notifications section", () => {
   });
 
   it("renders iOS / iPadOS Home Screen notification hint only on iOS/iPadOS", async () => {
-    // 1. Desktop UA -> hint not rendered
+    // 1. Desktop UA -> no info icon (the row stays a single line)
     vi.stubGlobal("navigator", { ...navigator, userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", maxTouchPoints: 0 });
     const wDesktop = mountSettings();
     await flush();
-    expect(wDesktop.find('[data-test="notif-ios-hint"]').exists()).toBe(false);
+    expect(wDesktop.find('[data-test="notif-info"]').exists()).toBe(false);
 
-    // 2. iOS UA -> hint rendered
+    // 2. iOS UA -> the hint rides the info icon's tooltip text
     vi.stubGlobal("navigator", { ...navigator, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", maxTouchPoints: 5 });
     const wIos = mountSettings();
     await flush();
-    const hint = wIos.find('[data-test="notif-ios-hint"]');
-    expect(hint.exists()).toBe(true);
-    expect(hint.text()).toContain("Home Screen");
+    expect(wIos.find('[data-test="notif-info"]').exists()).toBe(true);
+    const texts = wIos.findAllComponents(Tooltip).map((tip) => String(tip.props("text")));
+    expect(texts.join(" ")).toContain("Home Screen");
     vi.unstubAllGlobals();
   });
 });

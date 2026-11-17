@@ -29,8 +29,6 @@ export default {
   // 统一的会话外壳（设计 §8）：时间线、状态条、轮次条和输入框 chip。
   conversation: {
     timeline: {
-      openDetailPrefix: "查看",
-      openDetailSuffix: "的过程",
       openDetail: "查看 {name} 的过程",
       unresolved: "这条回复无法归属到唯一成员回合，因此没有过程可看。",
       empty: "还没有消息，先发一条吧。",
@@ -176,6 +174,7 @@ export default {
     copied: "已复制",
     retentionTitle: "历史保留",
     retentionBody: "每个会话保留最新的 {max} 条消息，最多保留 {days} 天。由服务端配置。",
+    retentionShort: "{max} 条消息 · {days} 天",
     relayTitle: "Relay",
     relayVersion: "Relay v{version}",
     relayUpdateAvailable: "有可用更新：v{latest} — 运行 `xacpx-relay update`",
@@ -189,6 +188,7 @@ export default {
     notifIosHint: "iPhone/iPad 需要先将 XACPX 添加到主屏幕，并从主屏幕打开后才能启用通知。",
     notifEnable: "开启通知",
     notifDisable: "关闭通知",
+    moreInfo: "更多信息",
     account: "账户",
     signOut: "退出登录",
     signOutTitle: "退出登录？",

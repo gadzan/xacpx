@@ -670,7 +670,7 @@ watch(
               <div class="flex min-w-0 max-w-[80%] flex-col items-end">
                 <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
                 <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
-                      class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent"
+                      class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-text"
                       :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
                   <Clock :size="11" />{{ $t("chat.scheduled") }}
                 </span>
@@ -686,21 +686,21 @@ watch(
                 <button
                   type="button"
                   data-test="msg-fork-node"
-                  class="inline-flex items-center text-fg-muted transition-colors hover:text-accent"
+                  class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted transition-colors hover:bg-fg/5 hover:text-accent [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0"
                   :aria-label="$t('chat.forkFromHere')"
                   :title="$t('chat.forkFromHere')"
                   @click="forkNode(m)"
                 >
-                  <GitFork :size="12" />
+                  <GitFork :size="14" />
                 </button>
               </template>
             </ConversationMeta>
             <!-- Failed sends get a compact retry affordance on their own line below. -->
             <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
-              <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
+              <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger-text">
                 <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
               <button type="button" data-test="msg-resend"
-                      class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
+                      class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-text transition-colors hover:bg-accent/20"
                       :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
             </div>
           </div>
@@ -762,7 +762,7 @@ watch(
               <ConversationMeta :message="m" :parts="m.structured?.parts" :presentation="m.structured?.parts?.length ? traceSummaryOf(m).presentation : undefined">
                 <span v-if="m.structured?.truncated" data-test="msg-truncated" class="inline-flex items-center gap-1 text-xs text-warn"><TriangleAlert :size="12" /> {{ $t("chat.truncated") }}</span>
                 <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
-                <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-xs text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
+                <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-xs text-danger-text"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
               </ConversationMeta>
             </div>
           </TranscriptRow>
@@ -824,7 +824,7 @@ watch(
   opacity: 0;
 }
 .enter-row {
-  animation: enter-rise 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: enter-rise 380ms var(--ease) both;
   animation-delay: var(--enter-delay, 0ms);
 }
 @keyframes enter-rise {

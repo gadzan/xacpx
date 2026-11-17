@@ -259,25 +259,27 @@ onBeforeUnmount(() => {
   margin: 0.2em 0;
 }
 .stream-md a {
-  color: rgb(var(--c-accent));
+  color: rgb(var(--c-accent-text));
   text-decoration: underline;
 }
-/* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono 12.5px (mockup line 298) */
+/* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono. 13px is the `ui`
+   token, the same size the code block uses, so prose and code line up.
+   Code ligatures are off for every mono surface (see style.css). */
 .stream-md code {
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
   border-radius: 6px;
   padding: 0.1em 0.3em;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 13px;
 }
-/* Code block: cool snippet panel (mockup lines 331–346) — bg-bg/raised, border-border,
-   rounded-lg (10px), font-mono 13px, overflow-x with thin scrollbar. */
+/* Code block: concave inset — fill-track trough with a hairline edge and the
+   card radius, no shadow. Font stays 13px mono (type scale owns sizes). */
 .stream-md pre {
-  background: rgb(var(--c-bg));
+  background: var(--fill-track);
   color: rgb(var(--c-fg));
-  border: 1px solid rgb(var(--c-border));
-  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-card);
   padding: 0.65em 0.85em;
   overflow-x: auto;
   margin: 0.6em 0;
@@ -314,7 +316,7 @@ onBeforeUnmount(() => {
   color: rgb(var(--c-info));
 }
 .stream-md blockquote {
-  border-left: 3px solid rgb(var(--c-border));
+  border-left: 2px solid var(--hairline-strong);
   margin: 0.6em 0;
   padding-left: 0.8em;
   color: rgb(var(--c-fg-muted));
@@ -339,12 +341,12 @@ onBeforeUnmount(() => {
 }
 .stream-md th,
 .stream-md td {
-  border: 1px solid rgb(var(--c-border));
+  border: 1px solid var(--hairline);
   padding: 0.3em 0.6em;
 }
 .stream-md hr {
   border: none;
-  border-top: 1px solid rgb(var(--c-border));
+  border-top: 1px solid var(--hairline);
   margin: 0.8em 0;
 }
 /* Mermaid: the pre.mermaid-block is a code-styled fallback until hydrated. Once rendered, the
@@ -374,9 +376,9 @@ onBeforeUnmount(() => {
      max-height only applies if measurement was unavailable and no inline height was set. */
   max-height: 560px;
   overflow: hidden;
-  border: 1px solid rgb(var(--c-border));
-  border-radius: 10px;
-  background: rgb(var(--c-bg));
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-card);
+  background: var(--fill-track);
   box-shadow: none;
   touch-action: pan-y; /* one finger scrolls the page; the enhancer handles pinch + mouse drag */
   cursor: grab;
@@ -395,10 +397,10 @@ onBeforeUnmount(() => {
    two is visible, and the view-only controls (zoom/reset/fullscreen) hide with the diagram. */
 .stream-md .mmd-source {
   display: none;
-  background: rgb(var(--c-bg));
+  background: var(--fill-track);
   color: rgb(var(--c-fg));
-  border: 1px solid rgb(var(--c-border));
-  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-card);
   padding: 0.65em 0.85em;
   margin: 0;
   max-height: 560px;
@@ -444,7 +446,7 @@ onBeforeUnmount(() => {
   font-size: 14px;
   line-height: 1;
   border-radius: 6px;
-  border: 1px solid rgb(var(--c-border));
+  border: 1px solid var(--hairline);
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
 }

@@ -33,8 +33,6 @@ export default {
   conversation: {
     timeline: {
       openDetail: "Process for {name}",
-      openDetailPrefix: "Process for",
-      openDetailSuffix: " ",
       unresolved: "This reply could not be linked to one member turn, so it has no process.",
       empty: "No messages yet. Say something to start.",
       upgradeRequired: "This daemon is too old; upgrade to use the timeline.",
@@ -180,6 +178,7 @@ export default {
     copied: "Copied",
     retentionTitle: "History retention",
     retentionBody: "Keeps the newest {max} messages per session, for up to {days} days. Configured server-side.",
+    retentionShort: "{max} messages · {days} days",
     relayTitle: "Relay",
     relayVersion: "Relay v{version}",
     relayUpdateAvailable: "Update available: v{latest} — run `xacpx-relay update`",
@@ -193,6 +192,7 @@ export default {
     notifIosHint: "On iPhone and iPad, add XACPX to the Home Screen and open it from there before enabling notifications.",
     notifEnable: "Enable notifications",
     notifDisable: "Disable notifications",
+    moreInfo: "More info",
     account: "Account",
     signOut: "Sign out",
     signOutTitle: "Sign out?",

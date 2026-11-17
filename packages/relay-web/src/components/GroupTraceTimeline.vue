@@ -106,7 +106,7 @@ function alwaysRendered(entry: RenderedNode): boolean {
         <span v-if="index > 0" aria-hidden="true" class="opacity-50">·</span>
         <span>{{ t(`turnTrace.verbs.${entry.verb}`, entry.count) }}</span>
       </template>
-      <span v-if="tally.failed > 0" class="inline-flex items-center rounded-full bg-danger/10 px-1.5 py-0.5 font-medium text-danger">
+      <span v-if="tally.failed > 0" class="inline-flex items-center rounded-full bg-danger/10 px-1.5 py-0.5 font-medium text-danger-text">
         {{ t("turnTrace.failedSteps", tally.failed) }}
       </span>
     </p>
@@ -168,7 +168,7 @@ function alwaysRendered(entry: RenderedNode): boolean {
               </span>
               <ChevronRight
                 :size="16"
-                class="mt-0.5 shrink-0 text-fg-muted transition-transform"
+                class="mt-0.5 shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none"
                 :class="expandedKeys.has(entry.key) ? 'rotate-90' : ''"
                 aria-hidden="true"
               />
@@ -190,14 +190,14 @@ function alwaysRendered(entry: RenderedNode): boolean {
                 <span class="block break-words [overflow-wrap:anywhere] text-sm font-medium leading-snug text-fg">
                   {{ entry.node.step.title }}
                 </span>
-                <span class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-accent">
+                <span class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-accent-text">
                   <Bot :size="12" class="shrink-0" />
                   <span>{{ $t("tools.subagent") }}</span>
                 </span>
               </span>
               <ChevronRight
                 :size="16"
-                class="mt-0.5 shrink-0 text-fg-muted transition-transform"
+                class="mt-0.5 shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none"
                 :class="expandedKeys.has(entry.key) ? 'rotate-90' : ''"
                 aria-hidden="true"
               />
