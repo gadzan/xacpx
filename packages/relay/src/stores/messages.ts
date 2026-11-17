@@ -303,18 +303,12 @@ export class MessageStore {
    * caller just reconciled THIS turn's prompt and the newest inbound row is it; the
    * fallback therefore never overwrites an existing node id, so a duplicate
    * delivery cannot stamp a newer turn's row.
-   *
-   * `trailingPrompt` names the text the fallback must match. An ingress that
-   * pre-writes the inbound row (a peer Agent message, a scheduled task) makes the
-   * reconcile report the prompt as already present; without this the row would
-   * stay unstamped and the Web would show no fork control on it. Requiring the
-   * text keeps the unstamped-row rule while proving the row is this turn's prompt.
    */
   attachNodeId(
     instanceId: string,
     sessionAlias: string,
     nodeId: string,
-    correlation: { promptRequestId?: string; queueItemId?: string; trailingPrompt?: string } = {},
+    correlation: { promptRequestId?: string; queueItemId?: string; peerMessageId?: string } = {},
   ): void {
     const lookup = (where: string, value: string): number | undefined =>
       this.db.get<{ id: number }>(
@@ -328,24 +322,37 @@ export class MessageStore {
         : undefined)
       ?? (correlation.promptRequestId !== undefined
         ? lookup("prompt_request_id", correlation.promptRequestId)
+        : undefined)
+      // A peer Agent message row carries its sender-card messageId inside the
+      // structured payload; the row is appended by `agent-message`, which writes
+      // no prompt_request_id.
+      ?? (correlation.peerMessageId !== undefined
+        ? this.findByPeerMessageId(instanceId, sessionAlias, correlation.peerMessageId)
         : undefined);
     if (rowId !== undefined) {
       this.db.run("UPDATE messages SET node_id = ? WHERE id = ?", [nodeId, rowId]);
       return;
     }
-    const trailingPrompt = correlation.trailingPrompt;
     this.db.run(
       `UPDATE messages SET node_id = ?
        WHERE id = (
          SELECT id FROM messages
          WHERE instance_id = ? AND session_alias = ? AND direction = 'in'
-           ${trailingPrompt === undefined ? "" : "AND text = ?"}
          ORDER BY id DESC LIMIT 1
        ) AND node_id IS NULL`,
-      trailingPrompt === undefined
-        ? [nodeId, instanceId, sessionAlias]
-        : [nodeId, instanceId, sessionAlias, trailingPrompt],
+      [nodeId, instanceId, sessionAlias],
     );
+  }
+
+  /** The inbound row carrying a peer Agent message's sender card. */
+  private findByPeerMessageId(instanceId: string, sessionAlias: string, messageId: string): number | undefined {
+    return this.db.get<{ id: number }>(
+      `SELECT id FROM messages
+       WHERE instance_id = ? AND session_alias = ? AND direction = 'in'
+         AND json_extract(structured, '$.agentMessage.messageId') = ?
+       ORDER BY id DESC LIMIT 1`,
+      [instanceId, sessionAlias, messageId],
+    )?.id;
   }
 
   /** Promote a KNOWN inbound row (found via promptRequestId) to its execution position

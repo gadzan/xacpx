@@ -236,6 +236,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     /** Connector-local receive-order seq at turn-start; maps to `slotAfterId` after restart. */
     startedAfterSeq?: number;
     peerTriggerMessageId?: string;
+    /** The core's prompt-turn identity for this turn; a peer row is stamped with it
+     *  when the router appends that row AFTER turn-started. */
+    nodeId?: string;
     truncated?: boolean;
     notification?: TurnNotificationContext;
     /** Product-owned Conversation join. sessionAlias is legacy plumbing when set. */
@@ -512,7 +515,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         sessionAlias: string,
         opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string },
         liveFallback: boolean,
-      ): "appended" | "correlated" | "trailing" | "unchanged" => {
+      ): "appended" | "correlated" | "unchanged" => {
         if (opts.queueItemId) {
           const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
           const state = messages.queuedState(correlation);
@@ -545,10 +548,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         }
         if (opts.prompt !== undefined) {
           if (opts.scheduled && messages.hasScheduledInbound(instanceId, sessionAlias, opts.scheduled.taskId)) return "unchanged";
-          // The newest inbound row already carries THIS turn's prompt: an ingress
-          // (a peer Agent message, a pre-written prompt) persisted it first. Report
-          // it as the trailing row so the node id can still be stamped on it.
-          if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) return "trailing";
+          if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) return "unchanged";
           messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
           return "appended";
         }
@@ -562,13 +562,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         const outcome = reconcileInboundPromptRow(sessionAlias, opts, liveFallback);
         // A deduped replay did not touch this turn's row: it may leave an older
         // row's stamp alone, but it must never overwrite a newer turn's node id.
-        // `trailing` is the one dedupe that names this turn's own row, so it is the
-        // only one that may still stamp — and it must prove the text matches.
         if (!opts.nodeId || outcome === "unchanged") return;
         messages.attachNodeId(instanceId, sessionAlias, opts.nodeId, {
           ...(opts.promptRequestId !== undefined ? { promptRequestId: opts.promptRequestId } : {}),
           ...(opts.queueItemId !== undefined ? { queueItemId: opts.queueItemId } : {}),
-          ...(outcome === "trailing" && opts.prompt !== undefined ? { trailingPrompt: opts.prompt } : {}),
         });
       };
       const rememberAnchor = (sessionAlias: string, slot: OutSlot, recoveryId?: string): void => {
@@ -707,6 +704,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 ...(event.peerOrigin?.requestMessageId
                   ? { peerTriggerMessageId: event.peerOrigin.requestMessageId }
                   : {}),
+                ...(event.nodeId ? { nodeId: event.nodeId } : {}),
                 ...(notification ? { notification } : {}),
                 ...(event.conversation ? { conversation: event.conversation } : {}),
               });
@@ -920,6 +918,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 undefined,
                 new Date(event.message.createdAt).toISOString(),
               );
+              // A peer turn's inbound row is appended HERE, after its turn-started,
+              // so the reconcile that ran then had no row to stamp. The turn's
+              // buffer still holds the core's node id: stamp the row now or the Web
+              // never offers a fork on the prompt that triggered this turn.
+              const pending = turnBuffers.get(key(instanceId, event.sessionAlias));
+              if (pending?.nodeId && direction === "in") {
+                messages.attachNodeId(instanceId, event.sessionAlias, pending.nodeId, {
+                  peerMessageId: event.message.messageId,
+                });
+              }
             }
           } else if (event.type === "agent-message-completion") {
             // v0.3: completion-status PATCH. Only flips the terminal status on
