@@ -5,7 +5,7 @@
 - 仓库：https://github.com/gadzan/xacpx
 - 工作分支 / 远程（若有）：`ui-upgrade-b`，已推送；PR 为 https://github.com/gadzan/xacpx/pull/590。**未合并、未部署。**
 - base SHA：`5b89cab95ab95fd412da7341418738f369dcf289`（与审计快照一致，开跑时核对无漂移）
-- head SHA：分支 head 由 `git log -1` 给出。代码改动止于 `5c089eef`（`d933e9a4` 合并 `origin/main#588`、`84cede67` 收 fork 按钮触屏、`efef7458` 收第三轮 6 条、`5c089eef` 补回误删的 UiButton 导入）；其后的提交只动 `artifacts/ui-upgrade-b/`。
+- head SHA：分支 head 由 `git log -1` 给出。代码改动止于 `8b5d6ad5`（第四轮 3 条：chips 让位草稿 + 聚焦、attempt 选择器触屏、08 重拍）；其后的提交只动 `artifacts/ui-upgrade-b/`。
 - 相对审计快照的差异摘要：32 个提交到合并提交（其后为证据/清理提交）；`packages/relay-web` 约 113 文件 +2500/−1240；证据全在 `artifacts/ui-upgrade-b/`
 - 已完成工作包：WP-1 … WP-18，其中 **WP-9 部分完成**（玻璃三档的 token 与工具类全活，但 `.glass-1` / `.glass-2` 两个类名从无调用者已删除；面板头保持工具类写法，不另起第二套系统）。其余 17 个按范围完成。
 - 未做或只做了部分的工作包及原因：WP-9 部分完成（上）。偏差如下，均在证据里写明：
@@ -19,14 +19,14 @@
 
 - Node / Bun / Playwright：node v24.21.0、bun 1.4.4、@playwright/test 1.62.1（chromium）
 - 命令与结果：
-  - `bunx vitest run`（`packages/relay-web`）：**214 文件 / 2998 测试通过**（基线 211 / 2969；增量来自 trunk 合并、补回的 Tooltip 定位测试与本轮回归 pin）。`vue-tsc --noEmit` 干净。
-  - `bunx playwright test`（两个 project 全量，在修完 head 上重跑）：**187 passed / 0 failed / 51 skipped**，约 11m。skipped 全部是「只在某个 project 有意义」的用例（手机专属、或未设 `UI_SHOTS_DIR` 的取证 harness）。CI 在 PR head 上另跑一遍，见 PR 检查列表。
+  - `bunx vitest run`（`packages/relay-web`）：**214 文件 / 2998 测试通过**（基线 211 / 2969）。`vue-tsc --noEmit` 干净。
+  - `bunx playwright test`（两个 project 全量，在修完 head 上重跑）：**190 passed / 0 failed / 52 skipped**，约 12m。skipped 全部是「只在某个 project 有意义」的用例（手机专属、未设 `UI_SHOTS_DIR` 的取证 harness，以及桌面 project 跳过的手机触屏断言）。CI 在 PR head 上另跑一遍，见 PR 检查列表。
   - WebKit：**未运行**（无 project）。
   - 新增 / 扩展的 spec：
-    - 新增 `e2e/direct-empty-starters.spec.ts`：空 Bot 页有 / 无广告两态，点 chip 只填不发（desktop + mobile）。
+    - 扩展 `e2e/direct-empty-starters.spec.ts`：有 / 无广告两态、填入后 chips 消失 + 聚焦、清空恢复、先有草稿则不出现（desktop + mobile）。
     - 扩展 `e2e/conversation-timeline.spec.ts`：交接行可见文本；新增 390×844 一轮热区测试，含顶栏四项两两不重叠、pill 不超出其槽位。
     - 扩展 `e2e/mobile-layout.spec.ts`：设置页六项热区在 412×839 与 390×844 各测一遍。
-    - 扩展 `e2e/run-detail-drawer.spec.ts`：抽屉里运行状态只出现一次。
+    - 扩展 `e2e/run-detail-drawer.spec.ts`：抽屉里运行状态只出现一次；双 attempt 时选择器 44px 热区（手机 project）。
     - 扩展 `e2e/ui-upgrade-before.spec.ts`：场景 11 增加「有起步 chip」一帧。
 - 验证期间发现并修掉的真实缺陷（详见 `decision-log.tsv` 与 `measurements/touch-targets-wp4.txt`）：
   1. **`expectTouchTarget` 把落空记成命中**：`elementFromPoint(...)?.closest(...) !== null` 在元素不在视口时返回 `undefined !== null`，恒为 `true`。因此提交 `9ed5a7e8` 里「42 targets、0 miss、0 overlap」的说法**作废**；本包用修好的实现重测，`touch-targets-wp4.{jsonl,txt}` 已整体重写。

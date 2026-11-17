@@ -2,7 +2,7 @@
  "base": "5b89cab95ab95fd412da7341418738f369dcf289",
  "branch": "ui-upgrade-b",
  "head": "9b45a78fb877943ea5438eda539a125a297deb3b",
- "code_head": "5c089eef",
+ "code_head": "8b5d6ad5",
  "diff_vs_audit_snapshot": "32 commits to the merge head; packages/relay-web 113 files, +2500/-1240; evidence under artifacts/ui-upgrade-b",
  "engines": {
   "bun": "1.4.4",
@@ -38,7 +38,7 @@
   "cwd": "packages/relay-web",
   "result": "214 files, 2998 tests passed",
   "wall_time_s": 187.36,
-  "head": "5c089eef"
+  "head": "8b5d6ad5"
  },
  "touch": {
   "method": "each target: scrollIntoView, stable box, >=44x44, fully inside the viewport, four 2px-inset edge midpoints via document.elementFromPoint",
@@ -84,7 +84,7 @@
  },
  "worktrees": "main checkout only, isolated branch ui-upgrade-b",
  "deployment": "none: no tunnel, no firewall change, no credentials in the pack",
- "code_head_note": "third review round (6 findings) plus the UiButton import restoration",
+ "code_head_note": "fourth review round (3 findings: starter chips, attempt selector, fresh 08 shots)",
  "e2e": {
   "projects": [
    "chromium-desktop",
