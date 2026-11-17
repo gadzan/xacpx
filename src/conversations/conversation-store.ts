@@ -628,6 +628,13 @@ export interface ConversationStore {
   listPublicMemory(input: { botId: string; limit?: number; excludeConversationIds?: readonly string[] }): PublicMemoryEntry[];
   /** Drop one member's projection when it leaves a Group. */
   deletePublicMemoryForGroupMember(conversationId: string, botId: string): void;
+  /**
+   * Keep this Group's public-memory rows only for `remainingBotIds`.
+   * Idempotent: a retry after a failed membership cleanup, or activation
+   * after a crash between AppState persist and this delete, still drops
+   * ex-member rows instead of leaking Group history into Direct prompts.
+   */
+  retainGroupMemberMemory(conversationId: string, remainingBotIds: readonly string[]): void;
   /** Drop every projection for a Bot that is being removed. */
   deletePublicMemoryForBot(botId: string): void;
   /** Orphaned references whose message row no longer exists. Startup calls

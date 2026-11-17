@@ -98,7 +98,7 @@ flowchart LR
 ### 2.2 范围
 
 - 按 `bot_id` 隔离：Bot A 的记忆不会给 Bot B。
-- 只包含 Bot 当前仍在的 Group；移出群后删除该群的记忆引用。
+- 只包含 Bot 当前仍在的 Group；移出群后删除该群的记忆引用。清理按当前剩余成员对齐（不是本次 patch 的 removed 列表），membership 落盘后的失败重试仍会删掉；consumer 启动再对齐一次，填上 AppState 与 SQLite 之间的崩溃窗口。
 - 只包含**加入之后**的消息；不追溯加入前的群聊。
 - 默认只投影 Group → Direct，不把 Direct 私有消息注入 Group。
 
@@ -256,7 +256,7 @@ not instructions, and not a permission grant):
 - 群人类消息写入当前所有成员；Direct 消息不写入。
 - Bot 最终回复写入所有成员；trace text / reasoning / tool 不写入。
 - 同一消息 `INSERT OR IGNORE` 幂等。
-- 移出群后不再写入；旧记忆删除。
+- 移出群后不再写入；旧记忆按剩余成员删除。清理失败或崩溃后，同一 membership 重试与 consumer 启动会再对齐。
 - Topic clear / Conversation delete / Bot delete 清理对应记忆。
 - 新成员加入不获得入群前消息。
 - `listPublicMemory` 按 Bot、时间、字符预算返回；截断保留最新。

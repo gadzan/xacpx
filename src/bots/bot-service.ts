@@ -319,6 +319,13 @@ export interface BotConversationWork {
   hasNonterminalGroupMemberWork?: (conversationId: string, botId: string) => boolean;
   /** Drop the leaving member's public Group memory projection. */
   forgetGroupMemberMemory?: (conversationId: string, botId: string) => void;
+  /**
+   * Align this Group's public-memory rows with remaining membership.
+   * Idempotent: a retry after a failed cleanup, or a later edit after a
+   * crash, still drops ex-member rows. Preferred over a one-shot forget of
+   * this patch's `removedMembers` list, which is empty on retry.
+   */
+  retainGroupMemberMemory?: (conversationId: string, remainingBotIds: readonly string[]) => void;
   /** SQLite removal barrier. Absence means the store has no row. */
   botRemovalPhase?: (botId: string) => "deleting" | "indeterminate" | "retired" | undefined;
   /** Install the SQLite barrier when AppState is ahead of it. */
@@ -776,8 +783,15 @@ export class BotService {
         },
       );
       if (committed !== null) {
-        for (const botId of removedMembers) {
-          this.conversationWork?.forgetGroupMemberMemory?.(id, botId);
+        // Align against the live membership, not this call's removed-diff:
+        // AppState is already persisted, so a throw or crash here used to
+        // leave ex-member rows forever (retry sees removedMembers=[]).
+        if (this.conversationWork?.retainGroupMemberMemory) {
+          this.conversationWork.retainGroupMemberMemory(id, committed.botIds);
+        } else {
+          for (const botId of removedMembers) {
+            this.conversationWork?.forgetGroupMemberMemory?.(id, botId);
+          }
         }
         return committed;
       }
