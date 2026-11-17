@@ -10,7 +10,7 @@
 
 根因（已确认）：消息分两条车道。
 
-- **normal 车道**：按 `chatKey`（整个聊天）**串行排队**。`/use`、`/ss`、`/use -` 与普通 prompt 都在这条道上，后到的必须等前面跑完。见 [`conversation-executor.ts`](../../../src/weixin/messaging/conversation-executor.ts) 的 `normalTail` 串行链，以及 [`handle-weixin-message-turn.ts`](../../../src/weixin/messaging/handle-weixin-message-turn.ts) 的 `getWeixinMessageTurnLane`。
+- **normal 车道**：按 `chatKey`（整个聊天）**串行排队**。`/use`、`/ss`、`/use -` 与普通 prompt 都在这条道上，后到的必须等前面跑完。见 [`conversation-executor.ts`](../../../src/runtime/conversation-executor.ts) 的 `normalTails` 串行链，以及 [`handle-weixin-message-turn.ts`](../../../src/weixin/messaging/handle-weixin-message-turn.ts) 的 `getWeixinMessageTurnLane`。
 - **control 车道**：立即执行，不排队。目前仅 `/cancel`、`/stop`、`/jx`。
 
 此外当前**没有"前台/后台会话"概念，也没有任何输出缓冲**：`reply` 回调即时直发微信，且发送目标 `chatKey` 在消息进来那一刻就被闭包捕获。
@@ -56,7 +56,7 @@
 
 ### 4.1 并发车道改造
 
-文件：[`conversation-executor.ts`](../../../src/weixin/messaging/conversation-executor.ts)、[`monitor.ts`](../../../src/weixin/monitor/monitor.ts)、[`handle-weixin-message-turn.ts`](../../../src/weixin/messaging/handle-weixin-message-turn.ts)
+文件：[`conversation-executor.ts`](../../../src/runtime/conversation-executor.ts)、[`monitor.ts`](../../../src/weixin/monitor/monitor.ts)、[`handle-weixin-message-turn.ts`](../../../src/weixin/messaging/handle-weixin-message-turn.ts)
 
 - 会话执行状态仍按 `chatKey` 存（cancel/stop 需看到整个聊天的活动），但内部把单条 `normalTail` 改为**按会话的多条 tail**：
 

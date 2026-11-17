@@ -61,6 +61,8 @@ Fixed fields:
 
 Note: the performance debug log `logging.perf.*` does not support dynamic toggling via `/config set` in chat. You need to manually edit `logging.perf` in `~/.xacpx/config.json` and then restart the daemon; this tracer is bound at startup.
 
+Note: `/config set transport.type` and `/config set transport.command` are written to `~/.xacpx/config.json` but do **not** hot-apply — the live transport keeps its current type/command until the daemon restarts (`config.topology_pending_restart` is logged). Every other path above hot-applies. Restart with `xacpx restart`.
+
 Backward-compatible fields:
 
 - `channel.type` (old single-channel configuration; for multi-channel, use `xacpx channel ...`)
