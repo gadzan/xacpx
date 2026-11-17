@@ -7,6 +7,11 @@ const TEMPLATES: Record<string, AgentConfig> = {
   claude: {
     driver: "claude",
   },
+  // acpx 0.22.0 experimental builtin (`ante acp`, needs the separate `ante-acp`
+  // adapter; acpx does not reopen its sessions after a disconnect).
+  ante: {
+    driver: "ante",
+  },
   pi: {
     driver: "pi",
   },
@@ -25,11 +30,21 @@ const TEMPLATES: Record<string, AgentConfig> = {
   droid: {
     driver: "droid",
   },
+  // acpx 0.22.0 builtin: command-free so the default command comes from acpx's own
+  // registry (`dsh --profile acp`), never duplicated here.
+  "deepseek-harness": {
+    driver: "deepseek-harness",
+  },
   "factory-droid": {
     driver: "factory-droid",
   },
   factorydroid: {
     driver: "factorydroid",
+  },
+  // acpx 0.22.0 builtin: command-free so the default command comes from acpx's own
+  // registry (`goose acp`), never duplicated here.
+  goose: {
+    driver: "goose",
   },
   "grok-build": {
     driver: "grok-build",
@@ -58,6 +73,11 @@ const TEMPLATES: Record<string, AgentConfig> = {
   },
   mux: {
     driver: "mux",
+  },
+  // acpx 0.20.0 builtin: command-free so the default command comes from acpx's own
+  // registry (`octomind acp developer:general`), never duplicated here.
+  octomind: {
+    driver: "octomind",
   },
   // Local-fallback templates: acpx's registry doesn't know these drivers, but
   // their native CLIs (`omp` from `@oh-my-pi/cli`, `opencode`) speak ACP via

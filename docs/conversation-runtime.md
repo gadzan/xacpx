@@ -319,7 +319,7 @@ Requested read-only != enforced read-only. Model text saying read-only and a
 Bot named Reviewer do not grant a capability. Ordinary prompts, Router work
 and public handoffs retain `unknown` / absent proof by default.
 
-The first supported enforcement contract requires the bundled acpx 0.19.5
+The first supported enforcement contract requires the bundled acpx 0.22.0
 executor and managed Claude ACP 0.78.0 adapter (Claude Agent SDK 0.3.270),
 launched through a core-owned ACP policy
 guard. It restricts the SDK's **tool set**, rather than its auto-approval list,
@@ -334,7 +334,7 @@ Custom agent launches, other adapter versions and other drivers also cannot
 receive this proof. Codex ACP 1.12.0's mode named `read-only` uses
 `workspaceWrite`; its name is not an enforcement contract.
 
-**Executor version status.** The bundled executor is pinned at 0.19.5 and the
+**Executor version status.** The bundled executor is pinned at 0.22.0 and the
 contract above is attested against exactly that version by the vendored
 native-SDK compat run (`tests/compat/conversation-read-only.test.ts` with
 `XACPX_CLAUDE_READ_ONLY_TEST_ROOT`), which CI gates on Linux and macOS: the

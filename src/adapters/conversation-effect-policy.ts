@@ -15,7 +15,7 @@ export type RequestedFilesystemPolicy = "read-only" | "read-write";
  * The guard is xacpx-owned, but the contract also covers how the executor
  * launches and drives the guarded agent, so it is attested per exact version.
  *
- * 0.19.5 is attested by the vendored native-SDK compat run
+ * 0.22.0 is attested by the vendored native-SDK compat run
  * (tests/compat/conversation-read-only.test.ts with
  * XACPX_CLAUDE_READ_ONLY_TEST_ROOT): the real pinned Claude SDK, driven through
  * the production guard by the real bundled executor, rejects Write/Bash/MCP and
@@ -24,7 +24,7 @@ export type RequestedFilesystemPolicy = "read-only" | "read-write";
  * runtime_revision_mismatch for read-only Runs rather than an unverified
  * enforcement claim.
  */
-export const ENFORCED_READ_ONLY_EXECUTOR_VERSION = "0.19.5" as const;
+export const ENFORCED_READ_ONLY_EXECUTOR_VERSION = "0.22.0" as const;
 
 export function supportsEnforcedReadOnly(
   agent: Pick<AgentConfig, "driver" | "command" | "argv"> | undefined,

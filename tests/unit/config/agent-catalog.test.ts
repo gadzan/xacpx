@@ -182,3 +182,30 @@ test("mcode probes its own binary when not builtin", () => {
   const none = catalog(cfg({}), { probe: () => false });
   expect(none.find((e) => e.driver === "mcode")!.installed).toBe("unknown");
 });
+
+// acpx 0.20/0.22 builtins that arrived after the 0.19.5 pin: command-free
+// templates, so the launch argv stays owned by acpx's registry.
+test("octomind, goose, deepseek-harness and ante are command-free usable templates", () => {
+  for (const driver of ["octomind", "goose", "deepseek-harness", "ante"]) {
+    expect(getAgentTemplate(driver)).toEqual({ driver });
+    expect(listAgentTemplates()).toContain(driver);
+  }
+  expect(registry.resolve("octomind")).toEqual(["octomind", "acp", "developer:general"]);
+  expect(registry.resolve("goose")).toEqual(["goose", "acp"]);
+  expect(registry.resolve("deepseek-harness")).toEqual(["dsh", "--profile", "acp"]);
+  expect(registry.resolve("ante")).toEqual(["ante", "acp"]);
+});
+
+test("the acpx 0.20/0.22 builtins probe their own binaries when not builtin", () => {
+  for (const [driver, binary] of [
+    ["octomind", "octomind"],
+    ["goose", "goose"],
+    ["deepseek-harness", "dsh"],
+    ["ante", "ante"],
+  ] as const) {
+    const yes = catalog(cfg({}), { probe: (bin) => bin === binary });
+    expect(yes.find((e) => e.driver === driver)!.installed).toBe("yes");
+    const none = catalog(cfg({}), { probe: () => false });
+    expect(none.find((e) => e.driver === driver)!.installed).toBe("unknown");
+  }
+});

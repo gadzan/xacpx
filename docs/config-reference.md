@@ -114,10 +114,10 @@ How xacpx communicates with the acpx backend.
 
 ### Managed ACP adapter versions
 
-Conversation enforced read-only additionally requires the bundled acpx 0.19.5
+Conversation enforced read-only additionally requires the bundled acpx 0.22.0
 executor, managed Claude ACP 0.78.0 and the default registry. Explicit
 `transport.command`, PATH fallback, and unknown or different bundled executor
-versions reject read-only policy before Run acceptance. The 0.19.5 executor is
+versions reject read-only policy before Run acceptance. The 0.22.0 executor is
 attested by the vendored native-SDK compat run
 (`tests/compat/conversation-read-only.test.ts`), which CI gates on Linux and
 macOS. Ordinary requests retain the existing command resolution and execution
@@ -679,21 +679,25 @@ The following built-in templates are used when you send `/agent add <name>` via 
 |--------|--------|---------|
 | `codex` | `"codex"` | None (uses xacpx managed pin) |
 | `claude` | `"claude"` | None (uses xacpx managed pin) |
+| `ante` | `"ante"` | None (uses acpx default; experimental — needs the separate `ante-acp` adapter, and acpx does not reopen its sessions after a disconnect) |
 | `pi` | `"pi"` | None (uses acpx default) |
 | `openclaw` | `"openclaw"` | None (uses acpx default) |
 | `gemini` | `"gemini"` | None (uses acpx default) |
 | `cursor` | `"cursor"` | None (uses acpx default) |
 | `copilot` | `"copilot"` | None (uses acpx default) |
 | `droid` | `"droid"` | None (uses acpx default) |
+| `deepseek-harness` | `"deepseek-harness"` | None (uses acpx default) |
 | `factory-droid` | `"factory-droid"` | None (uses acpx default) |
 | `factorydroid` | `"factorydroid"` | None (uses acpx default) |
 | `grok-build` | `"grok-build"` | None (uses acpx default) |
+| `goose` | `"goose"` | None (uses acpx default) |
 | `hermes` | `"hermes"` | None (uses xacpx bundled shim) |
 | `iflow` | `"iflow"` | None (uses acpx default) |
 | `kilocode` | `"kilocode"` | None (uses acpx default) |
 | `kimi` | `"kimi"` | None (uses acpx default) |
 | `kiro` | `"kiro"` | None (uses acpx default) |
 | `mux` | `"mux"` | None (uses acpx default) |
+| `octomind` | `"octomind"` | None (uses acpx default) |
 | `omp` | `"omp"` | None (uses `omp acp` when the `omp` binary is on PATH; acpx doesn't list this driver) |
 | `opencode` | `"opencode"` | None (uses acpx default) |
 | `pool` | `"pool"` | None (uses acpx default) |
