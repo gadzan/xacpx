@@ -188,7 +188,8 @@ onUnmounted(() => clearInterval(timer));
     <!-- header (desktop only: <lg the single mobile top bar in DashboardView /
          DirectBotPane carries the title + subtitle instead of this chip row) -->
     <div data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
-      <h1 class="hidden lg:block text-sm font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
+      <h1 :title="currentSession?.displayName || chat.sessionAlias || undefined"
+          class="hidden min-w-0 truncate lg:block text-sm font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
       <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
            stay fully readable instead of truncating — title tooltips don't work on touch.
            Each chip is shrink-0 (natural width); the strip overflows and scrolls. -->
@@ -216,6 +217,7 @@ onUnmounted(() => clearInterval(timer));
           <span :class="files.gitSummary.changedCount > 0 ? 'text-warn' : 'text-fg-muted'">{{ files.gitSummary.changedCount }} {{ $t("chat.changed") }}</span>
         </button>
       </div>
+      <slot name="actions" />
     </div>
     <div v-if="chat.error" data-test="chat-error"
          class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger-text">

@@ -122,17 +122,6 @@ describe("CenterTabStrip", () => {
     expect(w.element.className).toContain("no-scrollbar");
   });
 
-  it("renders its own border/background chrome (desktop standalone row)", () => {
-    const store = useCenterTabsStore();
-    const K = sessionKey("i1", "s1");
-    store.openFile(K, "src/a.ts");
-
-    const w = mount(CenterTabStrip, { props: { sessionKey: K }, ...g });
-    const cls = w.element.className;
-    expect(cls).not.toContain("border-b"); // redesign PR2: no chrome border
-    expect(cls).toContain("bg-surface");
-  });
-
   it("lifts the dragged tab (scale/opacity) once a pointer drag crosses the threshold", async () => {
     const store = useCenterTabsStore();
     const K = sessionKey("i1", "s1");

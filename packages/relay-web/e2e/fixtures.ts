@@ -153,8 +153,12 @@ export async function loginAndOpenTerminal(page: Page): Promise<void> {
     await token.fill("e2e-token");
     await page.getByTestId("signin").click();
   }
+  // The terminal toggle is a conversation-context action: on desktop it lives in the open
+  // pane's content bar (hidden, not absent, while no session is selected), and below lg it
+  // sits in the global bar, which steps aside once a session is open. Presence + enabled is
+  // therefore the portable signal across both projects.
   const termBtn = page.getByTestId("toggle-terminal");
-  await expect(termBtn).toBeVisible({ timeout: 30_000 });
+  await expect(termBtn).toBeAttached({ timeout: 30_000 });
   const sessionRow = page.getByTestId("session-row").first();
   await expect(sessionRow).toBeVisible({ timeout: 20_000 });
   await sessionRow.getByTestId("session-name").evaluate((el) => (el as HTMLElement).click());

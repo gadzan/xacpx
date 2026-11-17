@@ -56,13 +56,20 @@ const appearance = computed(() => {
 </script>
 
 <template>
+  <!-- Online is the steady state, so the desktop global bar shows the dot alone. The state
+       stays in `title` and in the accessible name (`role="img"` + `aria-label` carries the
+       same string the visible label shows), so hiding the label costs no information. Every
+       other state keeps its text at every width, and < lg keeps the text too: the mobile
+       chrome is unchanged. -->
   <div
     data-test="conn-badge"
+    role="img"
     class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs"
     :class="appearance.text"
     :title="$t(appearance.key)"
+    :aria-label="$t(appearance.key)"
   >
     <span class="h-2 w-2 rounded-full" :class="appearance.dot" aria-hidden="true" />
-    <span>{{ $t(appearance.key) }}</span>
+    <span :class="appearance.status === 'online' ? 'lg:hidden' : ''">{{ $t(appearance.key) }}</span>
   </div>
 </template>
