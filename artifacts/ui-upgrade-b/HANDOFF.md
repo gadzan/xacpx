@@ -5,7 +5,7 @@
 - 仓库：https://github.com/gadzan/xacpx
 - 工作分支 / 远程（若有）：`ui-upgrade-b`，已推送；PR 为 https://github.com/gadzan/xacpx/pull/590。**未合并、未部署。**
 - base SHA：`5b89cab95ab95fd412da7341418738f369dcf289`（与审计快照一致，开跑时核对无漂移）
-- head SHA：分支 head 由 `git log -1` 给出。代码改动止于 `c50a6c47`（`616e2ef8` 合并 `origin/main`，`c50a6c47` 收掉独立复核的七个问题）；其后的提交只动 `artifacts/ui-upgrade-b/`。
+- head SHA：分支 head 由 `git log -1` 给出。代码改动止于 `5c089eef`（`d933e9a4` 合并 `origin/main#588`、`84cede67` 收 fork 按钮触屏、`efef7458` 收第三轮 6 条、`5c089eef` 补回误删的 UiButton 导入）；其后的提交只动 `artifacts/ui-upgrade-b/`。
 - 相对审计快照的差异摘要：32 个提交到合并提交（其后为证据/清理提交）；`packages/relay-web` 约 113 文件 +2500/−1240；证据全在 `artifacts/ui-upgrade-b/`
 - 已完成工作包：WP-1 … WP-18，其中 **WP-9 部分完成**（玻璃三档的 token 与工具类全活，但 `.glass-1` / `.glass-2` 两个类名从无调用者已删除；面板头保持工具类写法，不另起第二套系统）。其余 17 个按范围完成。
 - 未做或只做了部分的工作包及原因：WP-9 部分完成（上）。偏差如下，均在证据里写明：
@@ -19,8 +19,8 @@
 
 - Node / Bun / Playwright：node v24.21.0、bun 1.4.4、@playwright/test 1.62.1（chromium）
 - 命令与结果：
-  - `bunx vitest run`（`packages/relay-web`）：**213 文件 / 2989 测试通过**（合并 `main` 带来的 1 文件 / 3 测试，加上补回的 12 个 Tooltip 定位测试）。基线 211 / 2969。
-  - `bunx playwright test`（两个 project 全量，在合并后的 head 上）：**187 passed / 0 failed / 51 skipped**，14.0m。skipped 全部是「只在某个 project 有意义」的用例（手机专属、或未设 `UI_SHOTS_DIR` 的取证 harness）。CI 在 PR head 上另跑一遍，见 PR 检查列表。
+  - `bunx vitest run`（`packages/relay-web`）：**214 文件 / 2998 测试通过**（基线 211 / 2969；增量来自 trunk 合并、补回的 Tooltip 定位测试与本轮回归 pin）。`vue-tsc --noEmit` 干净。
+  - `bunx playwright test`（两个 project 全量，在修完 head 上重跑）：**187 passed / 0 failed / 51 skipped**，约 11m。skipped 全部是「只在某个 project 有意义」的用例（手机专属、或未设 `UI_SHOTS_DIR` 的取证 harness）。CI 在 PR head 上另跑一遍，见 PR 检查列表。
   - WebKit：**未运行**（无 project）。
   - 新增 / 扩展的 spec：
     - 新增 `e2e/direct-empty-starters.spec.ts`：空 Bot 页有 / 无广告两态，点 chip 只填不发（desktop + mobile）。
