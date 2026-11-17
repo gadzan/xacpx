@@ -68,6 +68,23 @@ test("the automatic-collaboration section is gone and the other blocks stay", as
   expect(wrapper.find('[data-test="notif-setting"]').exists()).toBe(true);
 });
 
+test("action buttons resolve to the shared button component", async () => {
+  // A dropped UiButton import silently renders unknown-element soup: the rows
+  // look right in text assertions but lose every size and touch rule. The
+  // mobile touch gate caught it once; pin the resolution here too.
+  stubHub();
+  const wrapper = mountSettings();
+  await flushPromises();
+  // notif-toggle is intentionally absent here: this file stubs push support
+  // off, so the toggle hides. The notifications suite mounts it shown.
+  for (const testId of ["open-add-instance", "logout"]) {
+    const btn = wrapper.find(`[data-test="${testId}"]`);
+    expect(btn.exists()).toBe(true);
+    expect(btn.element.tagName).toBe("BUTTON");
+    expect(btn.classes()).toContain("inline-flex");
+  }
+});
+
 test("the theme and language blocks write their stores", async () => {
   stubHub();
   const theme = useThemeStore();

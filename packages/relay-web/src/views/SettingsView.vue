@@ -20,6 +20,7 @@ import {
 } from "../lib/web-push";
 import AddInstanceDialog from "../components/AddInstanceDialog.vue";
 import Tooltip from "../components/Tooltip.vue";
+import UiButton from "../components/UiButton.vue";
 const auth = useAuthStore();
 const theme = useThemeStore();
 const router = useRouter();
