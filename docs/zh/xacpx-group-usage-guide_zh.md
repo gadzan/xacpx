@@ -1,9 +1,31 @@
-# Weacpx 群组使用指南
+# xacpx 群组使用指南
 
-这份指南只讲一件事：**什么时候该取消一个任务组的工作，什么时候该清理已完成的任务记录**。  
-下面的描述与 `/help group` / `/help orchestration` 当前的命令行为保持一致。
+这份指南讲两件事：**什么时候该把单个子任务委派出去、什么时候该开一个任务组**，以及如何停止或清理组工作。下面的描述与 `/help group` / `/help orchestration` 当前的命令行为保持一致。
 
-> 并**不存在** `/group delete`，也**不存在** `/groups clean`。要停止一个组里还在跑的工作，用 `/group cancel <groupId>`；要清理已完成的任务记录，用 `/tasks clean`。
+> **并没有** `/group delete`，也**没有** `/groups clean`。要停止一个组里还没做完的工作，用 `/group cancel <groupId>`；要清理已完成的任务记录，用 `/tasks clean`。
+
+## 委派还是开组？
+
+当前会话就是主控会话。被委派出去的子任务会以一个独立的 worker 会话运行。
+
+| | 委派单个子任务 | 开一个任务组 |
+|---|---|---|
+| 命令 | `/dg <agent> <task>`（或 `/delegate …`） | `/group new <title>`，然后每一块用一次 `/group add <groupId> <agent> <task>` |
+| 形态 | 一个任务，一个 worker | 多个任务，多个 worker |
+| 适用场景 | 工作是一块定义清晰的内容；你只要一个结果回来 | 工作能拆成多块互不依赖、可以并行执行的内容；你想一起盯着它们的进度 |
+| 审批 | 被委派的任务可能停在 `needs_confirmation`——看 `/tasks`，然后 `/task approve <id>` 或 `/task reject <id>` | 组内同样是逐任务审批 |
+
+经验法则：
+
+- **一件事 → 委派。** `/dg claude Review the 3 highest-risk points of the current plan`
+- **几件互不相关的事 → 开组。** `/group new review-batch`，然后每一块用一次 `/group add`。
+- **互相依赖的事 → 不要并行。** 如果 B 需要 A 的结果，就按顺序委派，不要把两个都塞进同一个组；组是用来放可以同时跑的工作的。
+- **你可以把已委派的任务加进已有的组：** `/delegate <agent> --group <groupId> <task>`。
+- **角色模板可以塑造这两条路径：** `/delegate <agent> --role <role> <task>` 或 `/group add <groupId> <agent> --role <role> <task>`。
+
+### 和 dashboard 里的 Group Conversation 不是同一个“组”
+
+relay dashboard 还有第二种组：Group Conversation——一个持久的多 bot 会话，成员以轮次（圆桌，1–3 轮）讨论，或在自动路由下工作。它和上面的聊天 `/group` 任务组是另一套系统：它住在 dashboard / Control API 里，不在 `/group new` 里，而且成员之间互相说话（`group_send`），而不是向一个主控会话汇报。如果你想让 bot 们互相讨论协作，用 Group Conversation；如果你想让多个子任务跑在你当前会话之下，用聊天任务组。会话模型见 [conversation-runtime.md](../conversation-runtime.md)。
 
 ## 先记住两个动作
 
@@ -70,6 +92,10 @@
 ## 示例
 
 ```text
+/dg claude Review the 3 highest-risk points of the current plan   # 一件事：委派
+/group new review-batch                                            # 几件互不相关的事：开组
+/group add review-batch claude Review the interface design
+/group add review-batch codex --role reviewer Review test coverage
 /group cancel review-batch   # 停止 review-batch 里未完成的工作（组会被保留）
 /tasks clean                 # 清理当前主控会话下已完成的任务和失效绑定
 ```

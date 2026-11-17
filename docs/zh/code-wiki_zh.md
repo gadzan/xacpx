@@ -26,6 +26,7 @@
   - `acpx-cli`（直接 spawn `acpx` + 可选 `node-pty`）
   - `acpx-bridge`（子进程 bridge + JSONL 协议，隔离与更强的并发/事件处理）
 - Orchestration（可选）：在一个 coordinator 会话下，管理多个 worker session 的任务委派、进度汇报、人类确认、分组汇总等。
+- Agent Messaging（可选）：在已授权的托管会话之间，一条独立的单向 `agent_list` / `agent_send` 通路，用于对等更新。本地投递队列优先；它不创建任务，也不等待对端模型输出。
 - Daemon：后台守护运行（start/status/stop），维护 pid/status/log 等元数据，并承载 orchestration IPC server。
 - MCP（可选）：把 orchestration 能力以 MCP stdio server 的形式暴露给外部 host（Codex/Claude Code 等），外部 host 以工具调用方式发起 delegate/group 操作。
 
@@ -93,6 +94,8 @@
   - 依赖：runtime 文件（pid/status/log）与进程管理（spawn/terminate）
 - Orchestration（可选）
   - 依赖：StateStore；通过 transport 驱动 worker session；通过 channels 回推进度/结果通知
+- Agent Messaging（可选）
+  - 依赖：以 state 为后端的 endpoint registry 与 `SessionTransport.injectMessage`；与 orchestration 共用 IPC，但不复用 `OrchestrationService` 的任务语义
 - MCP（可选）
   - 依赖：`@modelcontextprotocol/sdk`；通过 orchestration IPC 调用 daemon 内服务
 
@@ -144,6 +147,7 @@
   - 前台 `run`
   - `login/logout`（对 channel 的封装）
   - `workspace`/`channel` 这些“本机配置管理”命令
+  - `adapter` 管理：精确的默认值、命令分类与共用的信任边界解码器在 [src/adapters/adapter-catalog.ts](../../src/adapters/adapter-catalog.ts)；不可变的 staging/校验/指针发布在 [src/adapters/adapter-preinstall.ts](../../src/adapters/adapter-preinstall.ts)；跨进程锁在 [src/adapters/adapter-locks.ts](../../src/adapters/adapter-locks.ts)；引用安全的双遍扫描删除在 [src/adapters/adapter-gc.ts](../../src/adapters/adapter-gc.ts)；registry 策略/探测与 CLI 组装仍留在相邻的 adapter 模块中
   - `mcp-stdio`（MCP server 启动与 identity 规则）
 
 ### 5.2 App 装配（src/main.ts）
@@ -155,12 +159,18 @@
   - `loadConfig()` + `createAppLogger()`：[main.ts](../../src/main.ts#L114-L125)
 - 状态与会话：
   - `StateStore.load()` + `new SessionService(...)`：[main.ts](../../src/main.ts#L127-L131)
+  - 启动时 `computeAgentOverlayEntries(config)` 通过 `ensureAgentOverlays` 把 config 派生出的 `xacpx-managed-*` alias 预置进 `~/.acpx/config.json`，让新的结构化 launch 在 Windows 上也能解析。模块：[acpx-agent-overlay.ts](../../src/transport/acpx-agent-overlay.ts)
 - transport 选择：
   - `acpx-bridge`：`spawnAcpxBridgeClient()` + `new AcpxBridgeTransport(...)`：[main.ts](../../src/main.ts#L132-L146)
   - `acpx-cli`：`new AcpxCliTransport(...)`：[main.ts](../../src/main.ts#L145-L146)
 - orchestration：
   - `new OrchestrationService({... injected callbacks ...})`：[main.ts](../../src/main.ts#L472-L543)
   - daemon 内承载 IPC server：`new OrchestrationServer(...)`：[main.ts](../../src/main.ts#L569-L573)
+- Agent Messaging：
+  - 稳定的节点身份持久化在 `<xacpx-home>/agent-messaging/node.json`；endpoint 身份由逻辑会话与持久化的 worker/外部绑定派生
+  - [AgentEndpointRegistry](../../src/orchestration/agent-endpoint-registry.ts) 提供同一 coordinator 内的发现与授权，且不公开私有运行时元数据
+  - [AgentMessageRouter](../../src/orchestration/agent-message-router.ts) 拥有 message id、envelope 语义、FIFO、去重/限额、安全投递日志与 Local Route 回执
+  - [LocalAgentMessageDeliveryAdapter](../../src/orchestration/local-agent-message-delivery.ts) 解析私有运行时绑定并调用 `SessionTransport.injectMessage`
 - router/agent：
   - `new CommandRouter(...)`：[main.ts](../../src/main.ts#L573-L574)
   - `new ConsoleAgent(...)`：[main.ts](../../src/main.ts#L574-L574)
@@ -181,7 +191,7 @@
 
 ### 5.4 Channels（src/channels/*）
 
-Core ships only the Weixin runtime plus generic channel/plugin infrastructure. Feishu, Yuanbao, and future non-Weixin channels are plugin-backed and should live in `packages/channel-*` or external npm packages, not as product-specific implementations under `src/channels/`.
+Core 只随包发布 Weixin runtime 与通用的 channel/插件基础设施。飞书、元宝以及未来的非微信频道都由插件承载，应放在 `packages/channel-*` 或外部 npm 包里，而不是在 `src/channels/` 下写 product-specific 实现。
 
 统一抽象：`MessageChannelRuntime`（登录/启动/发消息/通知任务进度）：[channels/types.ts](../../src/channels/types.ts#L62-L78)
 
@@ -242,6 +252,12 @@ ConsoleAgent 是“渠道消息协议 → router 协议”的适配层：
 
 统一边界：`SessionTransport`：[transport/types.ts](../../src/transport/types.ts#L46-L64)
 
+在进入该边界之前，[resolve-agent-command.ts](../../src/config/resolve-agent-command.ts) 先解析按 agent 显式配置的命令，再解析 xacpx 精确托管的 Codex/Claude npx pin，最后才是其它驱动的 local/native 回退。会话状态里记录的 generated managed command 属于派生状态：[SessionService](../../src/sessions/session-service.ts) 会在重启后按当前配置/默认 pin 刷新它们，同时保留真正自定义的记录命令。
+
+结构化 launch（托管 pin、hermes shim、本地回退、用户 `argv`）被建模为 `AgentLaunchSpec`（[agent-launch.ts](../../src/config/agent-launch.ts)）：`acpxAgent`（位置参数：内容寻址的 alias 或裸驱动）、`agentCommand`（规范化的 acpx 会话身份）、`agentArgv`，以及 `rawCommand`（遗留/历史 `acpx --agent` 选择器；Windows 内置历史由 acpx 0.13 record backfill 恢复）。alias 预置在 proper-lockfile 下把 `{argv}` 条目合并进 `~/.acpx/config.json`（[acpx-agent-overlay.ts](../../src/transport/acpx-agent-overlay.ts)）；遗留会话记录仅在身份精确匹配时才用 `agent_argv` 回填（[acpx-session-argv-migration.ts](../../src/transport/acpx-session-argv-migration.ts)）。持久化的预装命令只有在匹配受信任的 runtime adapter 根与完整不可变的发布/包布局时，才算派生托管身份；更宽泛的路径形态分类器只用于 fencing。agent 选择规则只存在于一处——[acpx-command-builder.ts](../../src/transport/acpx-command-builder.ts) 里的 `appendAgentAndTail`——所有 transport 与管理旁路（status/list/reap/doctor）都走它。
+
+在 Windows 上，如果某个 `LogicalSession` 记录的 `transport_agent_command` 是多 token 的 raw command，或是无法以 `[command]` 形式无损往返的单 token 命令，则无法启动，因为 acpx 在那里拒绝 raw `--agent` 字符串。请在 config 里把该 agent 转成结构化 `argv`（见 [config-reference.md](./config-reference_zh.md#windows-raw-command-迁移)），或在身份精确匹配时依赖 acpx record backfill。当身份无法证明、或默认值本就是派生而来时，`resolveLaunchSpec`（[session-service.ts](../../src/sessions/session-service.ts)）的 fail-closed 保证不变。
+
 - `ensureSession()`：为指定 `ResolvedSession` 创建/确保底层会话存在，并可回传 `EnsureSessionProgress`（spawn/initializing/ready 或 note）
 - `prompt()`：发送 prompt，支持 reply 回调（流式）与 `PromptOptions`（media、onSegment）
 - `cancel()/setMode()/hasSession()`：控制类操作
@@ -250,6 +266,8 @@ ConsoleAgent 是“渠道消息协议 → router 协议”的适配层：
 
 - `acpx-cli`：[src/transport/acpx-cli](../../src/transport/acpx-cli)
 - `acpx-bridge`：[src/transport/acpx-bridge](../../src/transport/acpx-bridge)
+
+两套实现的 argv 构造都集中在这个纯共享模块 [acpx-command-builder.ts](../../src/transport/acpx-command-builder.ts)（无 `this`、无 I/O；除 `config/types` 外只 import 共用的 `permission-mode-flag` helper）：permission/ttl/model/session/prompt/query 参数，外加 `isMissingAcpxSessionError` 与 `parseAcpxSessionRecordId`，并包含权限默认值（`DEFAULT_PERMISSION_MODE`、`DEFAULT_NON_INTERACTIVE`）。它是共享/全局 argv 前缀（format、cwd、permission、model、ttl、verbose 与 agent 选择）的唯一事实来源。普通操作仍各自构造自己的尾部，而 Agent Messaging 使用共用的 `buildQueueMessagePromptArgs` helper，使两套 transport 产出完全一致的 `prompt -s <name> --no-wait <envelope>` 队列提交。`acpx-cli-transport.ts` 与 `bridge-runtime.ts` 保留各自的按操作编排、错误处理、能力探测（如 bridge 的 `--verbose` 探测）与 I/O 管道（PTY/`child_process` spawn 对比 bridge 子进程）。
 
 ### 5.8 Bridge（src/bridge/*）
 
@@ -271,7 +289,7 @@ Bridge 的目标是把 acpx 驱动隔离到子进程，并提供更可控的并�
 
 `DaemonController`：外部控制面（CLI 调用）
 
-- `getStatus()`：PID/status 一致且进程存活→running；存活但元数据冲突或不完整→只读的 indeterminate；PID 已失效时清理 runtime files：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
+- `getStatus()`：PID/status 一致且进程存活→running；存活但元数据冲突或不完整→只读的 indeterminate；PID 已失效的元数据会被清理：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - `start()`：spawn detached → 写 pid → 等待 status ready（pid 匹配）：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - `stop()`：协调 daemon 身份 → 重新核验恢复出的 POSIX 进程身份 → terminate → 等待退出 → 清理 pid/status；POSIX status-only 恢复还要求 consumer lock 与 OS 启动时间证据：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - 每个 runtime 入口都持有与渠道无关、由 OS 持有的核心 consumer lock，**并为每一个提供 lock 的渠道各持一把兼容性 fence**（全部渠道，按渠道 id 确定顺序串行取得，冲突回滚与释放均按相反顺序）；稳定的核心 JSON 文件只是诊断元数据，不充当 mutex。内部 Windows `cli.js run` 只在取得该 ownership 后发布 generation/orphan 上下文：[runtime-consumer-lock.ts](../../src/daemon/runtime-consumer-lock.ts)、[windows-daemon-runtime.ts](../../src/daemon/windows-daemon-runtime.ts)、[run-console.ts](../../src/run-console.ts)
@@ -290,6 +308,10 @@ Bridge 的目标是把 acpx 驱动隔离到子进程，并提供更可控的并�
 ### 5.11 MCP（src/mcp/*）
 
 `runXacpxMcpServer()` 启动 MCP stdio server 并提供工具列表：
+
+- Task Orchestration 工具把委派工作建模为最终会有结果的任务。
+- `agent_list` 与 `agent_send` 把单向对等更新建模为只返回目标运行时投递接受回执的操作。
+- MCP registry 闭包会注入 `coordinatorSession` 与 `sourceHandle`；工具入参无法提供 `from`，也无法扩大自己的发现范围。
 
 - server 初始化与 tool registry 缓存：[xacpx-mcp-server.ts](../../src/mcp/xacpx-mcp-server.ts)
 - identity 解析（coordinatorSession/sourceHandle 或 resolveIdentity）：[xacpx-mcp-server.ts](../../src/mcp/xacpx-mcp-server.ts)

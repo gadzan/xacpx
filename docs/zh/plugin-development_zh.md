@@ -382,6 +382,7 @@ export interface CoordinatorMessageInput {
 ```ts
 export interface ChannelStartInput {
   agent: ChatAgent;
+  routeConversation?: (request: ChatRequest) => ConversationChannelAgent | undefined;
   abortSignal: AbortSignal;
   quota: OutboundQuota;
   logger: AppLogger;
@@ -390,11 +391,16 @@ export interface ChannelStartInput {
   coreVersion?: string;           // xacpx 核心版本字符串
   locale?: Locale;                // 当前运行时语言（"en" | "zh"），见 §5.1 国际化
 }
+
+export interface ConversationChannelAgent extends ChatAgent {
+  prepareConversation?(request: ChatRequest): Promise<void | { stopPendingAcceptance: boolean }>;
+}
 ```
 
 | 字段 | 用途 |
 | --- | --- |
-| `agent` | xacpx 路由器入口。你收到一条文本消息后，调 `agent.handle(chatKey, text)` 把它喂给命令路由。 |
+| `agent` | 普通 Session/命令路由入口：`await agent.chat(request)` 返回 `ChatResponse`，也可以使用 `request.reply`。 |
+| `routeConversation?` | 准入之后、当前 Session 查找、活跃度跟踪或 Session 泳道选择之前调用。返回的 Agent 会在独立的 Conversation 执行器上处理本轮，没有 Session 别名，也没有前台/后台结果钩子。返回 undefined 则保持 Session 派发。需提供精确的 channel/account/chatKey/平台消息身份；完整的 chat request 必须携带已认证的人类元数据。见 [Conversation 绑定](../conversation-runtime.md#external-channel-bindings-pr10)。 |
 | `abortSignal` | daemon shutdown 信号。监听 `aborted` 事件，停掉所有长连接和定时器。 |
 | `quota` | 出站速率/总量配额，详见下节。 |
 | `logger` | 结构化日志器，详见 [§7](#7-应用日志applogger)。 |
@@ -402,7 +408,11 @@ export interface ChannelStartInput {
 | `coreVersion?` | xacpx 核心版本字符串，供需要它的频道（如命令同步元数据）使用。 |
 | `locale?` | 当前运行时语言（`"en"` \| `"zh"`，类型 `Locale`），由 `config.language` 解析得来。用它本地化你的频道输出，见 [§5.1](#51-国际化i18n)。 |
 
-`ChatAgent` 接口本身在内部，但通过 `MessageChannelRuntime` 的契约只要求你把入站文本 `await agent.handle(chatKey, text)` 即可。返回不带数据；agent 会在自己的回调链里调你的发送方法。
+对于绑定了 Conversation 的轮次，要单独提供 `ChatRequest.humanStopSignal`。只有来自本轮所有者的、已准入的 Stop 才能中止它，并与普通的请求 `abortSignal` 一起中止。生命周期终止（`disabled`、`removed`、logout 或 shutdown）只中止 `abortSignal`：Conversation 调用方会脱离，已被接受的持久 Run 仍归核心运行时所有。普通的请求中止从不意味着人类取消。见 [Conversation 绑定](../conversation-runtime.md#external-channel-bindings-pr10)。在开始打字或初始化卡片之前，先调用所选 Agent 的 `prepareConversation?.(fullRequest)`。它会提交受理并安装结算/Stop 跟踪；在 Stop 选择时捕获所有者当前的 Conversation 任务。如果准备返回 `stopPendingAcceptance: true`，只在 UI 搭建之前向这些被捕获的任务发信号。不要从 Stop 文本或路由选择去推断这一点：只有一份新的持久 Stop 回执才会授予该标志，所以旧的平台 Stop 重放无法中止后续任务。普通 Session 任务和该 Stop 自己的任务被排除在外。随后 `chat(fullRequest)` 会 await 同一个准备好的结果。保留它的消息身份、内容和信号对象。对每条被准入的消息立即进入准备；核心 Topic 队列会串行化执行。较旧的 Run 或其频道投递不得让后续输入阻塞在频道内存泳道里。新的 Stop 准入还会为准备阶段内已归属的平台源提交取消墓碑（cancellation tombstones），包括 route/Bot 门控等待者；即使适配器始终没能向它们发信号，它们在重启后依然保持被拒绝。Stop 重放不会捕获后续的准备调用。
+
+轮询和 webhook 插件应当从 `xacpx/plugin-api` 导入 `isConversationIngressRejection`。如果准备被拒绝且该断言返回 true，说明源侧决策已经持久化，可以确认/做检查点。其它错误必须保持未确认/可重试；仅匹配 code 字符串是不够的。该断言在插件与核心各自独立打包的副本之间同样有效。
+
+`ChatRequest` / `ChatResponse` 从 `xacpx/plugin-api` 导出。通过频道正常的回复机制投递所选 Agent 的响应。定时轮次仍使用普通 Agent。选择器只挑选路径；当所选 Agent 接受完整请求时，绑定与权限会被重新校验。核心会把持久绑定修订版本和目标元组一并冻结：移除再恢复同一绑定会让一个未被接受的选择失效。缓存的 owner 补充信息不得延误绑定准备；内置的飞书适配器使用未过期的缓存事实，并在受理后刷新以供后续轮次使用。
 
 > **重要**：你的频道要持有一份 `agent` / `quota` / `logger` 引用直到 `stop()` / `logout()` 或 `abortSignal` 触发。`start()` 返回后这些不会再传一次。
 
@@ -571,7 +581,7 @@ export interface ConsumerLockOptions {
 
 实现要点：
 
-- 用文件锁（`proper-lockfile` / 自家 fcntl）做物理互斥。
+- 新的生命周期锁请用核心从 `xacpx/plugin-api` 导出的 `acquireFileLock(path)`。它返回 `{ release(): Promise<void> }`；release 是幂等的。POSIX 使用稳定文件上的 `flock`（owner 为 Bun 时沿用现有 Node helper），Windows 使用规范化路径的 named-pipe guard 加一个持久文件。`FileLockBusyError` 表示有一个活着的 owner 持有它；权限、native module 和 helper 失败会向上传播，并且必须让启动失败。绝不 unlink/rename 该文件，也不要从 mtime/PID 推断所有权。所选文件路径上残留的旧目录，必须等它的旧写者全部停止后才能清理。
 - `acquire` 失败时抛带元信息的错（参考 `ActiveWeixinConsumerLockError`），让 daemon 能在日志里告诉用户"另一个进程持有锁，pid=xxx"。
 - `release` 必须幂等。
 - 核心 runtime 锁先取得，随后为**每一个**提供 lock 的渠道各取得一把 fence（不再只取第一把），
@@ -582,8 +592,10 @@ export interface ConsumerLockOptions {
   自行在用户全局 core home 下派生路径，忽略注入的 lockFilePath。
 - 锁文件元信息不可读时必须 fail-closed：有限次数重读后拒绝启动；**绝不** `rm()` 自己读不懂的锁文件，
   那等于删掉另一个活进程的 fence。
-- 参考实现：`src/weixin/monitor/consumer-lock.ts`（config 作用域）与
-  `packages/channel-discord/src/channel.ts` 的 `createConsumerLock()`（用户全局、按 bot token）。
+
+参考实现：`src/weixin/monitor/consumer-lock.ts`（config 作用域）与 `packages/channel-discord/src/channel.ts` 里的 `createConsumerLock()`（用户全局、按 bot token）。
+
+`acquireFileLock` 是一个增量式的 plugin API 导出，运行时消费者锁与终端 registry 共用。发布消费方时要与一次核心发布一起走 `scripts/release.mjs`；它会更新一方 peer/min-core 下限。已经发布过的核心不会因为插件侧的单独更新而获得该导出。运行时所有权沿用现有的 `runtime-owner` Windows 键和元信息格式。在 Bun 下，Windows 管道所有权使用与 POSIX flock 相同的、随生命周期绑定的 Node helper；这样保留的是 Node/libuv 的争用错误与崩溃释放语义，而不依赖 Bun 在管道被占用时的 `ERR_INVALID_ARG_TYPE` 行为。该 helper 在 Windows 上不加载 `fs-ext`；helper 丢失会在共享状态被无所有权地修改之前先结束其父进程。
 
 ---
 
@@ -752,6 +764,12 @@ export interface ChannelRuntimeConfig {
 3. `notifyTaskCompletion` 等回调里检查 `task.chatKey` 是否以 `<type>:` 开头，不是就直接返回。
 
 `channelId` 不能含 `:`。`registerChannelFactory` 会强制校验，未通过的会在 daemon 启动时报错。
+
+### Conversation 绑定的 chat key
+
+选择接入 `routeConversation` 的插件还必须满足外部绑定 key 契约：完整 key 最长 2048 字符，第一个 `:` 之后的后缀非空且不含空白字符。前缀是规范化 trim 后的已注册频道类型；大小写、下划线、内部空格以及超过 64 字符的类型都受支持。产品命名空间（`bot`、`control`、`relay`、`group-execution`）被排除在这条绑定接缝之外。
+
+这些都是能力相关的限制。普通 Session 路由仍沿用上面的通用约定；一个在这些限制之外的、Session 兼容的 key 无法被绑定到 Conversation。插件可以把内部 id 编码进一个稳定的、无空白的、长度受限的后缀。为绑定支持任意不透明后缀仍是一个兼容性后续项。准入、准备与 Stop 要求见[外部 Conversation 绑定](../conversation-runtime.md#external-channel-bindings-pr10)。
 
 ---
 

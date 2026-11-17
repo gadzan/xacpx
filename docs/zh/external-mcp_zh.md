@@ -6,11 +6,46 @@
 
 核心目标：让“当前正在使用的 coding agent”成为 coordinator，把子任务派给其他 agent，同时让被派出去的 worker 明确知道自己应该在哪个目录工作。
 
+## Agent 消息与任务编排
+
+MCP server 提供两套互相独立的协作模型：
+
+- 当另一个 Agent 拥有一个任务、并应当最终产出结果时，用 `delegate_request` 和 `task_*` 系列工具。
+- 当一个已在运行的 Agent 只需要一次对端更新、并继续自己的流程时，用 `agent_list` 和 `agent_send`。
+
+`agent_list` 只返回当前 MCP binding 已授权、且具备接收能力的端点。在初始本地落地范围内，这指的是同一个 coordinator 下的内部 coordinator 与 worker；发送方自身被排除。handle 是不透明的——把返回的 `handle` 原样作为 `agent_send.to` 传回，不要解析它。公开的端点数据从不包含 cwd、PID、OS user、原始 session handle、socket 路径或 provider 原生 session id。
+
+`agent_send` 是单向的，目标 runtime 接收投递后即返回。它从不等待目标模型理解、完成或回复：
+
+```json
+{
+  "to": "<handle from agent_list>",
+  "message": "The auth schema changed; update the refresh-token branch.",
+  "mode": "auto"
+}
+```
+
+本地 queue-first 版本返回：
+
+```json
+{
+  "messageId": "msg_...",
+  "status": "queued",
+  "modeUsed": "queue",
+  "route": "local"
+}
+```
+
+`auto` 和 `queue` 都走目标 acpx session 的下一轮队列；`auto` 从不打断。自 Peer Interrupt Delivery v0.4 起，对托管逻辑 session 显式使用 `mode: "interrupt"` 是一个由 xacpx 托管的 **取消请求 + 真实落定 + 优先下一轮** 原语：目标 `TurnQueue` 预留一个 interrupt slot，通过自己的控制平面（AbortController signal + transport cancel，恰好一次）请求取消当前轮次，等待该轮次真正落定，然后让这条打断消息先于普通 FIFO 队列执行。xacpx 保证 lane 顺序且不重叠；底层 runtime 是否真的提前终止活跃的模型轮次由传输层决定——前驱可能以 `cancelled` 或 `completed` 收尾，xacpx 从不会把自然完成改写为取消。不需要 provider 原生 steering 支持。只有声明 `interrupt: true` 的端点（托管逻辑 session）会接受它；worker、external coordinator 和能力已过期的目标会在任何取消之前 fail closed，报 `TARGET_NOT_INTERRUPTIBLE`。已有一个 interrupt 待处理时，再发一个不同的 interrupt 会被拒绝，报 `MESSAGE_QUEUE_FULL`；同一条消息的重复重试会去重。`steer` 仍要求 provider 原生 live-input 支持，且从不会静默降级。离线 store-and-forward 不属于 `agent_send` 的范畴。
+
+目标端会看到一条转义后的 `<xacpx-message>` 信封，其中带服务端派生的 sender handle 和 message id。如果 `replyable="true"`，它可以用一次新的 `agent_send` 调用回复，并把 `replyTo` 设为收到的 id。回复是可选的；Agent 不应制造确认回环。外部 MCP host 可以发送，但标准 MCP 不允许 xacpx 把输入注入回该 host，因此 external coordinator 端点不是接收目标，来自它们的消息使用 `replyable="false"`。
+
 ## 一句话模型
 
 - **MCP host / 当前 agent**：coordinator，负责拆任务和看结果。
 - **`xacpx mcp-stdio`**：很薄的 stdio shim，只负责把 MCP tool call 转成 xacpx daemon 的本地 RPC。
 - **xacpx daemon**：真正保存 coordinator、task、worker binding 等编排状态。
+- **Agent Message Router**：推导可信发送方、解析一个已授权端点、强制执行 FIFO 与上限，并返回一条实时投递回执，且不创建 Task。
 - **worker agent**：被 `delegate_request` 派出去的 Claude / Codex / opencode 会话。
 - **`workingDirectory`**：任务级工作目录。它决定 worker 在哪里工作，不决定 coordinator identity。
 
@@ -23,6 +58,15 @@ flowchart LR
   Host -->|MCP Tasks<br/>tasks/get / tasks/list / tasks/result| Mcp
   Host -->|legacy tools<br/>task_get / task_list / task_watch| Mcp
 ```
+
+## 安全：信任边界是用户账号
+
+编排 IPC 端点自身不做任何认证。访问控制完全基于文件系统：
+
+- 在 macOS / Linux 上，daemon 把 runtime 目录（`~/.xacpx/runtime`）保持在 `0700`，把 unix socket（`orchestration.sock`）保持在 `0600`，因此只有所属用户（和 root）能连接。
+- 在 Windows 上，端点是一个命名管道，依赖默认管道 DACL，把访问限制给创建它的用户/会话。
+
+后果：**任何以你的用户账号运行的进程都能驱动你的 agent** —— 用任意工作目录派发 prompt、列出任务，或向一个托管 session 注入一条已授权的对端消息。这与 `ssh-agent` 或 rootless Docker 的立场相同：同一用户 = 可信，其他用户 = 被操作系统拒绝。没有 per-process token 或对端凭据检查，因为同一用户的攻击者反正也能读到任何这类 token。不要放宽 `~/.xacpx/runtime` 的权限，也不要在共享账号上运行 daemon。
 
 ## MCP Tasks 进展与输入请求
 
@@ -257,6 +301,65 @@ sequenceDiagram
   Mcp-->>Host: status/result
 ```
 
+## 点对点 Agent 消息（`agent_list` / `agent_send`）
+
+除了任务委派（`delegate_request`），xacpx 还提供直接的 Agent-to-Agent 消息能力，带有丰富的发现、会话线程和反滥发护栏（Collaboration v0.2）：
+
+- **`agent_list`**：列出范围内所有可发现、可达的对端 agent 端点，包括它们被指派的角色（`displayName`）、逻辑 `workspace`，以及派生的 `activity`（`status: "idle" | "working" | "waiting"` 和 `summary`）。
+- **`agent_send`**：向一个已授权的目标 handle 发送一条高价值的异步对端消息。
+
+### 通信策略
+
+自主 agent 只应在以下情况给对端发消息：
+
+1. 你掌握了关键的带外信息，且它直接改变对端当前的工作（例如破坏性的 schema 更新、API 契约变更、接口接管）。
+2. 你需要一个只有对端能提供的、用于解除阻塞的决策。
+
+**禁止的模式：**
+
+- **不要**发送寒暄（"Hello"、"What are you working on?"）。
+- **不要**发送确认类消息（"Received!"、"OK"、"Working on it"）。单向通知**不需要 ACK**。
+
+### 示例 MCP 调用
+
+```json
+// List reachable peer agents with roles and activities
+{
+  "name": "agent_list",
+  "arguments": {}
+}
+```
+
+```text
+Authorized peer agents:
+- agent:node_1:ep_worker1: schema-author [backend] (working: User schema migration to v2; receive=true, queue=true, conversation=true)
+- agent:node_2:ep_worker2: api-client [frontend] (idle; receive=true, queue=true, conversation=true)
+```
+
+```json
+// Send a high-value notification or reply
+{
+  "name": "agent_send",
+  "arguments": {
+    "to": "agent:node_2:ep_worker2",
+    "message": "User schema updated: field `legacy_token` is removed; use `bearer_token`.",
+    "replyTo": "msg_parent_123"
+  }
+}
+```
+
+### 关键护栏
+
+- **会话线程**：根消息自我锚定（`conversationId = messageId`）；带 `replyTo` 的回复继承该会话线程并递增 depth。回复一个未知或已过期的 message id 会 fail closed，报 `REPLY_CONTEXT_UNAVAILABLE`。
+- **确定性的循环与滥发防护**：
+  - 最大线程深度：6（`CONVERSATION_LIMIT_REACHED`）。
+  - 最大会话消息量：12（`CONVERSATION_LIMIT_REACHED`）。
+  - 重复抑制窗口：相同内容 30 秒（`DUPLICATE_MESSAGE`）。
+  - 对端速率限制：每 10 秒 8 条消息（`MESSAGE_RATE_LIMITED`）。
+- **单向投递**：`agent_send` 在目标队列/注入准入后立即返回；它从不等待远端模型回复。
+- **转义信封**：投递的消息会被包进 `<xacpx-message id="..." conversation-id="..." from="..." replyable="true" reply-to="...">`。
+- **仅元数据留痕**：消息投递尝试与结果记录在一个内存环形缓冲区中（只存内容的 SHA-256 哈希，不存原始文本）。
+
 ## 常用工具
 
 外部 coordinator 常用工具：
@@ -432,3 +535,11 @@ Stop-Process -Id $parent.Id -Force
 # 等 2-3 秒后确认没有残留 xacpx mcp-stdio 进程。
 Get-CimInstance Win32_Process | ? { $_.CommandLine -like "*xacpx* mcp-stdio*" } | Select-Object ProcessId,CommandLine
 ```
+
+## Direct Bot Agent 消息（Issue #399）
+
+一个不受限的实时 Direct 启动会通过其私有 Direct 执行身份暴露 `agent_list` 和 `agent_send`。发送方由当前持久化执行派生，而不是由模型提供的元数据派生。同一个 registry 同时供给 Web @ 候选、工具目录、准入校验和发送时授权。被选中的引用会告诉 Bot 真正的目标；模型是否选择调用 `agent_send` 仍是模型行为，用 fake adapter 做确定性测试。
+
+V1 列出同一实例上已启用的可接收 Bot，排除发送方，并声明 queue=true、steer/interrupt/conversation/completion=false。`agent_send` 要求恰好一个 handle 和显式 message；只支持 auto/queue，且 completion=none。回执在持久化准入之后才入队，它不是完成，也不是回复。投递通过私有 Conversation 对端 Topic 和现有 dispatcher 运行；它既不注入目标的人类 Direct 历史，也不继承人类审批。ACK/depth/消息预算用于限制循环。被撤销或复制来的启动元数据无法发送。
+
+Group 启动只暴露 `group_say`、`group_send` 和只读的 `group_read_result`。`group_say({text})` 是一条有界的公开发言（每个成员轮次最多 3 条，每条最多 1,000 字符），通过与最终回复相同的公开消息路径写入，因此会像其他公开 Group 消息一样被投影进公开记忆；它不唤醒任何人、不派发任何东西，并会与轮次的最终回复去重。后者列出已落定的 assignment 元数据（每页 16 行）或读取一条已完成的公开结果（每页 4,000 字符），范围限定在本次实时执行的 Run。它唯一的模型参数是 `assignmentId?`、`offset?` 和 `limit?`；按 `nextOffset` 续查直到为 null，以取回被省略的证据。派发过 assignment 的成员会结束自己的轮次，而不是等待、休眠或轮询：runtime 会在该轮次派发的所有 assignment 落定后，恰好唤醒它一次，在一个后续轮次中。在此之前 `group_read_result` 会拒绝每一页并报告待处理的 assignment id，这样拒绝就不会被误当成证据。不接受任何模型提供的 Run、Topic 或 sender 身份。受限的只读启动仍然没有 MCP、skills 或 slash 能力。普通公开 Session 消息保持既有路径；产品自有的隐藏 session 不是普通公开 Endpoint 目标。没有引入 Task/delegate API、离线信箱、跨实例 Bot 投递或 `replyTo` 支持。

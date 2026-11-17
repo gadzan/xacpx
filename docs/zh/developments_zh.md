@@ -29,12 +29,12 @@
 
 `xacpx` 是 **"消息频道 ↔ 命令路由 ↔ acpx 会话驱动"** 的桥接系统：
 
-- **频道**：内置 `weixin`；`feishu` / `yuanbao` 通过一方插件包分发；任何符合 `WeacpxPlugin` 契约的 npm 包都可以加进来。
-- **命令路由**：解析微信/飞书/元宝/CLI 收到的 `/ss`、`/agent`、`/group` 等 slash 命令，普通文本作为 prompt 喂给当前会话。
+- **频道**：内置 `weixin`；`feishu` / `yuanbao` / `discord` / `relay` 通过一方插件包分发；任何符合 `WeacpxPlugin` 契约的 npm 包都可以加进来。
+- **命令路由**：解析微信/飞书/元宝/Discord/CLI 收到的 `/ss`、`/agent`、`/group` 等 slash 命令，普通文本作为 prompt 喂给当前会话。
 - **Transport**：把"会话 ensure/prompt/cancel/setMode"统一为 `SessionTransport` 接口，具体实现两套——`acpx-cli`（直接 spawn `acpx`，可选 `node-pty` 分配 PTY）和 `acpx-bridge`（独立 bridge 子进程 + JSONL 协议）。
 - **Orchestration**（可选）：coordinator 会话下委派多个 worker，跟踪进度、问题、人类确认、分组汇总。可通过 `xacpx mcp-stdio` 暴露给外部 MCP host。
 - **Daemon**：`xacpx start` / `status` / `stop`，PID + status + log 落在 `~/.xacpx/runtime/`。
-- **Monorepo**：`packages/channel-feishu`、`packages/channel-yuanbao` 作为 npm workspaces 与主包同仓发布。
+- **Monorepo**：`packages/` 下的 channel 插件、relay 栈与文档站作为 Bun workspaces 与主包同仓发布；`platform-packages/` 与 `weacpx-compat/` 在 workspaces 之外。
 
 ---
 
@@ -90,18 +90,31 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 ```
 xacpx/
 ├── src/                # 主包源码
-├── packages/           # 一方频道插件
+├── packages/           # Bun workspaces：一方插件 + relay 栈 + 文档站
 │   ├── channel-feishu/
-│   └── channel-yuanbao/
+│   ├── channel-yuanbao/
+│   ├── channel-discord/
+│   ├── channel-relay/  # relay hub 连接器插件
+│   ├── relay/          # relay hub（bin: xacpx-relay；内嵌 relay-web）
+│   ├── relay-protocol/ # 线协议 + DTO（零依赖）
+│   ├── relay-web/      # 看板 SPA（private；打包进 relay）
+│   └── docs/           # VitePress 文档站
+├── platform-packages/  # @ganglion/xacpx-rmux-bridge-*（不在 root workspaces 内）
+├── weacpx-compat/      # 已废弃的兼容 shim 包（转发 weacpx/plugin-api）
 ├── tests/
 │   ├── unit/           # 默认单测
 │   ├── smoke/          # 需要真实 acpx / 真实账号
+│   ├── compat/         # acpx 兼容性 smoke（真实二进制）
+│   ├── integration/    # 跨模块测试
 │   ├── helpers/        # 共享 fixture / mock
 │   └── fixtures/       # 静态数据
 ├── docs/               # 用户文档 + 本指南 + 设计文档
+│   ├── agents/         # issue 追踪 / 分诊标签 / 领域 / skills
+│   ├── design/         # 进行中的设计文档
+│   ├── research/       # 基准测试与研究笔记
 │   ├── superpowers/    # plans/ + specs/，工作流详见下文
-│   └── releases/       # 历史发版说明
-├── scripts/            # 测试 runner、发布前校验
+│   └── zh/             # docs/*.md 的中文翻译
+├── scripts/            # 测试 runner、发布自动化、发布前校验
 ├── package.json        # 同时是 npm workspaces 根
 ├── bun.lock
 ├── tsconfig.json
@@ -138,7 +151,7 @@ xacpx/
 | `src/formatting/` | 出站文本/任务渲染 | — |
 | `src/util/` | `writePrivateFileAtomic` + `proper-lockfile` 等通用工具 | `private-file.ts` |
 | `src/weixin/` | 内置 weixin 频道 + 媒体管线 + consumer lock | `monitor/`、`messaging/` |
-| `src/weixin-sdk.ts` | weixin SDK 解析器，支持 `WEACPX_WEIXIN_SDK` 覆盖 | `loadWeixinSdk()` |
+| `src/weixin-sdk.ts` | weixin SDK 加载器，动态导入仓库内的 `src/weixin/` 实现（无环境变量覆盖） | `loadWeixinSdk()` |
 | `src/dry-run.ts` | 不连 IM 跑 router 的入口 | `bun run dry-run` |
 | `src/login.ts` | 微信扫码登录流程 | `xacpx login` |
 | `src/doctor/` | `xacpx doctor` 诊断套件 | — |
@@ -170,11 +183,15 @@ packages/channel-<name>/
 
 | Script | 作用 |
 | --- | --- |
-| `bun run build` | 主包：`bun build` 出 `dist/cli.js`、`dist/bridge/bridge-main.js`、`dist/plugin-api.js` + `tsc -p tsconfig.plugin-api.json` 出 `dist/plugin-api.d.ts` |
+| `bun run build` | 主包：`bun build` 出 `dist/cli.js`、`dist/bridge/bridge-main.js`、`dist/bridge/engine/runtime/runtime-worker-main.js`、adapter 守卫（`dist/adapters/hermes-acp-shim.js`、`acp-output-guard-main.js`、`acp-read-only-guard-main.js`）、`dist/conversations/default-router-main.js` 与 `dist/plugin-api.js` + `tsc -p tsconfig.plugin-api.json` 出 `dist/plugin-api.d.ts` |
 | `bun run build:plugin-api` | 单独刷新 `dist/plugin-api.d.ts`（写新公共类型时用） |
 | `bun run build:channel-feishu` | 主包 + feishu 插件 |
 | `bun run build:channel-yuanbao` | 主包 + yuanbao 插件 |
-| `bun run build:packages` | 主包 + 全部 packages/* |
+| `bun run build:channel-discord` | 主包 + discord 插件 |
+| `bun run build:relay-protocol` | 线协议包（同时是 `build:plugin-api` 的依赖） |
+| `bun run build:relay` | relay hub；先跑 `build:relay-web`、最后 `bundle:relay-web`，看板随 hub 包出厂 |
+| `bun run build:channel-relay` | 主包 + relay 连接器插件 |
+| `bun run build:packages` | 主包 + 以上全部包 |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs`（发布前必跑） |
 | `bun run dev` | 前台跑主包源码（不需要先 build） |
 | `bun run dry-run -- ...` | dry-run 入口 |
@@ -185,6 +202,8 @@ packages/channel-<name>/
 - `bun build --target node --external node-pty`：`node-pty` 不打进 bundle，运行时由 `node_modules` 解析。`packages/*` 同理 `--external xacpx`。
 - 主包对外只导出 `xacpx/plugin-api`；其它路径（`xacpx/dist/*`、`xacpx/src/*`）**不是稳定 API**，别在外部依赖。
 - 插件包用 `tsc -p packages/<name>/tsconfig.json` 单独 emit `.d.ts`，因为 bun build 目前不出 `.d.ts`。
+- `packages/relay-web` 是 `private: true`，不单独发布：`bun run build:relay` 会把它的 `dist/` 拷进 `packages/relay/dist/relay-web`（`bundle:relay-web`），tarball 缺 `dist/relay-web/index.html` 时 `verify:publish` 直接失败。
+- `platform-packages/*`（`@ganglion/xacpx-rmux-bridge-*` 平台二进制）在 root workspaces 之外，由 `scripts/pack-rmux-bridge-platform.mjs` 打包，不走 `build:packages`。
 
 ---
 
@@ -305,8 +324,8 @@ bun run dry-run --chat-key wx:test -- \
 | --- | --- | --- |
 | 命令解析与路由 | `src/commands/` | [commands-module.md](./commands-module_zh.md), [commands.md](./commands_zh.md) |
 | Daemon CLI | `src/daemon/`、`src/cli.ts` | [daemon-module.md](./daemon-module_zh.md) |
-| Acpx-Bridge 协议 | `src/bridge/` | [`docs/2026-03-25-weacpx-acpx-bridge-design.md`](../2026-03-25-weacpx-acpx-bridge-design.md) |
-| Orchestration | `src/orchestration/` | [`docs/2026-04-13-weacpx-orchestration-design.md`](../2026-04-13-weacpx-orchestration-design.md) |
+| Acpx-Bridge 协议 | `src/bridge/`、`src/transport/acpx-bridge/` | [code-wiki.md](./code-wiki_zh.md)（传输层与集中化 argv） |
+| Orchestration | `src/orchestration/`、`src/mcp/` | [external-mcp.md](./external-mcp_zh.md)、[peer-delegation.md](../peer-delegation.md) |
 | 外部 MCP 集成 | `src/mcp/` | [external-mcp.md](./external-mcp_zh.md) |
 | 频道管理 | `src/channels/` | [channel-management.md](./channel-management_zh.md) |
 | 频道插件 SPI | `src/plugin-api.ts`、`src/plugins/` | [plugin-development.md](./plugin-development_zh.md) |
@@ -323,21 +342,18 @@ bun run dry-run --chat-key wx:test -- \
 `src/config/resolve-acpx-command.ts:resolveAcpxCommand`：
 
 1. `transport.command`（config 显式覆盖）
-2. **bundled** acpx：从主包 `node_modules/acpx/...` 解析（默认 `dependencies` 已经声明 `acpx@^0.6.1`）
+2. **bundled** acpx：从主包 `node_modules/acpx/...` 解析。`dependencies` 精确锁版（当前 `0.22.0`，无 caret）；对版本敏感的契约（例如只读执行证明）在版本不同或未知时 fail-closed。
 3. Shell `PATH`
 
 ### weixin SDK
 
-`src/weixin-sdk.ts:loadWeixinSdk`：
-
-1. `WEACPX_WEIXIN_SDK` 环境变量
-2. 已安装包 `weixin-agent-sdk`
+`src/weixin-sdk.ts:loadWeixinSdk` 动态导入仓库内实现（位于 `src/weixin/`，经 `src/weixin/index.ts` 再导出）。没有环境变量覆盖，也没有 `weixin-agent-sdk` 包解析：微信运行时随本仓库一起提供。
 
 ### 插件 home
 
 `src/plugins/plugin-home.ts:resolvePluginHome`：
 
-1. `WEACPX_PLUGIN_HOME` 环境变量
+1. `XACPX_PLUGIN_HOME` 环境变量（旧名 `WEACPX_PLUGIN_HOME` 仍作为回退生效）
 2. 默认 `~/.xacpx/plugins/`（独立 `package.json`，与全局 / 项目 `node_modules` 隔离）
 
 包管理器自动探测：能跑 `bun --version` 就用 `bun add/remove`，否则回退 `npm install/uninstall`（`src/plugins/package-manager.ts`）。插件 add/update 会带 `--registry=https://registry.npmjs.org` 和 `--@ganglion:registry=...`，避免 optional 的 `@ganglion/xacpx-rmux-bridge-*` 被公司镜像 404。可用 `XACPX_PLUGIN_REGISTRY` 覆盖。
@@ -357,6 +373,7 @@ bun run dry-run --chat-key wx:test -- \
 | `~/.xacpx/runtime/app.log` | bounded 应用日志（轮转） | `AppLogger` |
 | `~/.xacpx/runtime/orchestration.sock` | Unix socket / `\\.\pipe\xacpx-orchestration-<hash>` | `OrchestrationServer` |
 | `~/.xacpx/plugins/` | 插件 npm home（独立 `package.json` + `node_modules`） | `xacpx plugin add/update` |
+| `~/.xacpx/bots/` | Bot 专用默认 workspace 目录；登记进 config，删除 Bot 后仍保留 | 通过 Control API 创建 Bot |
 
 字段细节：[docs/config-reference.md](./config-reference_zh.md)。
 
@@ -439,7 +456,7 @@ bun run publish:plugins     # 升一方插件包时
 发版时记得：
 
 - 升 `package.json` `version`；如果改了一方插件，也升对应 `packages/*/package.json`。
-- 在 `docs/releases/` 加发版说明。
+- 发版说明写入根目录 `CHANGELOG.md`——`node ./scripts/release.mjs notes` 从提交主题生成草稿，`apply` 负责写入。不要再往 `docs/` 下手建文件。
 - 给 git tag。
 
 ### 一方频道插件发布（tag 驱动）
@@ -504,6 +521,5 @@ git push origin channel-discord-v0.8.0
 - 代码地图：[code-wiki.md](./code-wiki_zh.md)
 - 测试约定：[testing.md](./testing_zh.md)
 - 发版流程：[发布章节](#发布)
-- 多 Agent 编排原理：[`2026-04-13-weacpx-orchestration-design.md`](../2026-04-13-weacpx-orchestration-design.md)
-- Acpx-Bridge 协议：[`2026-03-25-weacpx-acpx-bridge-design.md`](../2026-03-25-weacpx-acpx-bridge-design.md)
+- 编排能力面：[external-mcp.md](./external-mcp_zh.md)；点对点委派：[peer-delegation.md](../peer-delegation.md)
 - 项目规约（`AGENTS.md` / `CLAUDE.md`）：[../AGENTS.md](../../AGENTS.md)

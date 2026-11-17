@@ -31,9 +31,11 @@
 
 ```text
 /config set channel.replyMode final
+/config set channels.feishu.replyMode final
 /config set logging.level debug
 /config set transport.permissionMode approve-reads
 /config set workspaces.backend.description backend repo
+/config set language en
 ```
 
 ---
@@ -53,6 +55,8 @@
 - `logging.maxFiles`
 - `logging.retentionDays`
 - `channel.replyMode`
+- `channels.<id>.replyMode`（频道级默认；运行时热改，立即对该频道新回合生效）
+- `language`
 
 
 说明：性能 debug 日志 `logging.perf.*` 不支持通过聊天里的 `/config set` 动态开关。需要手动编辑 `~/.xacpx/config.json` 的 `logging.perf`，然后重启 daemon；该 tracer 在启动时绑定。
