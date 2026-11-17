@@ -21,7 +21,10 @@ function config(): AppConfig {
     logging: { level: "info", maxSizeBytes: 1024, maxFiles: 2, retentionDays: 1 },
     channel: { type: "weixin", replyMode: "stream" },
     channels: [{ id: "weixin", type: "weixin", enabled: true }],
-    agents: { omp: { driver: "omp" } },
+    // Pinned argv: a bare `omp` driver resolves through PATH, so the launch
+    // identity (and therefore the record's `agent_command`) would differ between
+    // a machine that has omp installed and CI.
+    agents: { omp: { driver: "omp", argv: [process.execPath, "--acp"] } },
     // The operator writes the home workspace as `~`; a fork reads the acpx record
     // back and matches its absolute `cwd`, so the resolved value must be physical
     // or every fork fails with `session-fork-empty-history`.
