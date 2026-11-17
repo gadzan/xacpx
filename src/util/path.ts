@@ -37,8 +37,17 @@ export function isWindowsLikePath(input: string): boolean {
   return WINDOWS_DRIVE_PATH_RE.test(input) || WINDOWS_UNC_PATH_RE.test(input);
 }
 
-function expandHome(input: string): string {
-  return input.startsWith("~") ? homedir() + input.slice(1) : input;
+/** Expand a leading `~` to the home directory, keeping the platform's native
+ *  separators. Workspace cwds are user config and are routinely written as `~`
+ *  or `~/path`; every consumer that needs a PHYSICAL path (spawn, acpx record
+ *  lookup, reap identity) must go through here, because the recorded path is
+ *  always absolute. */
+export function expandHome(input: string): string {
+  if (input === "~") return homedir();
+  if (input.startsWith("~/") || input.startsWith("~" + path.sep)) {
+    return path.resolve(homedir(), input.slice(2));
+  }
+  return input;
 }
 
 /**

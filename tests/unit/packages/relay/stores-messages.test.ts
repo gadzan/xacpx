@@ -113,3 +113,16 @@ test("attachNodeId without a correlation stamps the newest inbound row only when
   ]);
   db.close();
 });
+
+test("attachNodeId with trailingPrompt stamps only the row carrying that text", async () => {
+  const db = await seeded();
+  const store = new MessageStore(db);
+  // A peer Agent message pre-writes its inbound row before the turn starts.
+  store.append("i1", "backend", "in", "peer greeting");
+  store.attachNodeId("i1", "backend", "node-peer", { trailingPrompt: "peer greeting" });
+  // A stale event naming different text must not stamp an unrelated row.
+  store.attachNodeId("i1", "backend", "node-stale", { trailingPrompt: "never sent" });
+  const [row] = store.listBySession("a1", "i1", "backend").messages;
+  expect(row).toMatchObject({ text: "peer greeting", nodeId: "node-peer" });
+  db.close();
+});

@@ -303,12 +303,18 @@ export class MessageStore {
    * caller just reconciled THIS turn's prompt and the newest inbound row is it; the
    * fallback therefore never overwrites an existing node id, so a duplicate
    * delivery cannot stamp a newer turn's row.
+   *
+   * `trailingPrompt` names the text the fallback must match. An ingress that
+   * pre-writes the inbound row (a peer Agent message, a scheduled task) makes the
+   * reconcile report the prompt as already present; without this the row would
+   * stay unstamped and the Web would show no fork control on it. Requiring the
+   * text keeps the unstamped-row rule while proving the row is this turn's prompt.
    */
   attachNodeId(
     instanceId: string,
     sessionAlias: string,
     nodeId: string,
-    correlation: { promptRequestId?: string; queueItemId?: string } = {},
+    correlation: { promptRequestId?: string; queueItemId?: string; trailingPrompt?: string } = {},
   ): void {
     const lookup = (where: string, value: string): number | undefined =>
       this.db.get<{ id: number }>(
@@ -327,14 +333,18 @@ export class MessageStore {
       this.db.run("UPDATE messages SET node_id = ? WHERE id = ?", [nodeId, rowId]);
       return;
     }
+    const trailingPrompt = correlation.trailingPrompt;
     this.db.run(
       `UPDATE messages SET node_id = ?
        WHERE id = (
          SELECT id FROM messages
          WHERE instance_id = ? AND session_alias = ? AND direction = 'in'
+           ${trailingPrompt === undefined ? "" : "AND text = ?"}
          ORDER BY id DESC LIMIT 1
        ) AND node_id IS NULL`,
-      [nodeId, instanceId, sessionAlias],
+      trailingPrompt === undefined
+        ? [nodeId, instanceId, sessionAlias]
+        : [nodeId, instanceId, sessionAlias, trailingPrompt],
     );
   }
 

@@ -512,7 +512,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         sessionAlias: string,
         opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string },
         liveFallback: boolean,
-      ): "appended" | "correlated" | "unchanged" => {
+      ): "appended" | "correlated" | "trailing" | "unchanged" => {
         if (opts.queueItemId) {
           const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
           const state = messages.queuedState(correlation);
@@ -545,7 +545,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         }
         if (opts.prompt !== undefined) {
           if (opts.scheduled && messages.hasScheduledInbound(instanceId, sessionAlias, opts.scheduled.taskId)) return "unchanged";
-          if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) return "unchanged";
+          // The newest inbound row already carries THIS turn's prompt: an ingress
+          // (a peer Agent message, a pre-written prompt) persisted it first. Report
+          // it as the trailing row so the node id can still be stamped on it.
+          if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) return "trailing";
           messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
           return "appended";
         }
@@ -559,10 +562,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         const outcome = reconcileInboundPromptRow(sessionAlias, opts, liveFallback);
         // A deduped replay did not touch this turn's row: it may leave an older
         // row's stamp alone, but it must never overwrite a newer turn's node id.
+        // `trailing` is the one dedupe that names this turn's own row, so it is the
+        // only one that may still stamp — and it must prove the text matches.
         if (!opts.nodeId || outcome === "unchanged") return;
         messages.attachNodeId(instanceId, sessionAlias, opts.nodeId, {
           ...(opts.promptRequestId !== undefined ? { promptRequestId: opts.promptRequestId } : {}),
           ...(opts.queueItemId !== undefined ? { queueItemId: opts.queueItemId } : {}),
+          ...(outcome === "trailing" && opts.prompt !== undefined ? { trailingPrompt: opts.prompt } : {}),
         });
       };
       const rememberAnchor = (sessionAlias: string, slot: OutSlot, recoveryId?: string): void => {

@@ -1,4 +1,6 @@
 import { beforeAll, expect, mock, test } from "bun:test";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import type { AppConfig } from "../../../src/config/types";
 import { createEmptyState, createBotDirectOwner } from "../../../src/state/types";
@@ -2369,4 +2371,19 @@ test("isWorkspaceInUse reports the three occupancy states", async () => {
     targetAgent: "codex",
   };
   expect(sessions.isWorkspaceInUse("backend")).toBe(true);
+});
+
+test("resolves a `~` workspace cwd to a physical path", async () => {
+  // A fork reads the acpx record back and matches `record.cwd` byte-for-byte, so
+  // a ResolvedSession cwd must never be the literal `~` the operator configured.
+  const config = createConfig();
+  config.workspaces.home = { cwd: "~" };
+  config.workspaces.tilde = { cwd: "~/projects/tilde" };
+  const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState());
+
+  await sessions.createSession("at-home", "codex", "home");
+  await sessions.createSession("nested", "codex", "tilde");
+
+  expect((await sessions.getSession("at-home"))?.cwd).toBe(homedir());
+  expect((await sessions.getSession("nested"))?.cwd).toBe(join(homedir(), "projects", "tilde"));
 });
