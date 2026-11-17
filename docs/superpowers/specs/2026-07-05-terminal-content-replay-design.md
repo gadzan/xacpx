@@ -3,6 +3,10 @@
 > **兼容背景（非权威）**：对 RMUX backend，raw ring-buffer replay 已被
 > [`2026-08-10-relay-web-rmux-terminal-design.md`](./2026-08-10-relay-web-rmux-terminal-design.md)
 > 的 recovery rebase 取代。本文「显式 close 才 kill、unmount 不 kill」的用户动作区分仍适用。
+>
+> **渲染器已换代**：文中 `ghostty scrollback` / mock `ghostty-web` 的提法对应已废弃的渲染器；
+> 终端渲染现为 `@xterm/xterm` + FitAddon（`packages/relay-web/src/lib/terminal-adapter.ts`）。
+> 另：`packages/relay-web/src/lib/terminal-sessions.ts` 已标注 `@deprecated`（RMUX 终端不持久化 terminalId）。
 
 > 状态:待实现。四包改动(relay-protocol / core / channel-relay / relay-web)。目标:web 刷新后恢复终端 scrollback 并接回同一个 live shell。
 

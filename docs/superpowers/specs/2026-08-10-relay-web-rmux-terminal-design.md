@@ -1,5 +1,12 @@
 # Relay Web · RMUX 持久终端设计
 
+> **渲染器已换代（2026-11 复核）**：本文的 RMUX 租约 / 进程归属 / recovery 模型仍然有效，
+> 但**浏览器渲染路径已从 `ghostty-web` 换成 `@xterm/xterm`**（`packages/relay-web/package.json`
+> 的 `@xterm/xterm` 依赖 + `packages/relay-web/src/lib/terminal-adapter.ts`）。
+> 凡本文提到 ghostty 的地方（§3 adapter 竞态、§4 非目标、§ 文件清单、§ recovery bytes、
+> §16 ghostty-web adapter 修正）都以 `@xterm/xterm` + FitAddon 为准；
+> 当前渲染实现的权威描述见 [`docs/relay-web-module.md`](../relay-web-module.md)（“终端渲染用 `@xterm/xterm`”一节）。
+
 > 状态：设计定稿，待实施。
 >
 > 日期：2026-08-10。

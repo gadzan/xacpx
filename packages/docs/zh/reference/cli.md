@@ -12,9 +12,12 @@ xacpx plugin  list | add | update | remove | enable | disable | doctor | known
 xacpx doctor [--verbose] [--smoke] [--agent <a>] [--workspace <w>] [--fix]
 xacpx version
 xacpx agent | agents  list | add | rm | templates
+xacpx adapter  list | check | update | set | reset | registry | preinstall | uninstall
 xacpx workspace | ws  list | add [name] [--raw] | rm <name>
 xacpx later | lt  list | cancel <id>
 xacpx mcp-stdio [--coordinator-session <s>] [--source-handle <h>] [--workspace <name>]
+xacpx session  inspect <alias> | recover <alias> --expected-generation <gen> [--accept-legacy-orphan-risk]
+xacpx orphans kill --confirm
 ```
 
 ## 守护进程生命周期
@@ -167,7 +170,8 @@ xacpx mcp-stdio --coordinator-session <session> --source-handle <handle> --works
 [自托管 Relay Hub](/zh/guide/relay-self-hosting) 用的**独立**命令（不属于 `xacpx` CLI）。在 relay 各包发布到 npm 之前，从仓库 checkout 用 `node packages/relay/dist/cli.js <命令>` 调用。
 
 ```bash
-xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port 8788] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
+xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
+# 省略 --ws-port = 实例网关合并到 HTTP 端口；仅在需要独立网关端口时才传
 xacpx-relay add token [--label <note>] [--db <path>]
 xacpx-relay add invite [--label <note>] [--ttl <30m|12h|7d>] [--url <hub-base-url>] [--db <path>]
 xacpx-relay ls [--db <path>]
@@ -199,14 +203,14 @@ hint: use this token for web login AND: xacpx channel add relay --url ws://<host
 xacpx channel add relay --url <host> --token <token> [--name <label>]
 ```
 
-`--url` 是指向实例网关（默认端口 8788）或 TLS 代理的智能简写：
+`--url` 是指向实例网关（默认端口 8787，网关默认合并在 Hub 的 HTTP 端口上）或 TLS 代理的智能简写：
 
 | 输入 | 解析后的 URL |
 |---|---|
 | `relay.example.com` | `wss://relay.example.com` |
-| `1.2.3.4` | `ws://1.2.3.4:8788` |
+| `1.2.3.4` | `ws://1.2.3.4:8787` |
 | `1.2.3.4:9000` | `ws://1.2.3.4:9000` |
-| `localhost` | `ws://localhost:8788` |
+| `localhost` | `ws://localhost:8787` |
 | `host:9000` | `ws://host:9000` |
 | `ws://…` / `wss://…` | 原样使用 |
 | `http://…` / `https://…` | 映射为 `ws://…` / `wss://…` |

@@ -3,6 +3,9 @@
 > **兼容背景（非权威）**：RMUX 持久终端以后，权威设计为
 > [`2026-08-10-relay-web-rmux-terminal-design.md`](./2026-08-10-relay-web-rmux-terminal-design.md)。
 > 本文保留为 legacy live-PTY 背景，不删除。
+>
+> **渲染器已换代**：本文假设的 `ghostty-web`（v0.4.0）已被 `@xterm/xterm` 取代
+> （见 `packages/relay-web/package.json` 与 `src/lib/terminal-adapter.ts`）。
 
 > 状态:已脑暴定稿,待写实现计划。
 > 日期:2026-06-30。
