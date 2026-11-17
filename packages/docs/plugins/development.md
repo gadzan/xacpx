@@ -61,7 +61,7 @@ import {
 // New name (preferred):
 const plugin: XacpxPlugin = {
   apiVersion: WEACPX_PLUGIN_API_VERSION,       // currently fixed at 1
-  minXacpxVersion: WEACPX_PLUGIN_MIN_CORE_VERSION, // e.g. "0.3.3"
+  minXacpxVersion: WEACPX_PLUGIN_MIN_CORE_VERSION, // e.g. "0.5.0"
   channels: [/* ... */],
 };
 
@@ -72,7 +72,7 @@ export default plugin;
 | --- | --- | --- |
 | `apiVersion` | Yes | Must be the literal `1`. xacpx will increment this for future breaking changes. `WEACPX_PLUGIN_API_SUPPORTED_VERSIONS` lists versions the current xacpx accepts. |
 | `name` | No | If set, must equal the npm package name (including scope); otherwise startup validation rejects it. |
-| `minXacpxVersion` | Recommended | Minimum xacpx core version this plugin requires (e.g. `"0.3.3"`). When the installed xacpx is older, loading fails with an `upgrade xacpx` message. First-party plugins must set this; third-party plugins are strongly encouraged to. |
+| `minXacpxVersion` | Recommended | Minimum xacpx core version this plugin requires (e.g. `"0.5.0"`). When the installed xacpx is older, loading fails with an `upgrade xacpx` message. First-party plugins must set this; third-party plugins are strongly encouraged to. |
 | `compatibleXacpxVersions` | No | Explicit version range (`x.y.z` / `>=x.y.z` / `^x.y.z`). When declared alongside `minXacpxVersion`, both constraints must be satisfied. |
 | `channels` | No | List of channel definitions. May be empty (reserved for future non-channel extension points). |
 
@@ -152,14 +152,18 @@ class MyChannel implements MessageChannelRuntime {
 ### `MessageChannelRuntime`
 
 ```ts
+export type ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout";
+
 export interface MessageChannelRuntime {
   id: string;
 
   isLoggedIn(): boolean;
   login(): Promise<string>;
-  logout(): void;
+  logout(): void | Promise<void>;
 
   start(input: ChannelStartInput): Promise<void>;
+
+  stop?(reason?: ChannelStopReason): void | Promise<void>;
 
   createConsumerLock?(options?: ConsumerLockOptions): ConsumerLock;
   configureOrchestration?(callbacks: OrchestrationDeliveryCallbacks): void;
@@ -167,6 +171,9 @@ export interface MessageChannelRuntime {
   notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void>;
   notifyTaskProgress(task: OrchestrationTaskRecord, text: string): Promise<void>;
   sendCoordinatorMessage(input: CoordinatorMessageInput): Promise<void>;
+  sendScheduledMessage?(input: ScheduledChannelMessageInput): Promise<void>;
+  requestPermission?(request: ChannelPermissionRequest): Promise<ChannelPermissionDecision>;
+  requestElicitation?(request: ChannelElicitationRequest): Promise<ChannelElicitationDecision>;
 }
 ```
 
@@ -185,9 +192,11 @@ async login(): Promise<string> {
 
 Interactive channels (WeChat QR scan) block here until login completes. If your channel never needs interactive login, set `cliProvider.supportsLogin` to `false`.
 
-**`logout()`** — Release credentials, disconnect persistent connections, clear in-memory sessions. Must be **idempotent** — called on both daemon shutdown and re-login.
+**`logout()`** — **Destructive credential removal.** It is reached only through the explicit `xacpx logout` CLI path — never as part of a normal shutdown or a re-login. Signature: `logout(): void | Promise<void>`. Because it wipes stored credentials, the user must re-run `login()` / `xacpx channel add <type>` to reconnect, so never call it from your own teardown paths.
 
 **`start(input)`** — The entry point for the channel to begin receiving messages. See [Inbound messages](#inbound-messages) below.
+
+**`stop?(reason?)`** — Optional. The **non-destructive** shutdown hook: release runtime resources (close sockets, cancel timers, drop in-memory sessions) without touching stored credentials. The daemon's `stopAll` prefers `stop()` and falls back to `logout()` only for channels published before `stop()` existed (whose `logout()` was a benign client stop). `reason` is `"shutdown"` (signal or startup-error cleanup), `"disabled"` / `"removed"` (CLI change) or `"logout"` (explicit logout command). Implement it — new channels should never rely on the `logout()` fallback.
 
 **`createConsumerLock?(options?)`** — Optional. Implement if your channel needs **process-level mutual exclusion** (e.g., a single WeChat account that can only be connected from one xacpx process at a time). See `ConsumerLock` below.
 
@@ -211,6 +220,12 @@ export interface CoordinatorMessageInput {
 
 Called by the orchestration service to send a text message to the coordinator session's channel. `replyContextToken` is a reply context handle (used by Feishu/Yuanbao to quote a parent message) and may be ignored.
 
+**`sendScheduledMessage?(input)`** — Optional. Deliver a scheduled/background turn's output. Implement it only if your channel routes scheduled-turn results differently from ordinary inbound replies; otherwise omit it.
+
+**`requestPermission?(request)`** — Optional. Interactive permission UI (plan approval). Absent means interactive permission is unavailable for this channel and the broker fails closed. Implementations MUST verify the responder equals `request.requester.senderId` and MUST settle exactly once (first terminal decision wins).
+
+**`requestElicitation?(request)`** — Optional. Interactive ACP form Elicitation UI. Absent means Elicitation is unavailable for this channel and the broker fails closed. Render only for `request.requester.senderId` and return the platform-authenticated responder id (never a self-reported one); display `request.agent.name` and never substitute agent-controlled `message`/`title`/`description` text for identity; present `request.message`; expose separate Decline and Cancel controls; let the user review and modify responses before Accept; keep pending form state in server-side memory only (never encode answer values into control ids/URLs, never persist answers); settle exactly once — every member of `ChannelElicitationDecision` is a user action and requires an authenticated `responderId`, there is no responder-free variant. External cancellation (timeout, turn disposal, agent `$/cancel_request`, shutdown) is not a user decision: withdraw your UI immediately, stop collecting input, and reject/throw (or never settle) — core owns that terminal cancellation and settles it as `cancel` itself.
+
 ## Inbound messages
 
 ### `ChannelStartInput`
@@ -218,9 +233,19 @@ Called by the orchestration service to send a text message to the coordinator se
 ```ts
 export interface ChannelStartInput {
   agent: ChatAgent;
+  routeConversation?: (request: ChatRequest) => ConversationChannelAgent | undefined;
   abortSignal: AbortSignal;
   quota: OutboundQuota;
   logger: AppLogger;
+  perfTracer?: PerfTracer;
+  sessions?: SessionService;
+  activeTurns?: ActiveTurnRegistry;
+  control?: PublicControlService;
+  trustedConversationPrompt?: (
+    input: ConversationPromptRequestDto,
+    ingress: HumanIngressContext,
+  ) => Promise<ConversationPromptResponseDto>;
+  sessionResources?: SessionResourceCatalog;
   // Optional fields the core injects when relevant:
   commandHints?: CommandHint[];   // built-in command catalog for input-box hints
   coreVersion?: string;           // xacpx core version string
@@ -230,15 +255,40 @@ export interface ChannelStartInput {
 
 | Field | Purpose |
 | --- | --- |
-| `agent` | xacpx router entry point. When a text message arrives, call `agent.handle(chatKey, text)` to route it through the command system. |
+| `agent` | xacpx router entry point (`ChatAgent`). When a text message arrives, call `await agent.chat(request)` with a `ChatRequest`; it returns a `ChatResponse`. There is no `handle` method. |
+| `routeConversation?` | Call after platform admission, before current-Session lookup, active tracking or Session lane selection. A returned Agent owns this inbound turn on an independent Conversation lane (no Session alias, no foreground/background-result hooks); `undefined` preserves ordinary Session dispatch. Supply exact channel/account/chatKey/platform-message identity; the full chat request must carry authenticated-human metadata. |
 | `abortSignal` | Daemon shutdown signal. Listen for the `aborted` event and stop all long connections and timers. |
 | `quota` | Outbound rate/volume quota. See [Replies and media](#replies-and-media). |
 | `logger` | Structured logger. See [AppLogger](#applogger). |
+| `perfTracer?` | Performance tracing. Attach the `PerfSpan` it hands out to the turn's `ChatRequest.perfSpan` so downstream layers can mark events without extra plumbing. |
+| `sessions?` | Logical session service. Session-aware channels read it for dispatch-time session binding (current alias) and to persist background turn results. |
+| `activeTurns?` | Shared in-flight turn registry, for dispatch-time foreground tracking. `sessions` + `activeTurns` are what implement the "bound at dispatch time" / per-session lane semantics below. |
+| `control?` | Public structured control facade (sessions / prompt / scheduler / orchestration / Bot / Conversation). Trusted Conversation execution is core-private and is not on this object. Optional: text-only channels ignore it. |
+| `trustedConversationPrompt?` | Hub-authenticated Direct Conversation accept. Ingress must already be overwritten by the authenticating channel; public `control.promptConversation` never takes this context, and plugins must not mint it. |
+| `sessionResources?` | Generic catalog of logical-session resources: immutable logical session IDs, internal/display aliases, authoritative workspace `cwd`, archived flag, and a lifecycle-event subscription. Optional: text-only channels ignore it. |
 | `commandHints?` | Built-in command catalog, for channels that support input-box command hints. |
 | `coreVersion?` | xacpx core version string, for channels that need it (e.g. command-sync metadata). |
 | `locale?` | Active runtime language (`"en"` \| `"zh"`, type `Locale`), resolved from `config.language`. Use it to localize your channel's output. See [Internationalization](#internationalization-i18n). |
 
-Keep references to `agent`, `quota`, and `logger` until `logout()` is called or `abortSignal` is triggered — they are not passed again after `start()` returns.
+Calling the agent:
+
+```ts
+const response = await input.agent.chat({
+  accountId,                       // this channel's account id
+  conversationId: chatKey,         // the `<type>:<...>` chatKey you built for this inbound message
+  text,
+  ...(replyContextToken ? { replyContextToken } : {}),
+  ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+  metadata: { channel: "<type>", chatType: "group", origin: "human" as const },
+  reply: async (segment) => { await this.sendText(chatKey, segment); },  // streaming segments
+});
+
+if (response.text) await this.sendText(chatKey, response.text);          // final reply
+```
+
+`ChatRequest` / `ChatResponse` are exported from `xacpx/plugin-api`. `reply` streams mid-turn segments; when it is used, `response.text` is the final message. The full `ChatRequest` also carries `media`, `humanStopSignal`, the `onToolEvent` / `onThought` / `onPlan` / `onUsage` / `onCommands` side-channels, `perfSpan`, and routing metadata (`channelMessageId`, `authenticatedHuman`, `senderId`, `isOwner`, `boundSessionAlias`, …). See `src/weixin/messaging/handle-weixin-message-turn.ts` for a complete inbound request.
+
+Keep references to `agent`, `quota`, and `logger` until `stop?()` / `logout()` is called or `abortSignal` is triggered — they are not passed again after `start()` returns.
 
 `start()` is typically a long-running promise that returns once callbacks are wired up. The message loop may continue in the background asynchronously.
 
@@ -470,12 +520,12 @@ The helper functions `parseBooleanFlag` and `takeFlagValue` are **not** currentl
 ```
 
 Examples:
-- WeChat: `weixin:wxid_abc123`
-- Feishu: `feishu:oc_xxxx`
-- Yuanbao: `yuanbao:<account>:<conv>`
+- WeChat: `weixin:<accountId>:<userId>` (group: `weixin:<accountId>:group:<groupId>`)
+- Feishu: `feishu:<accountId>:<chatId>` (thread: `feishu:<accountId>:<chatId>:thread:<threadId>`)
+- Yuanbao: `yuanbao:<accountId>:<chatType>:<target>` (`chatType` is `direct` or `group`)
 
 Your channel must:
-1. Construct `<type>:<...>` chatKeys for inbound messages and pass them to `agent.handle(chatKey, text)`.
+1. Construct `<type>:<...>` chatKeys for inbound messages and pass them as `conversationId` inside the `agent.chat(request)` object.
 2. Strip the `<type>:` prefix when translating a chatKey back to an internal ID for outbound messages.
 3. In `notifyTaskCompletion` and similar callbacks, check whether `task.chatKey` starts with `<type>:` before acting — return immediately if not (the daemon broadcasts to all channels).
 
@@ -485,10 +535,10 @@ Minimum recommended test coverage:
 
 1. **Unit layer** (no xacpx dependency): config parse/validate functions, message encoding/decoding, signature algorithm, chatKey construction and parsing.
 2. **CLI provider unit tests**: feed various argument combinations to `parseAddArgs` and assert the resulting `ChannelCliInput`; feed intentionally incomplete configs to `validateConfig` and assert the issues.
-3. **Channel contract tests**: instantiate `MyChannel(options)`, inject a fake `ChannelStartInput` (a mock `OutboundQuota` and `AppLogger`), and assert that one inbound message reaches the fake `agent.handle`.
+3. **Channel contract tests**: instantiate `MyChannel(options)`, inject a fake `ChannelStartInput` (a mock `OutboundQuota` and `AppLogger`), and assert that one inbound message reaches the fake `agent.chat`.
 4. **Integration layer** (optional): run `runCli(["channel", "add", "<type>", ...])` in a test and assert that `~/.xacpx/config.json` is written correctly.
 
-See `packages/channel-yuanbao/src/access/__tests__` and `tests/unit/channels/*` for examples.
+See `tests/unit/packages/channel-feishu/feishu-start-wiring.test.ts` and `tests/unit/channels/channel-plugin.test.ts` for examples.
 
 ### Validation rules enforced at startup
 
@@ -533,6 +583,8 @@ Official plugins listed by `xacpx plugin known`:
 ```text
 - feishu   @ganglion/xacpx-channel-feishu   Feishu channel
 - yuanbao  @ganglion/xacpx-channel-yuanbao  Tencent Yuanbao channel
+- discord  @ganglion/xacpx-channel-discord  Discord channel
+- relay    @ganglion/xacpx-channel-relay    Relay hub connector (drive this instance from a self-hosted relay hub)
 
 Install:
   xacpx plugin add <package>
