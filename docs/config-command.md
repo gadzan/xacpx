@@ -67,6 +67,7 @@ Backward-compatible fields:
 
 - `channel.type` (old single-channel configuration; for multi-channel, use `xacpx channel ...`)
 - `channels[]` (multi-channel runtime configuration; recommended to manage with `xacpx channel ...`)
+- `wechat.replyMode` (deprecated alias; writes are mapped to `channel.replyMode`, accepted values `stream` / `final` / `verbose`)
 
 Feishu credentials and multi-channel configuration should preferably be managed with the channel CLI in your computer's terminal, e.g. `xacpx channel add feishu`. See full instructions in [`docs/channel-management.md`](./channel-management.md).
 
