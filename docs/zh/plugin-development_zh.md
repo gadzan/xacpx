@@ -65,7 +65,7 @@ class HelloChannel implements MessageChannelRuntime {
   logout(): void {}
 
   async start(_: ChannelStartInput): Promise<void> {
-    // 接收消息：调用 input.agent.handle(chatKey, text)
+    // 接收消息：调用 input.agent.chat(request)
     // 发送消息：保留 input.agent 的引用，由你的网关回调驱动
   }
 
@@ -328,7 +328,7 @@ async login(): Promise<string> {
 
 要求：
 
-- 把消息推送给 `input.agent.handle(chatKey, text)`。
+- 把消息推送给 `input.agent.chat(request)`。
 - 监听 `input.abortSignal`，收到 abort 后干净地停掉网关、关闭长连接、清队列。
 - 调发送类操作前先用 `input.quota` 预留配额（详见 [§6](#6-出站配额outboundquota)）。
 - 任何外发都通过 `input.logger` 记录关键事件，方便用户用 `xacpx doctor --verbose` / `app.log` 排查。
@@ -759,7 +759,7 @@ export interface ChannelRuntimeConfig {
 
 你的频道**必须**：
 
-1. 入站消息时构造 `<type>:<...>` 形式的 chatKey 并传给 `agent.handle(chatKey, text)`。
+1. 入站消息时构造 `<type>:<...>` 形式的 chatKey 并放进 `agent.chat(request)`。
 2. 出站消息时从 chatKey 反向解析回内部 id，注意 strip 掉 `<type>:` 前缀。
 3. `notifyTaskCompletion` 等回调里检查 `task.chatKey` 是否以 `<type>:` 开头，不是就直接返回。
 
@@ -844,7 +844,7 @@ CLI 不会自动 disable 出错的插件——需要用户手工 `xacpx plugin d
    5.3 为**每一个**提供 consumer lock 的渠道各取得一把 fence，按渠道 id 确定顺序串行取得（兼容旧 daemon 的 fence）；部分冲突时按相反顺序回滚
    5.4 发布 daemon identity，再协调共享状态并清理陈旧 owner
    5.5 报告 daemon ready，再执行 channel.start({ agent, abortSignal, quota, logger }) 与 scheduler.start()
-6. 收消息：channel → agent.handle(chatKey, text) → router
+6. 收消息：channel → agent.chat(request) → router
 7. 出消息：orchestration → channel.notifyTaskCompletion / sendCoordinatorMessage
 8. SIGTERM / SIGINT：abortSignal aborted → 持有 ownership 完成 dispose/reap → registry.stopAll：channel.stop?()（回退：logout()）→ 按相反顺序释放所有渠道 fence，再释放核心锁 → daemon exit
 ```
@@ -882,6 +882,8 @@ CLI 不会自动 disable 出错的插件——需要用户手工 `xacpx plugin d
 官方插件：
 - feishu  @ganglion/xacpx-channel-feishu   飞书频道
 - yuanbao @ganglion/xacpx-channel-yuanbao  腾讯元宝频道
+- discord @ganglion/xacpx-channel-discord  Discord 频道
+- relay   @ganglion/xacpx-channel-relay    Relay 连接器
 
 安装：
   xacpx plugin add <package>
@@ -913,7 +915,7 @@ xacpx plugin add <你的-npm-包名>
 
 1. **单元层**（不依赖 xacpx）：parse / validate config 函数、消息编解码、签名算法、chatKey 构造与解析。
 2. **CLI provider 单元测试**：用 `parseAddArgs` 喂各种参数组合，断言 `ChannelCliInput`；用 `validateConfig` 喂故意缺字段的 config，断言 issues。
-3. **频道契约测试**：实例化 `MyChannel(options)`，注入 fake `ChannelStartInput`（自己写一个 `OutboundQuota` / `AppLogger` mock），断言一次入站消息会走到 fake `agent.handle`。
+3. **频道契约测试**：实例化 `MyChannel(options)`，注入 fake `ChannelStartInput`（自己写一个 `OutboundQuota` / `AppLogger` mock），断言一次入站消息会走到 fake `agent.chat`。
 4. **集成层**（可选）：在测试里跑 `runCli(["channel", "add", "<type>", ...])`，断言 `~/.xacpx/config.json` 被正确写入。
 
 参考 `packages/channel-yuanbao/src/access/__tests__`（如有）和 `tests/unit/channels/*`。
