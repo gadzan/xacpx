@@ -206,7 +206,7 @@ Open 失败时错误码与含义：
 | `desktop-permission-denied` | 登录成功但 macOS 没有开始会话 | 检查屏幕共享、屏幕录制、辅助功能 |
 | `desktop-stream-timeout` | tunnel/upgrade 超时，或 ARD 停在 ServerInit | 可重试 |
 | `desktop-instance-offline` | 实例掉线 | 等实例回来；可重试 |
-| `desktop-auth-failed` | 密码被 VNC server 拒绝 | 换个密码重试 |
+| `desktop-protocol-error` | ARD 安全类型协商/挑战阶段失败 | 看 connector 日志里的 phase 与 detail |
 
 错误文案已包含平台相关的设置提示（`platform-guidance.ts` 生成），直接照文案改配置即可。
 
