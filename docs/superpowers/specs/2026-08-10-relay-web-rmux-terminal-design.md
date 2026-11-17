@@ -6,6 +6,14 @@
 > 凡本文提到 ghostty 的地方（§3 adapter 竞态、§4 非目标、§ 文件清单、§ recovery bytes、
 > §16 ghostty-web adapter 修正）都以 `@xterm/xterm` + FitAddon 为准；
 > 当前渲染实现的权威描述见 [`docs/relay-web-module.md`](../relay-web-module.md)（“终端渲染用 `@xterm/xterm`”一节）。
+>
+> **跨进程租约 adopt 已被移除（2026-11 复核）**：本文 §9 与 §12.1 中“`stop()` 不得 release lease、
+> 让新进程在 TTL 内 adopt 所有合法 live resource”的 lease-adopt 模型，被
+> [`2026-08-12-relay-web-rmux-process-owned-design.md`](./2026-08-12-relay-web-rmux-process-owned-design.md)
+> 明确推翻——当前实现是 process-owned：正常关停会杀掉全部会话，不做跨进程 adopt
+> （`packages/channel-relay/src/terminal/terminal-runtime.ts` 的 “Process-owned: normal shutdown
+> kills all sessions (no cross-process adopt)”，并在 hub connect 前先 reap 遗留 registry 记录）。
+> 进程归属的权威设计是 2026-08-12 那篇；本文仅保留为最初的 lease-adopt 提案记录。
 
 > 状态：设计定稿，待实施。
 >

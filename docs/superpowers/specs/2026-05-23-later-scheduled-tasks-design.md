@@ -1,5 +1,13 @@
 # `/later` 一次性定时任务交互设计
 
+> **两处交互细节已被实现取代（2026-11 复核）**：
+> - `/later list` 本文描述为“查看全局待执行任务，不限当前聊天或会话”；实际列表**按请求方 chatKey 作用域**隔离
+>   （`src/commands/handlers/later-handler.ts` 的 `handleLaterList`：另一个聊天的任务及其消息文本不得可见）。
+> - 本文描述“任务绑定的是创建时的当前会话，用户之后切换会话不影响投递目标”；实际默认 `defaultMode: "temp"`
+>   （`src/config/load-config.ts`：触发时新建一次性会话），`bind` 才绑定到创建时会话。
+>
+> 命令行为以 [`docs/later-command.md`](../later-command.md) 为准；本文保留为交互设计记录。
+
 日期：2026-05-23
 状态：已确认，待实现计划
 

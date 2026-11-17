@@ -200,7 +200,7 @@
 
 ### 5.1 持久配置
 
-继续使用 Bot profile 的 `avatar` 字段，但将运行时和新写入数据统一为结构化配置。以下类型是拟议契约，不是当前导出类型。
+继续使用 Bot profile 的 `avatar` 字段，但将运行时和新写入数据统一为结构化配置。以下类型已随本设计落地为导出契约（`packages/relay-protocol/src/bot-avatar.ts` 导出 `BotAvatarConfig`，由 `src/bots/bot-service.ts` 消费）。
 
 ```typescript
 type BotAvatarConfig =

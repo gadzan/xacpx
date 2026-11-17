@@ -791,10 +791,10 @@ Directory 是 soft presence cache：target daemon 才是 endpoint existence 真�
 
 ```
 instance.agent-endpoints.sync       instance -> hub event
-relay.agent-directory.snapshot      hub -> instance event (optional)
-relay.agent-directory.delta         hub -> instance event (optional)
-agent.message.route                 instance -> hub authenticated request
-agent.message.deliver               hub -> target instance request
+instance.agent-directory.snapshot  hub -> instance event (optional)
+instance.agent-directory.query     instance -> hub request (optional)
+instance.agent-message.route       instance -> hub authenticated request
+instance.agent-message.deliver     hub -> target instance request
 ```
 
 完整路径：
