@@ -8,6 +8,7 @@ export const XACPX_KNOWN_COMMAND_PREFIXES = [
   "/cancel",
   "/stop",
   "/clear",
+  "/model",
   "/mode",
   "/replymode",
   "/config",
