@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import { expect, test } from "bun:test";
 
@@ -42,7 +42,9 @@ function createLogsProbe(options: ProbeOptions): {
         throw createErrno("ENOENT", path);
       }
       // Return entries that live directly under this dir (base names only).
-      const prefix = `${path}/`;
+      // `sep`, not a literal "/": `join` emits the platform separator, so a
+      // hardcoded "/" matches nothing on Windows and every dir reads empty.
+      const prefix = `${path}${sep}`;
       const names = new Set<string>();
       for (const candidate of [...Object.keys(sizes), ...(options.unreadable ?? [])]) {
         if (candidate.startsWith(prefix)) {

@@ -1,5 +1,6 @@
 import { expect, mock, test, beforeEach, afterAll } from "bun:test";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { rmTemp } from "../helpers/rm-temp";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -126,7 +127,7 @@ test("external edit to config.json propagates permission policy update to transp
     });
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 
@@ -228,7 +229,7 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
     expect(policyUpdates.length).toBe(0);
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 test("reload overlay failure never commits the new permission to the live transport", async () => {
@@ -286,7 +287,7 @@ test("reload overlay failure never commits the new permission to the live transp
     expect(live.transport.permissionMode).toBe("deny-all");
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 test("reload policy-commit failure leaves the live config on the old permission", async () => {
@@ -334,7 +335,7 @@ test("reload policy-commit failure leaves the live config on the old permission"
     expect(live.transport.permissionMode).toBe("deny-all");
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 
@@ -371,7 +372,7 @@ test("startup fails closed when state has runtime sessions but config is runtime
   ).rejects.toThrow(/persisted runtime bindings/);
   // Failed startup must not mutate the state file.
   expect(await readFile(statePath, "utf8")).toBe(rawState);
-  await rm(dir, { recursive: true, force: true });
+  await rmTemp(dir);
 });
 test("startup fails closed when persisted runtime bindings meet a malformed inline policy", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-startup-malformed-"));
@@ -402,7 +403,7 @@ test("startup fails closed when persisted runtime bindings meet a malformed inli
     ),
   ).rejects.toThrow(/refusing startup/);
   expect(await readFile(statePath, "utf8")).toBe(rawState);
-  await rm(dir, { recursive: true, force: true });
+  await rmTemp(dir);
 });
 test("startup fails closed when persisted runtime bindings meet an unreadable policy file", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-startup-badfile-"));
@@ -431,7 +432,7 @@ test("startup fails closed when persisted runtime bindings meet an unreadable po
     ),
   ).rejects.toThrow(/refusing startup/);
   expect(await readFile(statePath, "utf8")).toBe(rawState);
-  await rm(dir, { recursive: true, force: true });
+  await rmTemp(dir);
 });
 
 test("eligible permission update succeeds when runtime sessions exist", async () => {
@@ -490,7 +491,7 @@ test("eligible permission update succeeds when runtime sessions exist", async ()
     expect(policyUpdates[0]?.permissionPolicy).toBe(JSON.stringify({ autoDeny: ["danger_tool"] }));
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 
@@ -549,7 +550,7 @@ test("permission diffing does not trigger transport update when permission tuple
     expect(policyUpdates.length).toBe(0);
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 
@@ -617,7 +618,7 @@ test("/config set rejects ineligible nonInteractivePermissions when runtime sess
     expect(threwPmAuto).toBe(true);
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 function makeWorkerBindingRuntimeState(now: string = new Date().toISOString()) {
@@ -693,7 +694,7 @@ test("ineligible policy update is rejected when only a worker binding is runtime
     expect(threw).toBe(true);
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 
@@ -728,7 +729,7 @@ test("startup fails closed when only a worker binding is runtime and config is i
     ),
   ).rejects.toThrow(/persisted runtime bindings/);
   expect(await readFile(statePath, "utf8")).toBe(rawState);
-  await rm(dir, { recursive: true, force: true });
+  await rmTemp(dir);
 });
 test("hot reload holds pending topology while hot-applying other fields", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-topology-"));
@@ -803,7 +804,7 @@ test("hot reload holds pending topology while hot-applying other fields", async 
     expect(routerContext.transport.nonInteractivePermissions).toBe("fail");
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 test("/config set while a restart is pending holds live topology", async () => {
@@ -879,7 +880,7 @@ test("/config set while a restart is pending holds live topology", async () => {
     expect(liveConfig.transport.command).toBe("acpx");
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 
@@ -973,7 +974,7 @@ test("stale watcher reload cannot commit a rolled-back permission after handler 
     expect(attempts).toHaveLength(1);
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });
 
@@ -1069,6 +1070,6 @@ test("queued permission transaction rolls back to predecessor commit, not stale 
     expect(attempts).toHaveLength(2);
   } finally {
     await app.dispose();
-    await rm(dir, { recursive: true, force: true });
+    await rmTemp(dir);
   }
 });

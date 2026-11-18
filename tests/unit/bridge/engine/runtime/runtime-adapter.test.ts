@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createXacpxRuntimeAdapter, mapEvents } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
+import { rmTemp } from "../../../../helpers/rm-temp";
 import { mapRuntimeToolEvent } from "../../../../../src/bridge/engine/runtime-engine";
 // Plan Task 1 / PR0 gate: prove the packaged acpx 0.16.0 Runtime public contract
 // works end-to-end from xacpx — import → createRuntime → ensureSession →
@@ -14,15 +15,18 @@ const MOCK_AGENT = resolve(import.meta.dir, "../../../../fixtures/mock-acp-agent
 
 test("runtime adapter drives a full turn through real acpx runtime + mock ACP agent", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "xacpx-runtime-poc-"));
+  // Created outside the try so the finally can release the ACP-agent child: on
+  // Windows a live child keeps the state directory locked (rm → EBUSY).
+  const adapter = createXacpxRuntimeAdapter({
+    stateDir,
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    // Narrow per-worker registry (plan §35): exact argv override with spaced args.
+    agentOverrides: { mock: [process.execPath, MOCK_AGENT, "--custom-arg with spaces", "quoted=value"] },
+  });
+  const runtime = adapter.raw();
+  const handles: Array<Awaited<ReturnType<typeof runtime.ensureSession>>> = [];
   try {
-    const adapter = createXacpxRuntimeAdapter({
-      stateDir,
-      permissionMode: "approve-all",
-      nonInteractivePermissions: "deny",
-      // Narrow per-worker registry (plan §35): exact argv override with spaced args.
-      agentOverrides: { mock: [process.execPath, MOCK_AGENT, "--custom-arg with spaces", "quoted=value"] },
-    });
-    const runtime = adapter.raw();
     // Public contract only: ensureSession → startTurn → result (plan §51 fingerprint).
     const handle = await runtime.ensureSession({
       sessionKey: "poc-session",
@@ -30,6 +34,7 @@ test("runtime adapter drives a full turn through real acpx runtime + mock ACP ag
       mode: "persistent",
       cwd: stateDir,
     });
+    handles.push(handle);
     expect(handle.sessionKey).toBe("poc-session");
     expect(handle.acpxRecordId).toBeTypeOf("string");
     expect(handle.acpxRecordId!.length).toBeGreaterThan(0);
@@ -66,7 +71,10 @@ test("runtime adapter drives a full turn through real acpx runtime + mock ACP ag
     const status = await runtime.getStatus({ handle });
     expect(status.acpxRecordId).toBe(handle.acpxRecordId);
   } finally {
-    await rm(stateDir, { recursive: true, force: true });
+    for (const handle of handles) {
+      await runtime.close({ handle, reason: "test-done" }).catch(() => {});
+    }
+    await rmTemp(stateDir);
   }
 }, 30_000);
 
@@ -98,7 +106,7 @@ test("adapter setConfigOption returns the agent-accepted snapshot (B3)", async (
     expect(snapshot).toEqual({ options: [] });
     await adapter.close(handle, { discardPersistentState: true });
   } finally {
-    await rm(stateDir, { recursive: true, force: true });
+    await rmTemp(stateDir);
   }
 }, 30_000);
 
@@ -136,7 +144,7 @@ test("adapter processLifecycle observes the direct-agent launch (B2)", async () 
     expect(spawned?.pid).toBeGreaterThan(0);
     await adapter.close(handle, { discardPersistentState: true });
   } finally {
-    await rm(stateDir, { recursive: true, force: true });
+    await rmTemp(stateDir);
   }
 }, 30_000);
 

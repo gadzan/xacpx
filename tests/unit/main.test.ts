@@ -66,7 +66,8 @@ test("builds the runtime services from config and state paths", async () => {
     }),
   );
 
-  await expect(buildApp({ configPath, statePath })).resolves.toMatchObject({
+  const app = await buildApp({ configPath, statePath });
+  await expect(app).toMatchObject({
     agent: expect.anything(),
     router: expect.anything(),
     sessions: expect.anything(),
@@ -74,6 +75,10 @@ test("builds the runtime services from config and state paths", async () => {
     configStore: expect.anything(),
     orchestration: expect.anything(),
   });
+  // dispose() releases the fork store's SQLite handle (and the rest of the
+  // runtime); without it the state directory stays locked on Windows and the
+  // cleanup below fails with EBUSY.
+  await app.dispose();
 
   await rm(dir, { recursive: true, force: true });
 });

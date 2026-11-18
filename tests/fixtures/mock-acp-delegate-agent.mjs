@@ -77,6 +77,10 @@ rl.on("line", async (line) => {
         });
         let errMsg = null;
         let res = null;
+        // Declared OUTSIDE the try: the catch below reports it, and a
+        // block-scoped `let` in there would be in TDZ and turn every delegate
+        // failure into a fatal ReferenceError instead of a reported error.
+        let stdioErr = "";
         try {
           const sessData = sessions.get(sessionId);
           const mcpServers = sessData?.mcpServers ?? [];
@@ -94,7 +98,6 @@ rl.on("line", async (line) => {
           } else if (mcpServerSpec.env && typeof mcpServerSpec.env === "object") {
             Object.assign(envObj, mcpServerSpec.env);
           }
-          let stdioErr = "";
           const transport = new StdioClientTransport({
             command: mcpServerSpec.command,
             args: mcpServerSpec.args,

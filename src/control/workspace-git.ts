@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, resolve, sep, win32 } from "node:path";
+import { basename, isAbsolute, join, posix, resolve, win32 } from "node:path";
 import { promisify } from "node:util";
 import { expandHome } from "../util/path.js";
 
@@ -141,7 +141,10 @@ export function worktreePathIsWithin(
   const normalizedParent = platform === "win32" ? normalizeWindowsWorktreePath(parent) : parent;
   const normalizedChild = platform === "win32" ? normalizeWindowsWorktreePath(child) : child;
   if (normalizedParent === normalizedChild) return false;
-  const separator = platform === "win32" ? win32.sep : sep;
+  // posix.sep, not the ambient `sep`: under Bun on Windows the node:path shim
+  // reports `\` for `sep` even in the POSIX branch, which would make every
+  // linux-shaped containment check compare against the wrong separator.
+  const separator = platform === "win32" ? win32.sep : posix.sep;
   const parentPrefix = normalizedParent.endsWith(separator)
     ? normalizedParent
     : normalizedParent + separator;
@@ -562,14 +565,15 @@ export class WorkspaceGit {
       "--format=%(refname:short)%00%(worktreepath)",
       "refs/heads",
     ]);
-    const branches = branchesRaw === "" ? [] : branchesRaw.split("\n").map((line): GitBranchInfo => {
+    const branches = branchesRaw === "" ? [] : await Promise.all(branchesRaw.split("\n").map(async (line): Promise<GitBranchInfo> => {
       const [name = "", worktreePath = ""] = line.split("\0");
       return {
         name,
         current: name === branch,
-        ...(worktreePath ? { worktreePath } : {}),
+        // Same canonicalization as readWorktrees: git prints `/` on every platform.
+        ...(worktreePath ? { worktreePath: await realpath(worktreePath) } : {}),
       };
-    });
+    }));
     const files: Array<{ path: string; status: string }> = [];
     try {
       // -uall expansion can exceed GIT_MAX_BUFFER in pathological repos; degrade to an
@@ -618,12 +622,16 @@ export class WorkspaceGit {
       return { path, branch, detached };
     });
     const currentRoot = await realpath(root);
-    return parsed.map((item, index) => ({
-      path: item.path,
+    // Git prints `/`-separated paths even on Windows, so every other producer
+    // (realpath-based create/remove results, callers comparing against their own
+    // paths) would see a different spelling of the same directory. Canonicalize
+    // each entry the same way so one location has one string.
+    return Promise.all(parsed.map(async (item, index) => ({
+      path: await realpath(item.path),
       ...(item.branch ? { branch: item.branch } : {}),
       ...(item.detached ? { detached: true } : {}),
       current: worktreePathsEqual(item.path, currentRoot, this.platform),
       linked: index !== 0,
-    }));
+    })));
   }
 }

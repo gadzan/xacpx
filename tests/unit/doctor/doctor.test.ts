@@ -692,6 +692,9 @@ test("doctor orchestrator returns exit code 1 when any check fails", async () =>
       checkRuntime: async () => ({ id: "runtime", label: "Runtime", severity: "fail", summary: "broken" }),
       checkLogs: (async () => ({ id: "logs", label: "Logs", severity: "skip", summary: "skip" })) as never,
       checkDaemon: async () => ({ id: "daemon", label: "Daemon", severity: "warn", summary: "warn" }),
+      // The real orphans check returns `pass` on Windows and `skip` elsewhere;
+      // stub it so the summary counts are platform-independent.
+      checkOrphans: (async () => ({ id: "orphans", label: "Windows orphans", severity: "skip", summary: "skip" })) as never,
       checkWechat: async () => ({ id: "wechat", label: "WeChat", severity: "pass", summary: "ok" }),
       checkAcpx: async () => ({ id: "acpx", label: "acpx", severity: "pass", summary: "ok" }),
       checkBridge: async () => ({ id: "bridge", label: "Bridge", severity: "skip", summary: "skip" }),
@@ -714,6 +717,9 @@ test("doctor orchestrator returns exit code 0 when report only contains pass war
       checkRuntime: async () => ({ id: "runtime", label: "Runtime", severity: "warn", summary: "warn" }),
       checkLogs: (async () => ({ id: "logs", label: "Logs", severity: "skip", summary: "skip" })) as never,
       checkDaemon: async () => ({ id: "daemon", label: "Daemon", severity: "pass", summary: "ok" }),
+      // The real orphans check returns `pass` on Windows and `skip` elsewhere;
+      // stub it so the summary counts are platform-independent.
+      checkOrphans: (async () => ({ id: "orphans", label: "Windows orphans", severity: "skip", summary: "skip" })) as never,
       checkWechat: async () => ({ id: "wechat", label: "WeChat", severity: "pass", summary: "ok" }),
       checkAcpx: async () => ({ id: "acpx", label: "acpx", severity: "pass", summary: "ok" }),
       checkBridge: async () => ({ id: "bridge", label: "Bridge", severity: "skip", summary: "skip" }),
@@ -852,6 +858,9 @@ function createStateDoctorStubs() {
     checkRuntime: async () => ({ id: "runtime", label: "Runtime", severity: "pass", summary: "ok" }) as DoctorCheckResult,
     checkLogs: (async () => ({ id: "logs", label: "Logs", severity: "skip", summary: "skip" })) as never,
     checkDaemon: async () => ({ id: "daemon", label: "Daemon", severity: "pass", summary: "ok" }) as DoctorCheckResult,
+    // Stub the orphans check too: the real one returns `pass` on Windows and
+    // `skip` elsewhere, which would shift the summary counts per platform.
+    checkOrphans: (async () => ({ id: "orphans", label: "Windows orphans", severity: "skip", summary: "skip" })) as never,
     checkWechat: async () => ({ id: "wechat", label: "WeChat", severity: "pass", summary: "ok" }) as DoctorCheckResult,
     checkAcpx: async () => ({ id: "acpx", label: "acpx", severity: "pass", summary: "ok" }) as DoctorCheckResult,
     checkBridge: async () => ({ id: "bridge", label: "Bridge", severity: "pass", summary: "ok" }) as DoctorCheckResult,
@@ -917,12 +926,19 @@ function createFixDoctorStubs() {
     checkRuntime: async () => ({ id: "runtime", label: "Runtime", severity: "pass", summary: "ok" }) as DoctorCheckResult,
     checkLogs: (async () => ({ id: "logs", label: "Logs", severity: "skip", summary: "skip" })) as never,
     checkDaemon: async () => ({ id: "daemon", label: "Daemon", severity: "pass", summary: "ok" }) as DoctorCheckResult,
+    // Stub the orphans check too: the real one returns `pass` on Windows and
+    // `skip` elsewhere, which would shift the summary counts per platform.
+    checkOrphans: (async () => ({ id: "orphans", label: "Windows orphans", severity: "skip", summary: "skip" })) as never,
     checkWechat: async () => ({ id: "wechat", label: "WeChat", severity: "pass", summary: "ok" }) as DoctorCheckResult,
     checkAcpx: async () => ({ id: "acpx", label: "acpx", severity: "pass", summary: "ok" }) as DoctorCheckResult,
     checkBridge: async () => ({ id: "bridge", label: "Bridge", severity: "pass", summary: "ok" }) as DoctorCheckResult,
     checkPlugins: (async () => ({ id: "plugins", label: "Plugins", severity: "skip", summary: "skip" })) as never,
     checkOrchestrationHealth: async () => ({ id: "orchestration", label: "Orchestration", severity: "pass", summary: "ok" }) as DoctorCheckResult,
     checkOrchestrationSocket: (async () => ({ id: "orchestration-socket", label: "Orchestration IPC", severity: "skip", summary: "skip" })) as never,
+    // The real conversation-router check inspects the machine's Jev settings and
+    // returns `fail` when no API key is configured; stub it so these cases stay
+    // about the fix/re-run contract.
+    checkConversationRouter: (async () => ({ id: "conversation-router", label: "Conversation router", severity: "skip", summary: "skip" })) as never,
   };
 }
 

@@ -31,12 +31,12 @@ describe("resolvePluginHome", () => {
   });
 
   it("uses input.home + /.xacpx/plugins when provided", () => {
-    expect(resolvePluginHome({ home: "/u/alice" })).toBe("/u/alice/.xacpx/plugins");
+    expect(resolvePluginHome({ home: "/u/alice" })).toBe(join("/u/alice", ".xacpx", "plugins"));
   });
 
   it("uses process.env.HOME when no input given", () => {
     process.env.HOME = "/u/bob";
-    expect(resolvePluginHome()).toBe("/u/bob/.xacpx/plugins");
+    expect(resolvePluginHome()).toBe(join("/u/bob", ".xacpx", "plugins"));
   });
 
   // homedir() is real, so route the expected base through coreHomeDir() — it
@@ -45,35 +45,35 @@ describe("resolvePluginHome", () => {
   // test is the HOME-unset → homedir() fallback, not the directory name.
   it("falls back to homedir() when HOME env unset", () => {
     delete process.env.HOME;
-    expect(resolvePluginHome()).toBe(`${coreHomeDir(homedir())}/plugins`);
+    expect(resolvePluginHome()).toBe(join(coreHomeDir(homedir()), "plugins"));
   });
 
   // --- Regression: the bug that produced undefined/.xacpx/plugins/ in CWD ---
 
   it("treats input.home === 'undefined' string as missing and falls through", () => {
     process.env.HOME = "/u/carol";
-    expect(resolvePluginHome({ home: "undefined" })).toBe("/u/carol/.xacpx/plugins");
+    expect(resolvePluginHome({ home: "undefined" })).toBe(join("/u/carol", ".xacpx", "plugins"));
   });
 
   it("treats input.pluginHome === 'undefined' string as missing", () => {
     process.env.HOME = "/u/dave";
-    expect(resolvePluginHome({ pluginHome: "undefined" })).toBe("/u/dave/.xacpx/plugins");
+    expect(resolvePluginHome({ pluginHome: "undefined" })).toBe(join("/u/dave", ".xacpx", "plugins"));
   });
 
   it("treats WEACPX_PLUGIN_HOME === 'undefined' string as missing", () => {
     process.env.WEACPX_PLUGIN_HOME = "undefined";
     process.env.HOME = "/u/eve";
-    expect(resolvePluginHome()).toBe("/u/eve/.xacpx/plugins");
+    expect(resolvePluginHome()).toBe(join("/u/eve", ".xacpx", "plugins"));
   });
 
   it("treats process.env.HOME === 'undefined' string as missing (the original bug)", () => {
     process.env.HOME = "undefined";
-    expect(resolvePluginHome()).toBe(`${coreHomeDir(homedir())}/plugins`);
+    expect(resolvePluginHome()).toBe(join(coreHomeDir(homedir()), "plugins"));
   });
 
   it("also treats 'null' string as missing", () => {
     process.env.HOME = "null";
-    expect(resolvePluginHome()).toBe(`${coreHomeDir(homedir())}/plugins`);
+    expect(resolvePluginHome()).toBe(join(coreHomeDir(homedir()), "plugins"));
   });
 });
 

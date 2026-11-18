@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, expect, test } from "bun:test";
 
 import {
@@ -71,17 +71,27 @@ test("quoteAgentCommandToken survives acpx's quote-aware --agent splitter", () =
   expect(quoteAgentCommandToken("C:\\Program Files\\node.exe")).toBe('"C:\\\\Program Files\\\\node.exe"');
 });
 
+// fileURLToPath only accepts a platform-valid absolute path, so the fixture
+// module URLs have to be built per platform. What is under test is the ANCHORING
+// (last /dist/ segment wins, .ts sibling for dev runs), which is
+// platform-independent — compare forward-slashed forms.
+const DRIVE = process.platform === "win32" ? "C:" : "";
+function shimEntry(posixModulePath: string): string {
+  const native = DRIVE ? `${DRIVE}${posixModulePath.replaceAll("/", "\\")}` : posixModulePath;
+  return resolveHermesAcpShimEntry(pathToFileURL(native).href).replaceAll("\\", "/");
+}
+
 test("resolveHermesAcpShimEntry anchors on the last /dist/ segment for bundled builds", () => {
-  expect(resolveHermesAcpShimEntry("file:///opt/xacpx/dist/cli.js"))
-    .toBe("/opt/xacpx/dist/adapters/hermes-acp-shim.js");
-  expect(resolveHermesAcpShimEntry("file:///opt/xacpx/dist/bridge/bridge-main.js"))
-    .toBe("/opt/xacpx/dist/adapters/hermes-acp-shim.js");
+  expect(shimEntry("/opt/xacpx/dist/cli.js"))
+    .toBe(`${DRIVE}/opt/xacpx/dist/adapters/hermes-acp-shim.js`);
+  expect(shimEntry("/opt/xacpx/dist/bridge/bridge-main.js"))
+    .toBe(`${DRIVE}/opt/xacpx/dist/adapters/hermes-acp-shim.js`);
   // Unbundled dev run: the sibling .ts source next to the module.
-  expect(resolveHermesAcpShimEntry("file:///repo/src/adapters/hermes-shim.ts"))
-    .toBe("/repo/src/adapters/hermes-acp-shim.ts");
+  expect(shimEntry("/repo/src/adapters/hermes-shim.ts"))
+    .toBe(`${DRIVE}/repo/src/adapters/hermes-acp-shim.ts`);
   // Dev checkout whose PATH contains /dist/ must still resolve the .ts sibling.
-  expect(resolveHermesAcpShimEntry("file:///home/u/dist/xacpx/src/adapters/hermes-shim.ts"))
-    .toBe("/home/u/dist/xacpx/src/adapters/hermes-acp-shim.ts");
+  expect(shimEntry("/home/u/dist/xacpx/src/adapters/hermes-shim.ts"))
+    .toBe(`${DRIVE}/home/u/dist/xacpx/src/adapters/hermes-acp-shim.ts`);
 });
 
 test("isInitializeResponse matches any frame with agentCapabilities, resume or not", () => {

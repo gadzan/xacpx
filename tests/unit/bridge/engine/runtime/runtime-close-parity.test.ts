@@ -1,14 +1,16 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { spawn } from "node:child_process";
-import { join, resolve } from "node:path";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { existsSync, readdirSync } from "node:fs";
 
 import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
+import { MOCK_ACP_AGENT, runAcpxCli } from "../../../../helpers/acpx-cli-spawn";
+import { rmTemp } from "../../../../helpers/rm-temp";
 
-const MOCK_AGENT = resolve(import.meta.dir, "../../../../fixtures/mock-acp-agent.mjs");
-const CLI_ENTRY = resolve(import.meta.dir, "../../../../../node_modules/acpx/dist/cli.js");
+const MOCK_AGENT = MOCK_ACP_AGENT;
+const runAcpx = runAcpxCli;
+
 
 interface AcpxSessionRecord {
   schema?: string;
@@ -25,27 +27,6 @@ interface AcpxSessionRecord {
   closedAt?: string;
   pid?: number;
   eventLog?: string;
-}
-
-function runAcpx(home: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
-  const cmd = `${process.execPath} ${MOCK_AGENT}`;
-  const { promise, resolve: resolveP, reject } = Promise.withResolvers<{ code: number; out: string; err: string }>();
-  const cp = spawn(process.execPath, [CLI_ENTRY, "--agent", cmd, ...args], {
-    cwd: home,
-    env: {
-      ...process.env,
-      HOME: home,
-      XDG_STATE_HOME: join(home, ".local", "state"),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let out = "";
-  let err = "";
-  cp.stdout.on("data", (d) => (out += String(d)));
-  cp.stderr.on("data", (d) => (err += String(d)));
-  cp.on("close", (code) => resolveP({ code: code ?? 1, out, err }));
-  cp.on("error", reject);
-  return promise;
 }
 
 function getSessionFiles(sessionsDir: string): { records: string[]; streams: string[] } {
@@ -113,7 +94,7 @@ test("CLI vs Runtime close parity differential test", async () => {
     cliResumeCode = resumeRes.code;
     cliResumeErr = resumeRes.err || resumeRes.out;
   } finally {
-    await rm(cliHome, { recursive: true, force: true }).catch(() => {});
+    await rmTemp(cliHome).catch(() => {});
   }
 
   // 2. Run Runtime Lifecycle: create -> prompt -> status/list -> close -> verify all 6 axes
@@ -199,7 +180,7 @@ test("CLI vs Runtime close parity differential test", async () => {
       rtResumeError = err instanceof Error ? err.message : String(err);
     }
   } finally {
-    await rm(rtHome, { recursive: true, force: true }).catch(() => {});
+    await rmTemp(rtHome).catch(() => {});
   }
 
   // Assert and compare parity
