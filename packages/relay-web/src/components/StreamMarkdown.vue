@@ -272,6 +272,11 @@ onBeforeUnmount(() => {
   padding: 0.1em 0.3em;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
+  /* The bubble's width is the budget: an unbroken token wraps inside the pill
+     instead of widening the timeline scroller. .stream-md already sets this on
+     the block, and an inline code span is also the element that a long token
+     sits on. */
+  overflow-wrap: anywhere;
 }
 /* Code block: concave inset — fill-track trough with a hairline edge and the
    card radius, no shadow. Font stays 13px mono (type scale owns sizes). */
@@ -281,6 +286,10 @@ onBeforeUnmount(() => {
   border: 1px solid var(--hairline);
   border-radius: var(--r-card);
   padding: 0.65em 0.85em;
+  /* The longest line scrolls inside the block. max-width + min-width keep the
+     block the bubble's width, so it can never push the column. */
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   margin: 0.6em 0;
   box-shadow: none;
@@ -326,6 +335,7 @@ onBeforeUnmount(() => {
    display:block on the table would collapse the grid into a stacked single column. */
 .stream-md .md-table-wrap {
   max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   margin: 0.6em 0;
 }

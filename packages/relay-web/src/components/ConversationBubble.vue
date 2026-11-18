@@ -62,6 +62,7 @@ defineProps<{
 .conversation-bubble :deep(pre),
 .conversation-bubble :deep(.md-table-wrap) {
   max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
 }
 </style>

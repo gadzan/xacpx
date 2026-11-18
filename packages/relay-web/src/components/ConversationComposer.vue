@@ -198,8 +198,8 @@ function onInput(event: Event): void {
        composer sits in the same column instead of stretching edge to edge on
        wide screens. The pane owns bottom spacing and stack layers above this
        card baseline (no pb / border-t here).
-       rounded-3xl reads as a pill on the one-line resting card (42px) and stays
-       soft on the expanded card. -->
+       rounded-3xl reads as a pill on the one-line resting card (48px on a
+       phone) and stays soft on the expanded card. -->
   <!-- The card is glass-strong: a translucent surface with a hairline and the
        card shadow. The glass is static — it is not in the transition list, so
        the radius animation below is unchanged. -->
@@ -212,14 +212,14 @@ function onInput(event: Event): void {
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >
       <!-- Send/stop live INSIDE the input line (WhatsApp style): the resting card is
-           one text line tall and the button is its own height reference — both are
-           centred with the same 6px inset the placeholder uses, so a 38px pill has
-           equal gaps top/bottom/left/right. Expanded, the button drops to the
-           bottom-right corner of the grown textarea. The affordance row below
-           (model chip, member selector, attach) only exists when a pane passes it
-           and folds away while the composer rests (v-show: pane state survives the
-           fold). Padding is not animated and the textarea keeps a constant pr-12,
-           so applyHeight always measures a settled box. -->
+           one text line tall (48px below lg) and the button is measured against it.
+           The 44px hit box sits centred inside the shell, so the visible 32px disc
+           has equal gaps top/bottom; expanded, it drops to the bottom-right corner
+           of the grown textarea. The affordance row below (model chip, member
+           selector, attach) only exists when a pane passes it and folds away while
+           the composer rests (v-show: pane state survives the fold). Padding is not
+           animated and the textarea keeps a constant right inset that clears the
+           hit box, so applyHeight always measures a settled box. -->
       <div class="relative">
         <!-- One-line chip row (@, Discuss) that belongs to the input surface
              itself, above the textarea. Hidden while the card rests on mobile so
@@ -254,8 +254,8 @@ function onInput(event: Event): void {
           :aria-controls="combobox ? comboboxListId : undefined"
           :aria-expanded="combobox ? comboboxExpanded : undefined"
           :aria-activedescendant="combobox ? comboboxActiveId : undefined"
-          class="block w-full resize-none bg-transparent pl-3.5 pr-12 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap focus:outline-none disabled:cursor-not-allowed"
-          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', expanded ? 'pt-2.5 pb-1' : 'pt-[7px] pb-[5px]', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
+          class="block w-full resize-none bg-transparent pl-3.5 pr-[52px] lg:pr-12 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap focus:outline-none disabled:cursor-not-allowed"
+          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', expanded ? 'pt-2.5 pb-1' : 'pt-[11px] pb-[11px] lg:pt-[7px] lg:pb-[5px]', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
           :disabled="disabled"
           :style="height !== undefined ? { height: height + 'px' } : undefined"
           :placeholder="placeholder || $t('chat.message')"
@@ -283,9 +283,9 @@ function onInput(event: Event): void {
             class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center transition-all"
             @click="emit('cancel')"
           >
-            <!-- 44px touch target on mobile (redesign PR4 §5.3); the visible disc
-                 stays 28px so it keeps fitting the 38px resting pill. -->
-            <span class="grid h-7 w-7 place-items-center rounded-full bg-danger/15 text-danger transition-colors hover:bg-danger/25">
+            <!-- A real 44px box on mobile, inside the 48px shell; the visible disc
+                 is 32px, and desktop keeps the 28px disc of the resting row. -->
+            <span class="grid h-8 w-8 lg:h-7 lg:w-7 place-items-center rounded-full bg-danger/15 text-danger transition-colors hover:bg-danger/25">
               <Square :size="10" fill="currentColor" />
             </span>
           </button>
@@ -296,10 +296,10 @@ function onInput(event: Event): void {
             :disabled="disabled || sending || sendDisabled || attachmentsSendDisabled || !hasSendable"
             :aria-label="$t('chat.send')"
             :title="$t('chat.send')"
-            class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center transition-all"
+            class="group grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center transition-all"
             @click="emit('send')"
           >
-            <span class="grid h-7 w-7 place-items-center rounded-full bg-accent text-on-accent transition-colors hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted">
+            <span class="grid h-8 w-8 lg:h-7 lg:w-7 place-items-center rounded-full bg-accent text-on-accent transition-colors hover:bg-accent-hover group-disabled:bg-fg/10 group-disabled:text-fg-muted">
               <Loader2 v-if="sending" :size="12" class="animate-spin" />
               <ArrowUp v-else :size="13" :stroke-width="2.5" />
             </span>
