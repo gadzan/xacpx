@@ -2,6 +2,7 @@ import { access, mkdir, open, readdir, readFile, rename, unlink } from "node:fs/
 import { join } from "node:path";
 
 import { RuntimeError } from "../runtime-engine";
+import { retryTransientFileErrors } from "../../../util/private-file";
 
 export const RUNTIME_QUEUE_MAX_DEPTH = 20;
 
@@ -103,7 +104,11 @@ export class RuntimeQueueStore {
     const file = queueFilePath(this.queueDir, logicalSessionId);
     let content: string;
     try {
-      content = await readFile(file, "utf8");
+      // Windows reports EPERM, not ENOENT, while an atomic replace holds the
+      // target mid-rename. A concurrent reader would turn a routine save into
+      // a fatal RUNTIME_INIT_FAILED. Retry the transient codes; POSIX never
+      // raises them.
+      content = await retryTransientFileErrors(() => readFile(file, "utf8"));
     } catch (err) {
       if (isEnoent(err)) return undefined;
       throw new RuntimeError("RUNTIME_INIT_FAILED", `cannot read runtime queue journal for "${logicalSessionId}": ${err instanceof Error ? err.message : String(err)}`);

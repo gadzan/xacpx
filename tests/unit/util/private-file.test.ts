@@ -58,7 +58,7 @@ test("windows atomic write retries transient EPERM long enough before failing", 
 
   let caught: unknown = undefined;
   try {
-    await __privateFileForTests.retryTransientWriteErrors(
+    await __privateFileForTests.retryTransientFileErrors(
       async () => {
         attempts += 1;
         const err = new Error("locked") as NodeJS.ErrnoException;
@@ -84,7 +84,7 @@ test("windows atomic write retries transient EPERM long enough before failing", 
 test("windows atomic write retries transient EPERM until success", async () => {
   let attempts = 0;
 
-  await __privateFileForTests.retryTransientWriteErrors(
+  await __privateFileForTests.retryTransientFileErrors(
     async () => {
       attempts += 1;
       if (attempts < 10) {
@@ -107,7 +107,7 @@ test("non-windows platforms do not retry", async () => {
 
   let caught: unknown = undefined;
   try {
-    await __privateFileForTests.retryTransientWriteErrors(
+    await __privateFileForTests.retryTransientFileErrors(
       async () => {
         attempts += 1;
         const err = new Error("locked") as NodeJS.ErrnoException;

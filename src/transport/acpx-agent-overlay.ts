@@ -6,7 +6,7 @@ import { isRecord } from "../config/load-config";
 import { resolveAcpxHomeDir } from "./acpx-session-files";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AppConfig } from "../config/types";
-import { retryTransientWriteErrors, withPrivateFileLock } from "../util/private-file";
+import { retryTransientFileErrors, withPrivateFileLock } from "../util/private-file";
 
 export const ACPX_MANAGED_ALIAS_PREFIX = "xacpx-managed-";
 
@@ -219,7 +219,7 @@ export async function ensureAgentOverlays(
     const serialized = serializeAcpxConfig(next);
     // writeLocked is the lock-scoped atomic writer (no re-lock, which would
     // deadlock against the held proper-lockfile). writeAtomicFn is a test seam.
-    await retryTransientWriteErrors(
+    await retryTransientFileErrors(
       () => (deps.writeAtomicFn ? deps.writeAtomicFn(path, serialized) : writeLocked(serialized)),
       { platform, delay: deps.delay },
     );
