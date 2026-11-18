@@ -20,10 +20,6 @@ const props = defineProps<{
   totalCount: number;
   /** How many members are disabled or retired. */
   disabledCount: number;
-  /** The lead member, drawn first. */
-  leadBotId?: string;
-  /** Member ids by most recent activity, newest first. */
-  activityBotIds?: string[];
   /** The row already states the name and the count, so the collage stays silent. */
   decorative?: boolean;
 }>();
@@ -38,47 +34,48 @@ function driverFor(bot: BotSummaryDto): string | undefined {
   return inst?.agents.find((a) => a.name === bot.agent)?.driver;
 }
 
-/** Sub-avatar diameter, as a share of the container. */
-const SUB_RATIO = 0.59;
-// A disabled or retired member takes no work, so it has no place in the collage.
-const eligible = computed(() => props.bots.filter((b) => b.enabled !== false && b.retired !== true));
+/** Sub-avatar diameter, as a share of the container. Wide enough that
+ *  neighbours press into each other: four 0.6 cells at 31%/69% overlap by 0.22
+ *  of the container on both axes, so the collage reads as a stack rather than a
+ *  tiled grid. */
+const SUB_RATIO = 0.6;
 
-// Up to four members fit the 2x2 grid; the small top bar only fits three.
-const maxShown = computed(() => (props.size >= 36 ? 4 : 3));
-
-// The lead first, then the most recently active members. The sort is stable,
-// so members nobody spoke for keep the order the caller passed them in.
-const ordered = computed(() => {
-  const activityRank = new Map<string, number>();
-  for (const id of props.activityBotIds ?? []) {
-    if (!activityRank.has(id)) activityRank.set(id, activityRank.size);
+/** Eligible cells in the caller's order, deduped by id: a member listed twice
+ *  still draws once. A disabled or retired member takes no work, so it takes no
+ *  cell; the label still counts it. */
+const eligible = computed(() => {
+  const seen = new Set<string>();
+  const members: BotSummaryDto[] = [];
+  for (const bot of props.bots) {
+    if (bot.enabled === false || bot.retired === true || seen.has(bot.id)) continue;
+    seen.add(bot.id);
+    members.push(bot);
   }
-  return [...eligible.value].sort((a, b) => {
-    const leadA = props.leadBotId === a.id ? 0 : 1;
-    const leadB = props.leadBotId === b.id ? 0 : 1;
-    if (leadA !== leadB) return leadA - leadB;
-    return (activityRank.get(a.id) ?? Infinity) - (activityRank.get(b.id) ?? Infinity);
-  });
+  return members;
 });
 
-const shown = computed(() => (ordered.value.length <= maxShown.value ? ordered.value : ordered.value.slice(0, 3)));
+/** Four cells is the ceiling at every container size, so a four-member group
+ *  draws four cells in the sidebar and in the top bar alike; a fifth member
+ *  turns the collage into three cells plus a count. Nothing sorts the members,
+ *  so the collage cannot reshuffle while the transcript moves. */
+const shown = computed(() => (eligible.value.length <= 4 ? eligible.value : eligible.value.slice(0, 3)));
 
 /** The overflow marker counts the eligible members that did not fit. */
 const overflow = computed(() => {
-  const hidden = ordered.value.length - shown.value.length;
+  const hidden = eligible.value.length - shown.value.length;
   if (hidden <= 0) return "";
   return hidden >= 100 ? "99+" : `+${hidden}`;
 });
 
 const LAYOUTS: Record<number, Array<[number, number]>> = {
   1: [[50, 50]],
-  2: [[31, 31], [69, 69]],
-  3: [[29, 29], [71, 29], [50, 71]],
-  4: [[29, 29], [71, 29], [29, 71], [71, 71]],
+  2: [[34, 34], [66, 66]],
+  3: [[30, 30], [70, 30], [50, 70]],
+  4: [[31, 31], [69, 31], [31, 69], [69, 69]],
 };
-/** With an overflow marker the three members take the top row and the bottom
+/** With an overflow marker the three cells take the top row and the bottom
  *  left, so the marker owns the bottom-right quadrant alone. */
-const OVERFLOW_LAYOUT: Array<[number, number]> = [[29, 29], [71, 29], [29, 71]];
+const OVERFLOW_LAYOUT: Array<[number, number]> = [[31, 31], [69, 31], [31, 69]];
 const layout = computed(() => (overflow.value ? OVERFLOW_LAYOUT : LAYOUTS[shown.value.length] ?? LAYOUTS[3]!));
 
 /** A lone member fills the container; the rest are sub-avatars. */

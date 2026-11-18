@@ -15,7 +15,12 @@ import { bodyPath } from "../lib/bot-avatar/geometry";
 const props = withDefaults(defineProps<{
   avatar?: BotAvatarConfig; driver?: string | null; name?: string; size?: number; state?: BotAvatarState;
   static?: boolean; disabled?: boolean; retired?: boolean; activityKey?: string; follow?: boolean; preview?: boolean; observedCompletion?: boolean;
-}>(), { size: 24, state: "idle", static: false, disabled: false, retired: false, follow: false, preview: false, observedCompletion: false });
+  /** Crop the character's 100-unit frame to the body's own extent, so the drawn
+   *  avatar fills its box instead of floating inside an empty margin. The box is
+   *  sized with the body in mind (the sidebar's 40px row avatar), so the optional
+   *  state ring sits outside the crop. */
+  crop?: boolean;
+}>(), { size: 24, state: "idle", static: false, disabled: false, retired: false, follow: false, preview: false, observedCompletion: false, crop: false });
 const { t } = useI18n();
 const root = ref<HTMLElement>();
 const maskId = `bot-avatar-${useId().replace(/[^a-zA-Z0-9_-]/g, "_")}`;
@@ -38,6 +43,9 @@ const stretchX = computed(() => pose.value?.sx ?? 1), stretchY = computed(() => 
 const channels = computed(() => pose.value?.color);
 const path = computed(() => radii.value ? bodyPath(radii.value, stretchX.value, stretchY.value) : "");
 const color = computed(() => channels.value ? `rgb(${channels.value.map(Math.round).join(" ")})` : "");
+/** The body spans about ±34 of the 100-unit frame; -40 trims the margin to a
+ *  hairline while leaving the stretch and the eyes whole. */
+const viewBox = computed(() => (props.crop ? "-40 -40 80 80" : "-50 -50 100 100"));
 // White eyes on every body except creme, whose near-white body needs ink eyes. Fixed
 // colours, independent of the theme: the avatar is the one coloured graphic in the UI.
 const eyeFill = computed(() => character.value?.color === "creme" ? "#0A0A0C" : "#FFFFFF");
@@ -182,7 +190,7 @@ onBeforeUnmount(() => { mounted = false; releaseResources(); });
     :style="{ width: `${size}px`, height: `${size}px` }">
     <AgentIcon v-if="!avatar" :driver="driver" :size="size" aria-hidden="true" />
     <span v-else-if="avatar.kind === 'text'" class="bot-avatar-text" aria-hidden="true">{{ text }}</span>
-    <svg v-else-if="pose" viewBox="-50 -50 100 100" aria-hidden="true" focusable="false">
+    <svg v-else-if="pose" :viewBox="viewBox" aria-hidden="true" focusable="false">
       <defs><clipPath :id="maskId"><path :d="path" /></clipPath></defs>
       <circle v-if="pose.ring" r="44" fill="none" stroke="rgb(var(--c-accent))" stroke-width="3" :opacity="pose.ring" />
       <path class="bot-avatar-body" :d="path" :fill="color" :data-hairline="hairline" />
