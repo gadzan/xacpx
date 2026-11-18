@@ -1,5 +1,11 @@
 # relay-web 终端：中置化 + 快捷键条 + Nerd Font
 
+> **已被取代（2026-11 复核）**：本文「不引入 xterm.js / FitAddon，继续用 ghostty-web」的前提已被反转——
+> 终端渲染现已使用 `@xterm/xterm` + FitAddon（`packages/relay-web/package.json`、
+> `packages/relay-web/src/lib/terminal-adapter.ts`），且持久终端归 RMUX 设计管辖
+> （[`2026-08-10-relay-web-rmux-terminal-design.md`](./2026-08-10-relay-web-rmux-terminal-design.md)）。
+> 本文保留为设计记录。
+
 状态：设计已确认，待实现
 日期：2026-06-30
 依赖：已发布的 web 终端最小实现（`TerminalTab.vue` / `terminal-adapter.ts` / `stores/terminal.ts` / hybrid transport）。本次是纯前端（`packages/relay-web`）改造，**不动**协议、hub、connector、core。

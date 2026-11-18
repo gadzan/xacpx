@@ -37,7 +37,7 @@
 ```text
 /later                  # 显示帮助
 /later <time> <message> # 创建一次性定时任务
-/later list             # 查看全局待执行任务
+/later list             # 查看当前聊天的待执行任务
 /later cancel <id>      # 取消待执行任务
 ```
 
@@ -58,7 +58,7 @@
 - 时间语法、10 秒～7 天限制、默认临时会话、`later.defaultMode`、频道投递能力检查都与 `/lt` 一致。
 - 群聊权限也与 `/lt` 一致：群聊中只有群主可以创建定时任务，避免通过自然语言绕过频道命令权限。
 - 如果当前会话路由或聊天类型/群主元数据无法可靠记录，xacpx 会拒绝创建（或取消本次发送），避免使用旧路由误创建任务。
-- 除创建外，agent 还可以用 `scheduled_list` 查看待执行任务、用 `scheduled_cancel <id>` 取消任务。`scheduled_list` 返回**全局**待执行列表（与 `/lt list` 一致），`scheduled_cancel` 按任务 id 取消（id 前的 `#` 可选）；群聊中两者同样仅群主可调用。
+- 除创建外，agent 还可以用 `scheduled_list` 查看待执行任务、用 `scheduled_cancel <id>` 取消任务。`scheduled_list` 只返回**当前聊天**创建的待执行任务（与 `/lt list` 一致），`scheduled_cancel` 按任务 id 取消（id 前的 `#` 可选），且只匹配当前聊天创建的任务；群聊中两者同样仅群主可调用。
 
 ## 时间语法
 
@@ -193,7 +193,7 @@
 ## 查看与取消
 
 ```text
-/lt list          # 全局待执行任务，不限当前聊天/会话，并显示执行会话（临时会话或绑定会话）
+/lt list          # 当前聊天创建的待执行任务，并显示执行会话（临时会话或绑定会话）
 /lt cancel k8f2   # 取消；id 带不带 # 都行，大小写不敏感
 /lt cancel #k8f2
 ```
@@ -263,7 +263,7 @@ CLI 只做管理能力：支持 `list` / `cancel`，不支持创建定时任务�
 
 - 私聊里 `/later` 全部可用。
 - 群聊里 `/later`（创建）、`/lt list`、`/lt cancel` 属于控制类命令，**仅群主**可用；`/later`（不带参数的帮助）所有人可用。
-- 能执行 `/lt list` 的人可以取消任意待执行任务。`/lt list` 是**全局**的，会显示其它聊天创建的任务摘要与执行会话——这是有意的 v1 取舍。
+- `/lt list` 与 `/lt cancel` 都限定在**发起聊天**范围内：一个聊天只能查看和取消自己创建的任务，取消别的聊天的任务 id 与未知 id 的表现完全一致。本地 CLI（`xacpx later list/cancel`）仍是操作者入口，可以跨所有聊天工作。
 
 ## 非目标（第一版不做）
 

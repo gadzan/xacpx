@@ -21,6 +21,7 @@
 | 接入本地 Agent 原生会话 | `/ssn ...`、`/ss attach native ...` |
 | 调整回复方式 | `/replymode ...` |
 | 调整 acpx mode | `/mode ...` |
+| 查看或切换模型 | `/model ...` |
 | 取消当前任务 | `/cancel`、`/stop` |
 | 修改配置 | `/config ...` |
 | 修改权限策略 | `/permission ...`、`/pm ...` |
@@ -55,7 +56,8 @@ Agent 是你要驱动的底层工具配置，例如 `codex`、`claude`、`kimi`�
 | 命令 | 说明 |
 |------|------|
 | `/agents` | 查看已注册的 agent |
-| `/agent add <codex|claude|pi|openclaw|gemini|cursor|copilot|droid|factory-droid|factorydroid|grok-build|hermes|iflow|kilocode|kimi|kiro|mux|omp|opencode|qoder|qwen|reasonix|trae>` | 添加一个内置 agent 模板；已存在且配置不同的同名 agent 不会被覆盖 |
+| `/agent add <codex|claude|ante|pi|openclaw|gemini|cursor|copilot|droid|deepseek-harness|factory-droid|factorydroid|goose|grok-build|hermes|iflow|kilocode|kimi|kiro|mcode|mux|octomind|omp|opencode|pool|qoder|qwen|reasonix|trae|zeroclaw>` | 添加一个内置 agent 模板；已存在且配置不同的同名 agent 不会被覆盖 |
+| `/agent add <template> --model <id>` | 添加（或更新）agent 并设置其默认模型（例如 `gpt-5.2[high]`），该 agent 的每个会话默认使用，除非被覆盖 |
 | `/agent rm <name>` | 删除一个 agent |
 
 示例：
@@ -64,6 +66,7 @@ Agent 是你要驱动的底层工具配置，例如 `codex`、`claude`、`kimi`�
 /agent add codex
 /agent add claude
 /agent add kimi
+/agent add codex --model gpt-5.2[high]
 /agents
 /agent rm claude
 ```
@@ -88,7 +91,7 @@ Workspace 是你电脑上的项目目录。建议使用绝对路径。
 /workspace rm backend
 ```
 
-> 名称会被规范化为 `[a-zA-Z0-9._-]+`：空格、中文、其他符号会替换成 `-`，重名时自动追加 `-2`、`-3`。如需保留含特殊字符的原始名称，加 `--raw`，例如：
+> 名称会被规范化为 `[a-zA-Z0-9._-]+`：空格、中文、其他符号会替换成 `-`。如果没有剩下可用字符，非空名称会使用稳定的 `workspace-<8hex>` 回退值。重名时会自动追加 `-2`、`-3`。`/ss -d` 或 native 会话创建时从中文目录名派生 workspace 名称时，也同样适用。已有注册信息和实际目录路径都会保留。如需保留含特殊字符的原始名称，加 `--raw`，例如：
 >
 > ```text
 > /ws new "My Project" -d /Users/me/projects/my-project --raw
@@ -112,6 +115,7 @@ Session 是你在微信里操作的逻辑会话。每个会话绑定一个 agent
 | `/ss new <agent> --ws <workspace>` | 用已有 workspace 强制创建一个新会话 |
 | `/session new <alias> --agent <agent> --ws <workspace>` | 用指定别名创建会话 |
 | `/session new <alias> -a <agent> --ws <workspace>` | 指定别名创建会话的短写法 |
+| `/session new <alias> -a <agent> --ws <workspace> --model <id>` | 同时固定会话的 LLM 模型（例如 `gpt-5.2[high]`）；`-m` 是短写法。覆盖 agent 默认值 |
 | `/use <alias>` | 切换当前会话 |
 | `/use <片段>` | 按别名片段切换：精确 > 前缀 > 子串；多命中会列出候选让你再选 |
 | `/use -` | 在当前会话和上一个会话之间切换（像 shell 的 `cd -`） |
@@ -142,7 +146,7 @@ Session 是你在微信里操作的逻辑会话。每个会话绑定一个 agent
 
 ### 绑定已有底层会话
 
-如果底层 `acpx` 会话已经存在，可以把它挂回微信里的逻辑会话。
+如果底层 `acpx` 会话已经存在，可以把它挂回微信里的逻辑会话。别名必须是空闲的：挂到已有别名上会被拒绝（先删除或重置它），以免旧逻辑身份被无声弃置。
 
 | 命令 | 说明 |
 |------|------|
@@ -239,6 +243,24 @@ Session 是你在微信里操作的逻辑会话。每个会话绑定一个 agent
 
 - `codex`: `plan`
 - `cursor`: `agent`、`plan`、`ask`
+
+## 模型
+
+`/model` 查看或切换当前会话的 LLM 模型。acpx 会用 agent 公布的模型校验 id，并把它应用到运行中的会话（活跃回合中立即生效，否则从下一回合开始）。设置模型有三种方式，优先级从低到高：agent 默认值（`/agent add <template> --model <id>`）、会话级固定（`/session new ... --model <id>`）和实时切换（`/model <id>`）。
+
+| 命令 | 说明 |
+|------|------|
+| `/model` | 查看当前会话的模型和可用模型 id |
+| `/model <id>` | 切换当前会话的模型（例如 `gpt-5.2[high]`） |
+
+示例：
+
+```text
+/model
+/model gpt-5.2[high]
+```
+
+OMP 模型恢复：如果 native 会话报告确切的 `Could not restore model <id>` 失败，裸 `/model` 会以对该会话确切启动方式的冷探针重新读取当前选项（在应用前，已保存的选择保持 `current`；探针失败显示的是诊断信息，而不是模型列表）。然后 `/model <exact id>` 会先重试正常设置，只有那个确切失败才会运行有界的 native 修复（`--resume <native id> --model <id>` 加上 `switch_session`，同一个 native 会话 id/文件，不编辑 JSONL，不发送 prompt）。修复后的 native 模型会先通过正常 acpx setter 同步，然后才提交逻辑模型；部分同步会如实上报，用同一条命令重试是安全的。当 acpx 队列所有者持有该会话时，修复会拒绝——先释放它（或等它空闲超时）再重试。历史记录会保留，原始消息永远不会被重发。Dashboard 流程见 [relay-web-module](../relay-web-module.md)；wire 细节见 [control-module](../control-module.md)。
 
 ## 配置
 
@@ -441,7 +463,7 @@ Group 适合把多个相互独立的子任务并行派出去，再统一查看�
 - 只支持**一次性**任务，不支持重复执行。
 - 定时时间必须在 **10 秒之后、7 天之内**。
 - 默认在临时会话执行，加 `--bind` 改为绑定当前会话执行；默认模式可用 `later.defaultMode` 配置。
-- `/lt list` 显示的是**全局**待执行任务，不限于当前会话。
+- `/lt list` 只显示**当前聊天**创建的待执行任务；其他聊天的任务永远不可见，也无法从这里取消它们的 id。
 - 取消操作遵循**受信渠道模型**：在群聊中只有群主可以取消。
 - **不支持**延迟执行 `/` 开头的 xacpx 命令（例如 `/lt in 1h /status` 会被拒绝）。如果你需要 agent 讨论某条命令，请用普通句子描述。
 - 触发通知和 agent 回复复用现有**频道路由**，微信回复额度由现有路由控制。
@@ -454,7 +476,7 @@ Group 适合把多个相互独立的子任务并行派出去，再统一查看�
 
 ## 群聊权限
 
-群聊中，只有只读命令（`/help`、`/status`、`/sessions`、`/config` 等）和普通对话对所有成员开放；控制类命令（`/clear`、`/use`、`/session new`、`/mode`、`/permission`、`/later` 控制命令等）仅限会话 owner 使用：
+群聊中，只有只读命令（`/help`、`/status`、`/sessions`、`/config` 等）和普通对话对所有成员开放；控制类命令（`/clear`、`/use`、`/session new`、`/mode`、`/model <id>`、`/permission`、`/later` 控制命令等）仅限会话 owner 使用：
 
 - 协议会上报群角色的频道自动授予 owner（如元宝会识别机器人创建者）。
 - 微信协议**不携带群角色信息**，需要把自己的发送者 id 配置进 `channel.ownerIds`（或 `channels[].ownerIds`）来给自己授权，见 [config-reference — `channel.ownerIds`](./config-reference_zh.md#channelownerids)。命令被拒绝时，`~/.xacpx/runtime/app.log` 中 `command.blocked` 日志条目里的 `senderId` 字段就是你的发送者 id。
@@ -474,8 +496,8 @@ Group 适合把多个相互独立的子任务并行派出去，再统一查看�
 
 优先检查三件事：
 
-1. workspace 路径在运行 `xacpx` 的电脑上存在。
+1. workspace 路径在运行 `xacpx` 的电脑上存在。不存在时，创建会话会失败并报 `Workspace "<name>" points at a path that does not exist: <path>`；修改 `config.json` 里的 `workspaces.<name>.cwd`（或 worker 绑定的 `cwd`），或创建该目录。
 2. agent 已注册，可以用 `/agents` 查看。
-3. 底层 agent 命令本身可运行。
+3. 底层 agent 命令本身可运行。当绝对启动路径缺失时，创建会话会失败并报 `Agent "<agent>" cannot start because this launch path does not exist: <path>`；修改 `config.json` 里的 `agents.<agent>.command` / `agents.<agent>.argv`，或当该路径属于内置 helper 时重装 `xacpx`。
 
 如果已有底层会话，可以用 `/session attach ...` 绑定回来。

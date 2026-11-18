@@ -24,7 +24,7 @@
 - `src/run-console.ts` 负责“**daemon 进程里实际跑什么**”。
 - 其他业务模块负责“**进程活着之后具体提供什么能力**”。
 
-Windows 下 daemon 还会在 `runtime/orphans/` 发布 generation identity，并获取规范化 named-pipe consumer guard。预安装 adapter 的启动使用同一 UUID 贯穿 argv、intent、owner 与 residual；启动、周期 sweep、正常退出和 `xacpx stop` 都复用 fail-closed 登记表与 handle-stable 身份核验。自动路径不使用 `taskkill`；`xacpx orphans kill --confirm` 仅作为显式人工兜底。快照后新建子进程的彻底约束留作 Job Object P3。
+Windows 下 daemon 启动时会在 `runtime/orphans/` 发布 generation identity，并获取规范化的 named-pipe consumer guard。托管预安装 adapter 的启动在 argv、intent、owner 与 residual 记录中使用同一个 UUID。启动、周期 sweep、关停和 `xacpx stop` 都共用 handle-stable 的进程身份核验。运行时 worker 使用以 generation 命名的 Job Object。supervisor 在创建 worker 前先加入该 Job，并持有其不可继承的 kill-on-close 句柄。准入会把两个进程身份以及已验证的 Job 成员关系持久化进 durable worker fence。替换和硬删除都要求两个进程都已退出，且上一代 generation 的 Job 已空或不存在。没有 Job 证据的旧 fence 需要操作者显式恢复。参见 [session 恢复 CLI](./cli-reference_zh.md)。
 
 ## 目录结构
 
@@ -87,6 +87,12 @@ daemon 进程内的运行时登记器。
 
 它是一个很薄的持久化封装，避免状态文件格式散落在别处。
 
+除了上面这几个对外单元，模块内还有：
+- `runtime-consumer-lock.ts`：核心 consumer lock 与各渠道兼容性 fence 的创建与获取（`createRuntimeConsumerLock`）。
+- `windows-daemon-runtime.ts`：Windows 上初始化 daemon identity、orphan registry 并发布 generation。
+- `posix-daemon-recovery.ts`：POSIX 上仅凭 status 恢复 legacy daemon 前的身份核验（`verifyPosixStatusOnlyDaemon`）。
+- `private-runtime-dir.ts`：把 runtime 目录收敛为用户私有（0700）。
+
 ## 处理流程
 
 以 `xacpx start` 为例：
@@ -122,7 +128,9 @@ lock，随后为**每一个**提供 lock 的渠道各取得一把兼容性 fence
 OS 持有（POSIX 使用 `flock`，Windows 使用 runtime-owner IPC guard），进程崩溃时会自动
 释放 ownership，无需删除或回收稳定的诊断 JSON 文件。Bun 通过 Node helper 持有 POSIX 原生 flock
 时，helper 会忽略进程组的优雅停机信号，只在父进程关闭控制管道后释放；若 helper 意外丢失，owner
-会在另一个 runtime 并发运行前 fail-closed 终止。POSIX legacy 渠道元数据还记录进程启动
+会在另一个 runtime 并发运行前 fail-closed 终止。共享的这套生命周期实现在 `src/process/file-lock.ts`，
+并以 `acquireFileLock` 通过插件 API 导出，供 registry ownership 使用。runtime 包装层沿用其既有的
+Windows key、元数据布局、诊断信息和渠道 fence 顺序。POSIX legacy 渠道元数据还记录进程启动
 指纹，用来识别 PID 复用。包括直接源码 `main()` 在内的所有 runtime 入口都走同一受保护路径。只有取得
 runtime ownership 后、任何启动协调或 orphan sweep 之前，才会持久化 generation。普通前台
 `xacpx run` 既不发布 daemon generation，也不登记 daemon PID/status；ownership lock 冲突而退出

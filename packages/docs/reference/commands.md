@@ -110,7 +110,7 @@ An agent is a named configuration for an underlying tool such as `codex`, `claud
 | `/agent add <name>` | Add a built-in agent template; does not overwrite an existing agent with a different configuration |
 | `/agent rm <name>` | Delete an agent |
 
-Built-in template names: `codex`, `claude`, `pi`, `openclaw`, `gemini`, `cursor`, `copilot`, `droid`, `factory-droid`, `factorydroid`, `grok-build`, `iflow`, `kilocode`, `kimi`, `kiro`, `mux`, `omp`, `opencode`, `qoder`, `qwen`, `reasonix`, `trae`.
+Built-in template names: `codex`, `claude`, `ante`, `pi`, `openclaw`, `gemini`, `cursor`, `copilot`, `droid`, `deepseek-harness`, `factory-droid`, `factorydroid`, `goose`, `grok-build`, `hermes`, `iflow`, `kilocode`, `kimi`, `kiro`, `mcode`, `mux`, `octomind`, `omp`, `opencode`, `pool`, `qoder`, `qwen`, `reasonix`, `trae`, `zeroclaw`.
 
 ```text
 /agent add codex
@@ -171,6 +171,20 @@ Recommendations:
 
 Known values: `codex` supports `plan`; `cursor` supports `agent`, `plan`, `ask`.
 
+## Model command
+
+`/model` views or switches the LLM model of the current session. acpx validates the id against the models the agent advertises and applies it to the running session (immediately during an active turn, otherwise from the next turn). There are three ways to set a model, in increasing precedence: the agent default (`/agent add <template> --model <id>`), the per-session pin (`/session new ... --model <id>`), and a live switch (`/model <id>`).
+
+| Command | Description |
+|---------|-------------|
+| `/model` | View the current session's model and the available model ids |
+| `/model <id>` | Switch the current session's model (e.g. `gpt-5.2[high]`) |
+
+```text
+/model
+/model gpt-5.2[high]
+```
+
 ## Configuration commands
 
 `/config` provides restricted write access to a whitelist of configuration fields. For the full field reference see [Configuration Reference](/reference/configuration). For a detailed explanation of the `/config` command itself, see [/config Command](/reference/config-command).
@@ -194,6 +208,7 @@ Currently supported paths:
 - `logging.maxFiles`
 - `logging.retentionDays`
 - `channel.replyMode`
+- `channels.<id>.replyMode`
 - `language`
 
 **Dynamic fields** (target must already exist):
@@ -203,6 +218,8 @@ Currently supported paths:
 - `workspaces.<name>.description`
 
 > **Note:** Performance debug log settings (`logging.perf.*`) are not on the `/config set` whitelist. Edit `~/.xacpx/config.json` directly and restart the daemon for those to take effect.
+
+> **Note:** `channel.type` is disabled — `/config set channel.type` returns an error. The field is kept only as a legacy single-channel configuration for backward compatibility; use `xacpx channel ...` for multi-channel setups.
 
 ```text
 /config set channel.replyMode final

@@ -12,9 +12,12 @@ xacpx plugin  list | add | update | remove | enable | disable | doctor | known
 xacpx doctor [--verbose] [--smoke] [--agent <a>] [--workspace <w>] [--fix]
 xacpx version
 xacpx agent | agents  list | add | rm | templates
+xacpx adapter  list | check | update | set | reset | registry | preinstall | uninstall
 xacpx workspace | ws  list | add [name] [--raw] | rm <name>
 xacpx later | lt  list | cancel <id>
 xacpx mcp-stdio [--coordinator-session <s>] [--source-handle <h>] [--workspace <name>]
+xacpx session  inspect <alias> | recover <alias> --expected-generation <gen> [--accept-legacy-orphan-risk]
+xacpx orphans kill --confirm
 ```
 
 ## Daemon lifecycle
@@ -164,15 +167,18 @@ For identity rules, `workingDirectory` semantics, the full tool list, and troubl
 
 ## Relay hub — `xacpx-relay`
 
-A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). Until the relay packages are published to npm, invoke the subcommands as `node packages/relay/dist/cli.js <command>` from a repo checkout.
+A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). Install it with `npm i -g @ganglion/xacpx-relay` — the dashboard (`@ganglion/xacpx-relay-web`) is bundled inside that package, so there is nothing else to install or build.
 
 ```bash
-xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port 8788] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
+xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
+# --ws-port omitted = gateway merged onto the HTTP port; pass it only for a dedicated gateway port
 xacpx-relay add token [--label <note>] [--db <path>]
 xacpx-relay add invite [--label <note>] [--ttl <30m|12h|7d>] [--url <hub-base-url>] [--db <path>]
 xacpx-relay ls [--db <path>]
 xacpx-relay rm token <value-or-id> [--db <path>]
 xacpx-relay rm invite <code-or-id> [--db <path>]
+xacpx-relay push-keys generate
+xacpx-relay update [--check]
 ```
 
 | Command | Description |
@@ -183,6 +189,8 @@ xacpx-relay rm invite <code-or-id> [--db <path>]
 | `ls` | List tokens (short id, label, created date, connected instances) and pending/used invite codes. |
 | `rm token <value-or-id>` | Remove the user behind that token (cascades all data). |
 | `rm invite <code-or-id>` | Delete an invite code (does not affect accounts already redeemed from it). |
+| `push-keys generate` | Print a VAPID keypair for web push. Inject it via `XACPX_RELAY_VAPID_SUBJECT` / `XACPX_RELAY_VAPID_PUBLIC_KEY` / `XACPX_RELAY_VAPID_PRIVATE_KEY` or the `start` flags; unconfigured means push is disabled (WS delivery is unaffected). |
+| `update [--check]` | Self-update the hub package (`npm i -g @ganglion/xacpx-relay@latest`). `--check` only compares the running version against npm and prints the result. Restart the hub process afterwards. |
 
 **Example — mint a token:**
 
@@ -199,14 +207,14 @@ hint: use this token for web login AND: xacpx channel add relay --url ws://<host
 xacpx channel add relay --url <host> --token <token> [--name <label>]
 ```
 
-`--url` is a smart shorthand for the instance gateway (port 8788 by default) or a TLS proxy:
+`--url` is a smart shorthand for the instance gateway (port 8787 by default — the gateway is merged onto the hub's HTTP port) or a TLS proxy:
 
 | Input | Resolved URL |
 |---|---|
 | `relay.example.com` | `wss://relay.example.com` |
-| `1.2.3.4` | `ws://1.2.3.4:8788` |
+| `1.2.3.4` | `ws://1.2.3.4:8787` |
 | `1.2.3.4:9000` | `ws://1.2.3.4:9000` |
-| `localhost` | `ws://localhost:8788` |
+| `localhost` | `ws://localhost:8787` |
 | `host:9000` | `ws://host:9000` |
 | `ws://…` / `wss://…` | as-is |
 | `http://…` / `https://…` | mapped to `ws://…` / `wss://…` |

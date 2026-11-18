@@ -97,7 +97,7 @@ Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任�
 
 ## RMUX 终端后端（channel-relay，默认关闭）
 
-权威设计见 `docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md`。实现落点：
+权威设计见 `docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md`（租约 / 进程归属 / recovery 模型；浏览器渲染器已换代，见该文顶部说明与 `docs/relay-web-module.md`）。实现落点：
 
 - **配置**：`channels[].options.terminal`（见 `docs/config-reference.md`）；默认 `enabled=false`，不声明
   `terminal.rmux.recovery.v1` / `terminal.multi-view.v1`。

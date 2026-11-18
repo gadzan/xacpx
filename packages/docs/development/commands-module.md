@@ -49,11 +49,12 @@ The module's main entry point. Responsibilities:
 - Call `parseCommand()` to parse input.
 - Dispatch based on `command.kind`.
 - Assemble the context and ops required by each handler.
+- Compose and delegate to `TransportInvoker` and `SessionControlService`; keep public forwarders for the session-CRUD methods.
 - Catch transport errors, log them, and produce diagnostic summaries.
 
-Think of it as a **thin router + context assembler** — not a place for business logic.
+Think of it as a **thin router + context assembler** — not a place for business logic. The transport-call wrapping and the session-CRUD-with-transport logic were extracted into `TransportInvoker` and `SessionControlService`; the router only wires them into the handlers' ops and forwards the CRUD calls.
 
-Key internal operations:
+The handler-facing transport operations live in `TransportInvoker` ([`src/commands/transport-invoker.ts`](https://github.com/gadzan/xacpx/blob/main/src/commands/transport-invoker.ts)), not in the router:
 
 - `ensureTransportSession()` — supports auto-install of missing optional dependencies and secondary verification.
 - `promptTransportSession()` — uniformly forwards `reply` / `quota` / `media` and ensures `mcpCoordinatorSession` defaults.
@@ -87,6 +88,10 @@ Handlers are split by **responsibility boundary**, not by command name:
 | `session-shortcut-handler.ts` | Session shortcut create/switch flow |
 | `session-recovery-handler.ts` | Session recovery and error rendering |
 | `session-reset-handler.ts` | Session reset flow |
+| `native-session-handler.ts` | Native session list / attach flow |
+| `orchestration-handler.ts` | Orchestration commands — delegate, group, task approve/cancel |
+| `later-handler.ts` | Scheduled (`/later`) delayed-task commands |
+| `config-handler.ts` | Config commands — read/write config values |
 
 The split keeps `command-router.ts` and individual large handlers loosely coupled. When a handler accumulates multiple distinct flows (main flow + recovery + reset + specialized rendering), split it into separate files early — don't keep stacking onto one file.
 

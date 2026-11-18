@@ -23,6 +23,7 @@
 | `~/.xacpx/runtime/stdout.log` | 守护进程标准输出 |
 | `~/.xacpx/runtime/stderr.log` | 守护进程标准错误 |
 | `~/.xacpx/runtime/app.log` | 结构化应用日志（有界/滚动） |
+| `~/.xacpx/runtime/runtime-consumer.lock.json` | 由 OS 持有、与频道无关的核心消费者锁的稳定元数据路径 |
 
 ### 模块文件
 
@@ -33,6 +34,10 @@
 | [`daemon-runtime.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/daemon-runtime.ts) | 进程内注册 — 写入 PID、状态文件和心跳 |
 | [`daemon-files.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/daemon-files.ts) | 运行时文件路径定义 — 所有路径的单一真实来源 |
 | [`daemon-status.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/daemon-status.ts) | 状态文件持久化 — 读取 / 写入 / 清除 `status.json`；定义 `DaemonStatus` 结构 |
+| [`runtime-consumer-lock.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/runtime-consumer-lock.ts) | 由 OS 持有的核心消费者锁（POSIX 上为 `flock`，Windows 上为 runtime-owner IPC 守卫），外加每个可锁频道各一道兼容围栏 |
+| [`windows-daemon-runtime.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/windows-daemon-runtime.ts) | Windows 守护进程代际身份与孤儿登记簿 |
+| [`posix-daemon-recovery.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/posix-daemon-recovery.ts) | POSIX 仅状态恢复的守护进程身份验证——消费者锁与 OS 启动时间证明 |
+| [`private-runtime-dir.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/private-runtime-dir.ts) | 私有运行时目录约束（`0700`） |
 
 ## 启动生命周期
 
@@ -62,8 +67,9 @@
 | 状态 | 条件 |
 | --- | --- |
 | `running` | PID 文件存在，进程存在，有效状态文件存在 |
-| `stopped` | 无 PID 文件，或无状态信息 |
-| `stale stopped` | 崩溃的守护进程遗留的过期 PID 或状态——控制器负责清理 |
+| `stopped` | 没有存活守护进程的证据 |
+| `stopped`（`stale: true`） | 已消亡进程遗留的旧 PID 或状态——控制器负责清理残留 |
+| `indeterminate` | 进程存活，但其 PID/状态元数据不完整、不一致或过于陈旧而无法安全修复——阻止第二次启动；该 PID 存活期间 status/doctor 探测保持只读 |
 
 `DaemonController.getStatus()` 不只是检查文件——它会对实际进程执行**存活检查**。这是其核心价值：文件的存在并不能保证进程还在运行。源码：[`src/daemon/daemon-controller.ts`](https://github.com/gadzan/xacpx/blob/main/src/daemon/daemon-controller.ts)
 

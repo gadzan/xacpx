@@ -441,7 +441,7 @@ it. Enforced Group read-only recovery retains the existing at-most-one started
 retry, budget, retired-source, cancellation and authority fences. Direct recovery
 keeps its existing conservative started-unknown rule.
 
-Residuals: only bundled acpx 0.16.0 with the exact managed Claude ACP 0.78.0 /
+Residuals: only bundled acpx 0.22.0 with the exact managed Claude ACP 0.78.0 /
 SDK 0.3.270 implementation from the default registry qualifies. Custom
 transport commands, PATH acpx, custom agent commands/argv/registry/version,
 Codex, Hermes and other adapters remain unsupported for requested read-only;

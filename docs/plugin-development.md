@@ -65,7 +65,7 @@ class HelloChannel implements MessageChannelRuntime {
   logout(): void {}
 
   async start(_: ChannelStartInput): Promise<void> {
-    // Receiving messages: call input.agent.handle(chatKey, text)
+    // Receiving messages: call input.agent.chat(request)
     // Sending messages: keep a reference to input.agent, driven by your gateway callbacks
   }
 
@@ -77,7 +77,7 @@ class HelloChannel implements MessageChannelRuntime {
 const plugin: WeacpxPlugin = {
   apiVersion: 1,
   name: "xacpx-channel-hello",
-  minWeacpxVersion: "0.3.3",
+  minWeacpxVersion: "0.5.0",
   channels: [
     {
       type: "hello",
@@ -118,7 +118,7 @@ Recommended directory and file layout:
 
 ```
 my-channel/
-├── package.json           # name, peerDependencies: { xacpx: ">=0.3.x" }
+├── package.json           # name, peerDependencies: { xacpx: ">=0.24.10-beta.18" }
 ├── tsconfig.json          # extends the xacpx top-level tsconfig (first-party package) or a standalone config
 ├── README.md
 ├── src/
@@ -144,7 +144,7 @@ Key `package.json` fields:
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
   },
   "files": ["dist", "README.md"],
-  "peerDependencies": { "xacpx": ">=0.3.3" },
+  "peerDependencies": { "xacpx": ">=0.24.10-beta.18" },
   "peerDependenciesMeta": { "xacpx": { "optional": true } }
 }
 ```
@@ -172,7 +172,7 @@ export interface WeacpxPlugin {
 
 const plugin: WeacpxPlugin = {
   apiVersion: WEACPX_PLUGIN_API_VERSION,        // currently fixed at 1
-  minWeacpxVersion: WEACPX_PLUGIN_MIN_CORE_VERSION, // e.g. "0.3.3"
+  minXacpxVersion: XACPX_PLUGIN_MIN_CORE_VERSION, // e.g. "0.5.0"
   channels: [/* ... */],
 };
 
@@ -183,7 +183,7 @@ export default plugin;
 | --- | --- | --- |
 | `apiVersion` | Yes | Currently must be the literal `1`. A future breaking change in xacpx will bump the API version. The set of versions the current xacpx accepts can be read from `WEACPX_PLUGIN_API_SUPPORTED_VERSIONS`. |
 | `name` | No | Explicitly declares the plugin name. If set, it must equal the npm package name used at install time (including scope), otherwise startup validation rejects it. |
-| `minWeacpxVersion` | Recommended | The **minimum xacpx core version** this plugin works with (e.g. `"0.3.3"`). When the current xacpx is below this version, plugin loading fails with a prompt to `upgrade xacpx`. First-party plugins must declare it; third-party plugins are strongly encouraged to. |
+| `minWeacpxVersion` | Recommended | The **minimum xacpx core version** this plugin works with (e.g. `"0.5.0"`). When the current xacpx is below this version, plugin loading fails with a prompt to `upgrade xacpx`. First-party plugins must declare it; third-party plugins are strongly encouraged to. |
 | `compatibleWeacpxVersions` | No | Explicit xacpx compatibility range; supports `x.y.z` / `>=x.y.z` / `^x.y.z`. If declared together with `minWeacpxVersion`, both must be satisfied. |
 | `channels` | No | List of channel definitions. May be empty (reserved for future non-channel extension points). |
 
@@ -328,7 +328,7 @@ The entry point where the channel starts receiving messages. See [§5](#5-start-
 
 Requirements:
 
-- Push messages to `input.agent.handle(chatKey, text)`.
+- Push messages to `input.agent.chat(request)`.
 - Listen on `input.abortSignal`, and on abort cleanly stop the gateway, close long-lived connections, and clear queues.
 - Before any send operation, reserve quota with `input.quota` (see [§6](#6-outbound-quota-outboundquota)).
 - Record key events for any outbound send via `input.logger`, so the user can troubleshoot with `xacpx doctor --verbose` / `app.log`.
@@ -799,13 +799,13 @@ Top-level structure of `~/.xacpx/config.json`:
 
 Examples:
 
-- WeChat: `weixin:wxid_abc123` (note WeChat is compatible with the old format `wxid_abc123`, equivalent to `weixin:wxid_abc123`)
-- Feishu: `feishu:oc_xxxx`
-- Yuanbao: `yuanbao:<account>:<conv>`
+- WeChat: `weixin:<accountId>:<userId>` (group conversations use `weixin:<accountId>:group:<groupId>`)
+- Feishu: `feishu:<accountId>:<chatId>` (thread conversations append `:thread:<threadId>`)
+- Yuanbao: `yuanbao:<accountId>:<chatType>:<target>`
 
 Your channel **must**:
 
-1. Construct a chatKey of the form `<type>:<...>` for inbound messages and pass it to `agent.handle(chatKey, text)`.
+1. Construct a chatKey of the form `<type>:<...>` for inbound messages and pass it inside `agent.chat(request)`.
 2. For outbound messages, parse the chatKey back into the internal id, taking care to strip the `<type>:` prefix.
 3. In callbacks like `notifyTaskCompletion`, check whether `task.chatKey` starts with `<type>:`, and if not, return immediately.
 
@@ -901,7 +901,7 @@ Every plugin command accepts `--restart` / `--no-restart`, and by default asks i
    5.3 acquire one consumer-lock fence for EVERY lock-capable channel, sequentially in deterministic channel-id order (legacy-daemon compatibility fences); roll back in reverse order on partial conflict
    5.4 publish daemon identity, then reconcile shared state and reap stale owners
    5.5 report daemon ready, then channel.start({ agent, abortSignal, quota, logger }) and scheduler.start()
-6. Receive messages: channel → agent.handle(chatKey, text) → router
+6. Receive messages: channel → agent.chat(request) → router
 7. Send messages: orchestration → channel.notifyTaskCompletion / sendCoordinatorMessage
 8. SIGTERM / SIGINT: abortSignal aborted → dispose/reap while ownership remains held → registry.stopAll: channel.stop?() (fallback: logout()) → release every channel fence in reverse order, then the core lock → daemon exit
 ```
@@ -939,6 +939,8 @@ First-party package path: `packages/channel-<type>/`, published as `@ganglion/xa
 Official plugins:
 - feishu  @ganglion/xacpx-channel-feishu   Feishu channel
 - yuanbao @ganglion/xacpx-channel-yuanbao  Tencent Yuanbao channel
+- discord @ganglion/xacpx-channel-discord  Discord channel
+- relay   @ganglion/xacpx-channel-relay    Relay connector
 
 Install:
   xacpx plugin add <package>
@@ -970,7 +972,7 @@ At a minimum you should have:
 
 1. **Unit layer** (no xacpx dependency): parse / validate config functions, message codec, signing algorithm, chatKey construction and parsing.
 2. **CLI provider unit tests**: feed various argument combinations to `parseAddArgs` and assert the `ChannelCliInput`; feed deliberately field-missing configs to `validateConfig` and assert the issues.
-3. **Channel contract tests**: instantiate `MyChannel(options)`, inject a fake `ChannelStartInput` (write your own `OutboundQuota` / `AppLogger` mock), and assert that one inbound message reaches the fake `agent.handle`.
+3. **Channel contract tests**: instantiate `MyChannel(options)`, inject a fake `ChannelStartInput` (write your own `OutboundQuota` / `AppLogger` mock), and assert that one inbound message reaches the fake `agent.chat`.
 4. **Integration layer** (optional): run `runCli(["channel", "add", "<type>", ...])` in a test and assert that `~/.xacpx/config.json` is written correctly.
 
 Refer to `packages/channel-yuanbao/src/access/__tests__` (if present) and `tests/unit/channels/*`.

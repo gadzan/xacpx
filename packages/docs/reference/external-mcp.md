@@ -50,6 +50,9 @@ No `--workspace` flag is needed. xacpx generates a process-scoped external coord
 | `task_list` | List all tasks owned by the current coordinator. |
 | `task_watch` | Long-poll a task until the next event, until it needs coordinator attention, or until it reaches a terminal state (or times out). Returns `events` and `nextAfterSeq`; pass `nextAfterSeq` as `afterSeq` on the next call to avoid replaying old events. In terminal state the response includes `- Result:`; in attention state it includes `- Open question:` — no separate `task_get` call needed. Default timeout: 60 seconds; maximum: 20 minutes. |
 | `task_cancel` | Cancel a task. Cancelling a `needs_confirmation` task is equivalent to rejecting it. Cancelling a `queued` task takes effect immediately, before any session is allocated. |
+| `task_approve` | Approve a task that `delegate_request` returned as `needs_confirmation`, once the user has authorized it. The task then starts running. |
+| `agent_list` | List authorized peer agent sessions in scope, including their assigned roles, workspaces, and current activities. Inspect this list before sending messages to ensure the target is relevant to your task. |
+| `agent_send` | Send a high-value asynchronous peer message to another agent. One-way: returns after the target runtime accepts delivery; it never waits for the target model to understand, finish, or reply. |
 | `coordinator_answer_question` | Provide an answer to a blocked question raised by a worker. |
 | `coordinator_review_contested_result` | Resolve a contested result raised by a worker. |
 
@@ -58,6 +61,16 @@ No `--workspace` flag is needed. xacpx generates a process-scoped external coord
 | Tool | Description |
 |------|-------------|
 | `worker_raise_question` | Called from inside a delegated task to block execution and ask the coordinator a question. **Never call this from the coordinator side.** |
+
+### Group-execution-only tools
+
+Exposed only inside a Group Topic execution — never to the external coordinator:
+
+| Tool | Description |
+|------|-------------|
+| `group_say` | Post one short bounded public remark (`text`) through the same public message path as a final reply; it wakes nobody and dispatches nothing. At most 3 calls per member turn, at most 1,000 characters each. |
+| `group_send` | Publicly assign a concrete task to another current Group Bot in this Run (`to`, `task`, optional `expectedOutput`). Acceptance is durable and grants no human permission authority. |
+| `group_read_result` | Read-only: list settled assignment metadata (16 rows per page) or read a completed public result (4,000 characters per page), scoped to the live execution's Run. Page with `offset` / `limit` and follow `nextOffset` until null. |
 
 ## Delegation lifecycle
 

@@ -1,13 +1,13 @@
-# @ganglion/weacpx-channel-yuanbao
+# @ganglion/xacpx-channel-yuanbao
 
-First-party Yuanbao message channel plugin for weacpx.
+First-party Yuanbao message channel plugin for xacpx.
 
 ## Install
 
 ```bash
-weacpx plugin add @ganglion/weacpx-channel-yuanbao
-weacpx channel add yuanbao
-weacpx restart
+xacpx plugin add @ganglion/xacpx-channel-yuanbao
+xacpx channel add yuanbao
+xacpx restart
 ```
 
 ## Required options
@@ -15,7 +15,7 @@ weacpx restart
 - `appKey`
 - `appSecret`
 
-Existing weacpx configs with `channels[].type = "yuanbao"` remain valid after this plugin is installed.
+Existing configs written for the pre-rename `weacpx` CLI with `channels[].type = "yuanbao"` remain valid after this plugin is installed.
 
 ## Real-time session switching & background execution
 

@@ -1,5 +1,15 @@
 # xacpx Relay Hub 设计（多实例遥控看板）
 
+> **认证 / CLI / 端口模型已被后续实现取代（2026-11 复核）**：本文的以下主张与当前代码不符，
+> 阅读时请以代码与 `docs/relay-deployment.md` / `docs/relay-module.md` 为准：
+> - 账号表：本文设计 `password_hash(scrypt)` + `role(admin|member)`；实际 `accounts` 只有
+>   `id / username / created_at`，登录走 access token（`packages/relay/src/db.ts`、`src/http/app.ts` 的 token 登录）。
+> - CLI：本文设计 `start|stop|status|init-admin`；实际是 `start / add token / add invite / ls / rm token / rm invite / push-keys generate / update`（`packages/relay/src/cli.ts`），没有 `stop`/`status`/`init-admin`。
+> - 端口：本文设计 HTTP 与实例 WS 分两个端口（默认 8787/8788）；默认已是单端口合并（网关走 HTTP 端口的 upgrade），`--ws-port` 仅用于独立网关端口。
+> - `invites` 表与“配对 token 作废后换发长期凭证”的细节以当前 schema 与 `docs/relay-deployment.md` 为准。
+>
+> 本文保留为最初的产品/架构设计记录（多实例遥控看板的整体形态仍然成立）。
+
 - 日期：2026-06-13
 - 状态：已确认（与用户逐节评审通过）
 - 范围：新增 relay 服务端、Web 看板、xacpx 侧连接器插件与核心 Control API

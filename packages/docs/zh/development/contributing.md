@@ -6,7 +6,7 @@
 
 ### 前置条件
 
-- **Node.js ≥ 22.12** 或 **Bun**（Bun 用于开发脚本和构建；Node 可运行构建产物）
+- **Node.js ≥ 22.13** 或 **Bun**（Bun 用于开发脚本和构建；Node 可运行构建产物）
 - 微信、飞书或元宝账号（取决于你要测试的频道；仅阅读代码无需任何账号）
 - `acpx` 及目标智能体 CLI（codex / claude / gemini 等）可在机器上正常运行
 
@@ -47,11 +47,15 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 
 | 脚本 | 用途 |
 | --- | --- |
-| `bun run build` | 主包：打包 `dist/cli.js`、`dist/bridge/bridge-main.js`、`dist/plugin-api.js`；通过 `tsc -p tsconfig.plugin-api.json` 生成 `dist/plugin-api.d.ts` |
-| `bun run build:plugin-api` | 仅刷新 `dist/plugin-api.d.ts`（修改公共类型时使用） |
+| `bun run build` | 主包：打包 `dist/cli.js`、`dist/bridge/bridge-main.js`、`dist/bridge/engine/runtime/runtime-worker-main.js`、adapter 守卫（`dist/adapters/hermes-acp-shim.js`、`acp-output-guard-main.js`、`acp-read-only-guard-main.js`）、`dist/conversations/default-router-main.js` 与 `dist/plugin-api.js`；通过 `tsc -p tsconfig.plugin-api.json` 生成 `dist/plugin-api.d.ts` |
+| `bun run build:plugin-api` | 先构建 relay-protocol 包（`build:relay-protocol`），再通过 `tsc -p tsconfig.plugin-api.json` 生成 `dist/plugin-api.d.ts`（修改公共类型时使用） |
 | `bun run build:channel-feishu` | 主包 + 飞书插件 |
 | `bun run build:channel-yuanbao` | 主包 + 元宝插件 |
-| `bun run build:packages` | 主包 + 所有 `packages/*` |
+| `bun run build:channel-discord` | 主包 + Discord 插件 |
+| `bun run build:relay-protocol` | 线协议包（同时是 `build:plugin-api` 的依赖） |
+| `bun run build:relay` | relay hub；先跑 `build:relay-web`、最后跑 `bundle:relay-web`，看板随 hub 包一起出厂 |
+| `bun run build:channel-relay` | 主包 + relay 连接器插件 |
+| `bun run build:packages` | 主包 + 以上全部包 |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs`（每次发布前运行） |
 | `bun run dev` | 直接运行主包源码（无需构建） |
 | `bun run dry-run -- ...` | Dry-run 入口（无 IM 连接） |
@@ -61,6 +65,8 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 - `bun build --target node --external node-pty` — `node-pty` 不打包进产物，运行时从 `node_modules` 解析。`packages/*` 同样将 `xacpx` 标记为 external。
 - 唯一稳定的公共 API 导出是 `xacpx/plugin-api`。其他路径（`xacpx/dist/*`、`xacpx/src/*`）属于内部路径，随时可能变更。
 - 插件包使用 `tsc -p packages/<name>/tsconfig.json` 单独生成 `.d.ts` 文件，因为 `bun build` 目前不支持生成声明文件。
+- `packages/relay-web` 为 `private: true`，不单独发布：`bun run build:relay` 会把它 的 `dist/` 拷进 `packages/relay/dist/relay-web`，tarball 里缺少 `dist/relay-web/index.html` 时 `verify:publish` 直接失败。
+- `platform-packages/*`（`@ganglion/xacpx-rmux-bridge-*` 平台二进制）不在 root workspaces 内，由 `scripts/pack-rmux-bridge-platform.mjs` 打包，不走 `build:packages`。
 
 ### 三种本地运行模式
 
@@ -93,7 +99,7 @@ bun run dry-run --chat-key wx:test -- \
 | `tests/smoke/` | `npm run test:smoke` | 真实 `acpx` / 真实 IM 协议；手动运行，不在 CI 中运行 |
 | `tests/helpers/`、`tests/fixtures/` | — | 共享工具和静态数据 |
 
-测试运行器为 `scripts/run-tests.mjs` → `scripts/run-tests-lib.mjs::buildTestPlan`。它先运行 `tsc --noEmit`，然后为每个 `*.test.ts` 文件单独启动一个 `bun test` 进程。如需修改运行器行为，只修改这两个脚本。
+测试运行器为 `scripts/run-tests.mjs` → `scripts/run-tests-lib.mjs::buildTestPlan`。在执行测试计划之前，它先运行三个构建步骤（`build:relay-protocol`、`dist/plugin-api` 打包、runtime-worker + 桥接打包）；测试计划本身以 `tsc --noEmit` 开头，随后为每个 `*.test.ts` 文件单独启动一个 `bun test` 进程；当测试根目录为 `tests/unit` 时，最后追加运行一次 `test:web`。如需修改运行器行为，只修改这两个脚本。
 
 测试约定：
 - 任何写入磁盘的测试必须使用 `mkdtemp` 进行隔离，并通过 `rm -rf` 清理。
@@ -107,18 +113,31 @@ bun run dry-run --chat-key wx:test -- \
 ```
 xacpx/
 ├── src/                # 主包源码
-├── packages/           # 第一方频道插件
+├── packages/           # Bun workspaces：第一方插件 + relay 栈 + 文档站
 │   ├── channel-feishu/
-│   └── channel-yuanbao/
+│   ├── channel-yuanbao/
+│   ├── channel-discord/
+│   ├── channel-relay/  # relay hub 连接器插件
+│   ├── relay/          # relay hub（bin: xacpx-relay；内嵌 relay-web）
+│   ├── relay-protocol/ # 线协议 + DTO（零依赖）
+│   ├── relay-web/      # 看板 SPA（private；打包进 relay）
+│   └── docs/           # VitePress 文档站（即本站）
+├── platform-packages/  # @ganglion/xacpx-rmux-bridge-*（不在 root workspaces 内）
+├── weacpx-compat/      # 已废弃的兼容 shim 包（转发 weacpx/plugin-api）
 ├── tests/
 │   ├── unit/           # 默认单元测试
 │   ├── smoke/          # 真实 acpx / 真实账号测试
+│   ├── compat/         # acpx 兼容性 smoke（真实二进制）
+│   ├── integration/    # 跨模块测试
 │   ├── helpers/        # 共享 fixture 和 mock
 │   └── fixtures/       # 静态测试数据
 ├── docs/               # 用户文档、设计文档、计划文档
-│   └── superpowers/    # plans/ 和 specs/
-├── packages/docs/      # VitePress 文档站
-├── scripts/            # 测试运行器、发布预检
+│   ├── agents/         # issue 追踪 / 分诊标签 / 领域 / skills
+│   ├── design/         # 进行中的设计文档
+│   ├── research/       # 基准测试与研究笔记
+│   ├── superpowers/    # plans/ 和 specs/
+│   └── zh/             # docs/*.md 的中文翻译
+├── scripts/            # 测试运行器、发布自动化、发布预检
 ├── package.json        # npm workspaces 根
 ├── bun.lock
 ├── tsconfig.json
@@ -178,13 +197,12 @@ xacpx 使用 **Bun** 作为主要开发包管理器。锁文件为 `bun.lock`。
 
 ### 插件主目录解析
 
-1. `WEACPX_PLUGIN_HOME` 环境变量。
+1. `XACPX_PLUGIN_HOME` 环境变量（旧名 `WEACPX_PLUGIN_HOME` 仍作为回退生效）。
 2. 默认值：`~/.xacpx/plugins/`（独立的 `package.json` + `node_modules`；与全局或项目 `node_modules` 隔离）。
 
 ### 微信 SDK 解析
 
-1. `WEACPX_WEIXIN_SDK` 环境变量。
-2. 已安装的包 `weixin-agent-sdk`。
+`src/weixin-sdk.ts:loadWeixinSdk` 动态导入仓库内的实现（位于 `src/weixin/`，经 `src/weixin/index.ts` 再导出）。不存在环境变量覆盖，也没有 `weixin-agent-sdk` 包解析：微信运行时随本仓库一起提供。
 
 ## 发布说明
 
@@ -194,7 +212,7 @@ bun run verify:publish      # build:packages + scripts/verify-publish.mjs
 
 发布时：
 - 在 `package.json` 中更新 `version`；若第一方插件有变更，同步更新 `packages/*/package.json`。
-- 在 `docs/releases/` 中添加发布说明。
+- 发布说明写入根目录的 `CHANGELOG.md`——`node ./scripts/release.mjs notes` 从提交主题生成草稿，`apply` 负责写入。
 - 创建 git tag。
 
 发布命令：

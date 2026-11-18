@@ -200,7 +200,7 @@
 
 ### 5.1 持久配置
 
-继续使用 Bot profile 的 `avatar` 字段，但将运行时和新写入数据统一为结构化配置。以下类型是拟议契约，不是当前导出类型。
+继续使用 Bot profile 的 `avatar` 字段，但将运行时和新写入数据统一为结构化配置。以下类型已随本设计落地为导出契约（`packages/relay-protocol/src/bot-avatar.ts` 导出 `BotAvatarConfig`，由 `src/bots/bot-service.ts` 消费）。
 
 ```typescript
 type BotAvatarConfig =
@@ -376,9 +376,9 @@ Group 同一 Bot 可以有多个 MemberTurn 记录。实时任务行按各自 Me
 | Relay 请求 | [messages.ts](../../../packages/relay-protocol/src/messages.ts)、[payload-validators.ts](../../../packages/relay-protocol/src/payload-validators.ts) | create、update 与边界校验 |
 | Web 编辑 | [BotDialog.vue](../../../packages/relay-web/src/components/BotDialog.vue) | 标签页、头像草稿、dirty、保存和取消 |
 | Web 缓存 | [direct-bots.ts](../../../packages/relay-web/src/stores/direct-bots.ts) | 请求类型、配置值比较、资料同步 |
-| 侧栏与 Direct | [InstanceTree.vue](../../../packages/relay-web/src/components/InstanceTree.vue)、[DirectBotPane.vue](../../../packages/relay-web/src/components/DirectBotPane.vue)、[ConversationMessageList.vue](../../../packages/relay-web/src/components/ConversationMessageList.vue) | Bot 行、顶栏、空态、历史与实时消息 |
+| 侧栏与 Direct | [InstanceTree.vue](../../../packages/relay-web/src/components/InstanceTree.vue)、[DirectBotPane.vue](../../../packages/relay-web/src/components/DirectBotPane.vue)、[ConversationTimeline.vue](../../../packages/relay-web/src/components/ConversationTimeline.vue) | Bot 行、顶栏、空态、历史与实时消息 |
 | 共享消息行 | [TranscriptRow.vue](../../../packages/relay-web/src/components/TranscriptRow.vue) | 头像 slot，保留普通 Session 默认实现 |
-| Group | [GroupTranscript.vue](../../../packages/relay-web/src/components/GroupTranscript.vue)、[GroupComposer.vue](../../../packages/relay-web/src/components/GroupComposer.vue)、[GroupHandoffEntry.vue](../../../packages/relay-web/src/components/GroupHandoffEntry.vue) | 消息、成员任务、选择器和交接双头像 |
+| Group | [GroupPane.vue](../../../packages/relay-web/src/components/GroupPane.vue)、[GroupComposer.vue](../../../packages/relay-web/src/components/GroupComposer.vue)、[ConversationTimeline.vue](../../../packages/relay-web/src/components/ConversationTimeline.vue) | 消息、成员任务、选择器和交接双头像 |
 | Group 状态 | [groups.ts](../../../packages/relay-web/src/stores/groups.ts) | 复用精确作用域的 live turn 和 MemberTurn 数据 |
 
 新增类型采用仓库现有 domain 与 protocol 映射边界，不为共用类型让 daemon 依赖 Web 模块。固定目录 ID 在领域校验和 Web 渲染之间保持一致，不建立两套互不校验的目录。

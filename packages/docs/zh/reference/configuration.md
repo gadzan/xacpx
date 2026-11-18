@@ -12,14 +12,15 @@
 | 运行时日志 | `~/.xacpx/runtime/app.log` | 应用日志 |
 | 性能日志 | `~/.xacpx/runtime/perf.log` | 性能调试日志（启用后生效） |
 
-环境变量覆盖：
+环境变量覆盖——规范前缀为 `XACPX_`：所有读取方优先取 `XACPX_<后缀>`，并回退到旧前缀 `WEACPX_<后缀>`：
 
 | 变量 | 说明 |
 |------|------|
-| `WEACPX_CONFIG` | 覆盖配置文件路径（默认：`~/.xacpx/config.json`） |
-| `WEACPX_STATE` | 覆盖状态文件路径（默认：`~/.xacpx/state.json`） |
-| `WEACPX_WEIXIN_SDK` | 强制指定 `weixin-agent-sdk` 入口文件路径 |
-| `WEACPX_ILINK_APP_ID` | 微信频道出站请求中发送的 `iLink-App-Id` 请求头；省略则不发送该头（向后兼容） |
+| `XACPX_CONFIG`（旧 `WEACPX_CONFIG`） | 覆盖配置文件路径（默认：`~/.xacpx/config.json`） |
+| `XACPX_STATE`（旧 `WEACPX_STATE`） | 覆盖状态文件路径（默认：`~/.xacpx/state.json`） |
+| `XACPX_ILINK_APP_ID`（旧 `WEACPX_ILINK_APP_ID`） | 微信频道出站请求中发送的 `iLink-App-Id` 请求头；省略则不发送该头（向后兼容） |
+
+不存在 `WEACPX_WEIXIN_SDK` 覆盖项——`weixin-agent-sdk` 入口由依赖解析，而非环境变量。
 
 ## 顶层结构
 
@@ -68,6 +69,12 @@
 | `nonInteractivePermissions` | `"deny"` \| `"fail"` | 否 | 非交互式场景的权限策略（默认：`"deny"`） |
 | `permissionPolicy` | `string` | 否 | `acpx` 权限策略文件路径；以 `acpx --permission-policy <value>` 形式传入 |
 | `queueOwnerTtlSeconds` | `number` | 否 | `acpx` 队列所有者进程的空闲存活时间（秒）；以 `--ttl` 形式传入（默认：`1800`；`0` = 永久保活） |
+| `turnIdleTimeoutSeconds` | `number` | 否 | 针对进行中代理回合的不活跃看门狗。若某回合在指定秒数内未产生任何流式代理活动（output/tool/thought/usage/plan/command 事件），该回合将被中止并报告为 `Turn timed out due to inactivity`，同时释放其占用的槽位。计时器会在每个流式事件到来时重置，因此耗时较长但持续有活动的回合不受影响——**但若单个工具调用在整个窗口内保持静默（例如 `sleep`、无交错输出的长时间编译/克隆）仍会触发**；对于存在长时间静默操作的工作负载，请调大该值或设为 `0`。默认 `600`（10 分钟）；`0` 禁用看门狗。每次回收都会记录 `control.turn.idle_timeout`（含会话及具体阈值）以便诊断 |
+| `preferLocalAgents` | `boolean` | 否 | 当 PATH 上存在本地安装的原生代理 CLI 时，优先使用它而非 acpx 的 `npx -y <pkg>` 回退（目前为 `opencode`、`kilocode`，以及本地回退驱动 `reasonix` 和 `omp`——它们不在 acpx 注册表中，但通过 `<bin> acp` 讲 ACP）。可避免每次冷启动时的 npm registry 拉取——更快，且不受网络波动影响（例如代理初始化时的 `ECONNRESET`）。默认 `true`；设为 `false` 则始终使用 acpx 的默认解析。代理级的 `command` 覆盖仍然优先 |
+| `adapterVersions` | `{ "codex"?: string, "claude"?: string }` | 否 | xacpx 管理的 ACP 适配器的本地精确版本覆盖。取值必须是精确的 semver 版本，不能是范围或标签。省略的条目使用 xacpx 经过测试的默认值（本版本为 `codex` `2.2.2`、`claude` `0.107.2`）。建议使用下方的 `xacpx adapter` CLI，而非手工编辑该对象 |
+| `adapterRegistry` | `string` | 否 | 仅用于 xacpx 管理的 Codex/Claude 适配器的 npm registry。默认 `https://registry.npmjs.org/`，且**不会**继承机器/公司的 npm 默认设置。可通过 `xacpx adapter registry set <url>` 修改；仅接受无凭据的 HTTP(S) URL |
+| `acpxMaxIncomingMessageBytes` | `number` \| `null` | 否 | 高级：覆盖 acpx 0.15.1+ 对 agent → acpx 入站 ACP 消息的默认 64 MiB 上限。适用于 CLI 队列所有者通道和 Runtime 工作线程通道（宿主进程环境，绝非代理环境）。`null`/缺省遵循上游；`0` 禁用该限制（不推荐）。修改后需要回收预热的队列所有者 / Runtime 工作线程 |
+| `acpxTerminalMaxOutputBytes` | `number` \| `null` | 否 | 高级：对保留的终端 stdout+stderr 字节数的宿主级上限。`null`/缺省遵循上游行为。通道覆盖范围与回收要求同上 |
 
 ### 传输类型
 
@@ -77,12 +84,13 @@
 
 ### `acpx` 二进制文件解析顺序
 
-未设置 `transport.command` 时，xacpx 按以下顺序查找 `acpx`：
+解析顺序（优先级从高到低）：
 
-1. `node_modules/.bin/acpx`（项目内置）
-2. shell `PATH` 中的 `acpx`
+1. `transport.command`——显式覆盖，直接获胜。
+2. **内置 `acpx` 依赖**——xacpx 自身 `node_modules/acpx`，精确锁版（当前 `0.22.0`，无 caret）。
+3. shell `PATH` 中的 `acpx`——没有内置依赖时的回退。
 
-显式设置 `transport.command` 将完全覆盖此查找逻辑。
+显式设置 `transport.command` 会完全跳过第 2、3 级。
 
 ### 减少冷启动（`queueOwnerTtlSeconds`）
 
@@ -102,15 +110,15 @@
 此注入不会修改 `.acpxrc.json`、`~/.acpx/config.json` 或替换 `acpx` 主目录，因此已有的会话、流式日志和索引映射均不受影响。
 
 注入命令解析顺序：
-1. 环境变量 `WEACPX_CLI_COMMAND`
-2. `WEACPX_DAEMON_ARG0` + 当前 Node 可执行文件
+1. 环境变量 `XACPX_CLI_COMMAND`（仍兼容旧名 `WEACPX_CLI_COMMAND`）
+2. `XACPX_DAEMON_ARG0` + 当前 Node 可执行文件（回退旧名 `WEACPX_DAEMON_ARG0`）
 3. `process.argv[1]` + 当前 Node 可执行文件
 4. `xacpx`
 
-若 xacpx 不是通过标准 CLI 或守护进程方式启动，请显式设置 `WEACPX_CLI_COMMAND`：
+若 xacpx 不是通过标准 CLI 或守护进程方式启动，请显式设置 `XACPX_CLI_COMMAND`：
 
 ```bash
-WEACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
+XACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
 ```
 
 ## 代理
@@ -128,26 +136,34 @@ WEACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
 |------|--------|
 | `codex` | `"codex"` |
 | `claude` | `"claude"` |
+| `ante` | `"ante"` |
 | `pi` | `"pi"` |
 | `openclaw` | `"openclaw"` |
 | `gemini` | `"gemini"` |
 | `cursor` | `"cursor"` |
 | `copilot` | `"copilot"` |
 | `droid` | `"droid"` |
+| `deepseek-harness` | `"deepseek-harness"` |
 | `factory-droid` | `"factory-droid"` |
 | `factorydroid` | `"factorydroid"` |
+| `goose` | `"goose"` |
 | `grok-build` | `"grok-build"` |
+| `hermes` | `"hermes"` |
 | `iflow` | `"iflow"` |
 | `kilocode` | `"kilocode"` |
 | `kimi` | `"kimi"` |
 | `kiro` | `"kiro"` |
+| `mcode` | `"mcode"` |
 | `mux` | `"mux"` |
+| `octomind` | `"octomind"` |
 | `omp` | `"omp"` |
 | `opencode` | `"opencode"` |
+| `pool` | `"pool"` |
 | `qoder` | `"qoder"` |
 | `qwen` | `"qwen"` |
 | `reasonix` | `"reasonix"` |
 | `trae` | `"trae"` |
+| `zeroclaw` | `"zeroclaw"` |
 
 通过聊天使用 `/agent add <name>` 添加模板，或在终端使用 `xacpx agent add <name>` 添加。添加配置完全相同的代理是幂等的；若名称冲突但配置不同，会提示先删除现有代理。
 

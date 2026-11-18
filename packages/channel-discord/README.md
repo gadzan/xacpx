@@ -215,7 +215,7 @@ When `options.applicationId` is set, the plugin registers Discord Application Co
 
 - `/help`, `/ss` (with `agent`, `workspace`, `new` options), `/use`, `/cancel`, `/status`, `/sessions`
 
-They map to the same text-command router (`@bot /ss …` still works), but native `/` shows hints. Registration is best-effort at `account.start()`; failures log `discord.commands.register_failed` and do not block the Gateway session. Toggle with `options.enableAutocomplete` (defaults to `true` when `applicationId` is present, `false` otherwise). Use `--autocomplete true|false` with `xacpx channel add`.
+They map to the same text-command router (`@bot /ss …` still works), but native `/` shows hints. Registration is best-effort at `account.start()`; failures log `discord.commands.register_failed` and do not block the Gateway session. Toggle with `options.enableAutocomplete` (defaults to `true`). Registration additionally requires an application identity: `options.applicationId`, or the bot's own user id once the Gateway session is ready. Use `--autocomplete true|false` with `xacpx channel add`.
 
 Interaction handling: Discord sends chat-input interactions for native picks; the plugin replies ephemerally with `⏳ Processing …` and then handles the reconstructed `/<name> …` text through the normal message pipeline, delivering the final answer as a channel message (with thread fallback and chunking). No additional permissions beyond the message flow are required.
 

@@ -12,7 +12,7 @@
 - The scheduled time must be at least 10 seconds in the future and no more than 7 days away.
 - Only regular prompt messages can be scheduled. Messages starting with `/` are rejected — use a plain sentence instead (e.g. "explain what the /status command does" instead of `/lt in 1h /status`).
 - The current chat channel must support scheduled message delivery. If it does not, task creation is rejected immediately — no partially created task is left behind.
-- Supported channels: WeChat (built-in), Feishu (plugin), Yuanbao (plugin). Third-party channel plugins must implement `sendScheduledMessage` to enable this feature.
+- Supported channels: WeChat (built-in), Feishu (plugin), Yuanbao (plugin), Discord (plugin). Third-party channel plugins must implement `sendScheduledMessage` to enable this feature.
 
 For the full command reference, see [Command Reference](/reference/commands).
 

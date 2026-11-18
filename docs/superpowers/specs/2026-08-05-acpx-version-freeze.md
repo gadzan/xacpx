@@ -1,5 +1,9 @@
 # acpx 与 adapter 升级目标版本冻结
 
+> **版本已过期（2026-11 复核）**：本文是 2026-08-05 的时点快照，表中的 `acpx 0.13.0` 等值**不再适用**——
+> 当前 pin 见 `package.json`（acpx 已到 0.22.0）。另：文中链接的对应计划
+> `docs/superpowers/plans/2026-08-05-acpx-latest-upgrade.md` 已不存在。本文保留为历史记录。
+
 > 冻结日期：2026-08-05。查询源：`https://registry.npmjs.org/`。
 > 对应计划：`docs/superpowers/plans/2026-08-05-acpx-latest-upgrade.md` Phase 0 / Task 0。
 

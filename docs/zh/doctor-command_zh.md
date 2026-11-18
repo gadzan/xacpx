@@ -33,14 +33,15 @@ xacpx doctor --fix                 # 执行安全的本地修复，然后重新�
 | 2    | `runtime`               | Runtime           | daemon 运行时目录及其 pid/status/log 文件可用（可写或可创建）。POSIX 上还会检查运行时目录是否为私有权限（mode `0700`）。 |
 | 3    | `logs`                  | Logs              | 汇总 daemon 日志文件（`app.log`/`stdout.log`/`stderr.log` 及轮转分片）的体积，增长过大时 `warn`（单文件超 50 MB，或总量超 200 MB）；运行时目录还没有日志时 `skip`。个别文件不可读会被容忍（跳过），不会 `fail`。 |
 | 4    | `daemon`                | Daemon            | 通过 daemon controller 检查存活状态（running / stopped / indeterminate）。stopped 时还会扫描残留的 consumer-lock 文件。 |
-| 5    | `orphans`               | Windows orphans   | Windows 下只读检查 orphan intent/owner/residual；不确定证据会保留并报告。其他平台为 `skip`。 |
+| 5    | `orphans`               | Windows orphans   | Windows 下只读检查持久的 orphan intent/owner/residual 证据；不确定的判定会保留并报告，而不是删除。其他平台为 `skip`。 |
 | 6    | `wechat`                | WeChat            | 微信（Weixin）频道处于登录状态。 |
 | 7    | `acpx`                  | acpx              | 解析到的 `acpx` 可执行文件能报告可用版本。 |
 | 8    | `bridge`                | Bridge            | acpx bridge 子进程能启动并响应。 |
-| 9    | `plugins`               | Plugins           | 已配置的插件均已安装、可加载且已启用。 |
+| 9    | `plugins`               | Plugins           | 已配置的插件均已安装、可加载且已启用。可选的各频道 `diagnose` 钩子（例如 relay RMUX 终端注册表/租约健康度）会以结构化 findings 的形式呈现——核心不解释后端特定的编码。 |
 | 10   | `orchestration`         | Orchestration     | `state.json` 中的 orchestration 状态健康（只读 inspect，绝不会作为副作用执行隔离）。心跳新鲜度按 `orchestration.progressHeartbeatSeconds` 校验。 |
 | 11   | `orchestration-socket`  | Orchestration IPC | daemon 停止时 `skip`；只有 daemon 存活（running 或 indeterminate）时才探测 orchestration IPC 端点是否真正接受连接（只有确定性的无监听才 `fail`，可达或结果不确定时为 `pass`/`skip`）。 |
-| 12   | `smoke`                 | Smoke             | 对真实会话做端到端探测。**可选项：**不传 `--smoke` 时跳过。 |
+| 12   | `conversation-router`   | Conversation router | 读取 `conversations.router`，启用时运行能力探测。`disabled-by-config` 和 `ready` 为 `pass`。`unsupported` 为 `warn`。`failed` 为 `fail`。配置文件缺失时跳过该检查。 |
+| 13   | `smoke`                 | Smoke             | 对真实会话做端到端探测。**可选项：**不传 `--smoke` 时跳过。 |
 
 ## 严重级别
 
@@ -55,6 +56,9 @@ xacpx doctor --fix                 # 执行安全的本地修复，然后重新�
 
 末尾的汇总行统计各级别数量，例如
 `Summary: PASS 5, WARN 3, FAIL 1, SKIP 2`。
+
+Windows orphan 警告不会触发自动的大范围进程终止。请先审阅证据；
+`xacpx orphans kill --confirm` 是显式的手动清理路径。
 
 ## Flags
 

@@ -101,7 +101,7 @@
 - 普通消息会继续发送到同一个 Agent 原生 session。
 - `/use <alias>`、`/sessions`、`/status` 等仍按 xacpx 逻辑会话工作。
 - `/session rm <alias>` 只删除 xacpx 里的逻辑映射，不等于删除 Agent 原生会话。
-- 同一个原生 session 再次被 `/ssn` 选中时，xacpx 会优先切回已经接入的逻辑会话，避免重复创建。
+- 同一个原生 session 再次被 `/ssn` 选中时，xacpx 会优先切回已经接入的**普通**逻辑会话，避免重复创建。已经绑定到产品自有（Bot/群组）隐藏运行时的 native ID 不会出现在公开 native 会话目录里，也不能作为普通会话接入；提交这类 ID 会以 `hidden_session` 失败，而不是重新挂载同一份模型上下文。归属判定以 cwd 加上物理 agent 选择器（未包装的 argv、原始命令或裸位置参数 agent）为键，因此受守卫的 Bot 运行时、未受守卫的 native 选择器，以及两个共享 argv 或原始命令的配置 agent，仍占用同一份目录。缺少 argv 的受管 overlay 身份在已知 cwd 下属于未经验证的选择器：在该 cwd 下接入会 fail-close（直接拒绝），而不是去猜一个不同的选择器；在已证实的其它 cwd 下接入则不会被拦。
 
 ## 命令速查
 
