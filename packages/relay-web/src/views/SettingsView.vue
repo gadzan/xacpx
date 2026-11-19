@@ -152,6 +152,9 @@ async function onNotifSwitch(): Promise<void> {
   if (notifState.value === "denied") {
     await probeNotifications();
     if (notifState.value === "denied" || notifState.value === "unsupported") return;
+    // The permission now grants what the switch was missing, so this tap already
+    // means "on"; falling through would run the off branch and undo the preference.
+    if (notifSwitchOn.value) return;
   }
   await toggleNotifications();
 }

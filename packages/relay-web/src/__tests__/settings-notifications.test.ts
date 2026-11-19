@@ -195,6 +195,27 @@ describe("settings notifications section", () => {
     vi.unstubAllGlobals();
   });
 
+  it("a stale denied row whose permission is now granted turns on, never off", async () => {
+    // No permission-change listener fired (older browser, restored page): the row
+    // still says denied while the browser already grants.
+    vi.stubGlobal("navigator", { ...navigator });
+    const deniedStub = Object.assign(function () {}, { permission: "denied" });
+    globalThis.Notification = deniedStub as unknown as typeof Notification;
+    lib.isDesktopNotificationsEnabled.mockReturnValue(true);
+    const w = mountSettings();
+    await flush();
+    expect(w.find('[data-test="notif-state"]').text()).toBe("Notification permission denied");
+
+    globalThis.Notification = notificationStub as unknown as typeof Notification;
+    await w.find('[data-test="notif-toggle"]').trigger("click");
+    await flush();
+    // The tap re-probed into "on"; it must not run the off branch and disable it.
+    expect(lib.disableDesktopNotifications).not.toHaveBeenCalled();
+    expect(w.find('[data-test="notif-state"]').text()).toBe("On");
+    expect(notifSwitch(w).checked).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
   it("marks the switch busy while the permission request is in flight", async () => {
     const pending = Promise.withResolvers<void>();
     lib.enableDesktopNotifications.mockImplementationOnce(() => pending.promise);
