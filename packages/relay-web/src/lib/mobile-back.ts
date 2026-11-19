@@ -55,6 +55,30 @@ const BACK_SETTLE_MS = 1500;
 /** Every open modal in mount order. Shared with useModalA11y: the Escape stack and
  *  the modal half of this stack are the same stack, both "top-most layer acts". */
 export const modalLayers = shallowRef<BackLayer[]>([]);
+/** Ref-counted body scroll lock, owned by the same layer stack that owns Escape
+ *  and ←. Every modal overlay (DialogShell, MobileSheet via useModalA11y, the
+ *  CommandPalette) takes one unit while mounted; the page behind only scrolls
+ *  again once the last layer releases. Nested layers therefore never unlock
+ *  early, and a sheet scrolling internally (overscroll-contain) is unaffected. */
+let scrollLockCount = 0;
+let prevBodyOverflow = "";
+
+/** Take one unit of the body scroll lock. Pair with one `unlockBodyScroll`. */
+export function lockBodyScroll(): void {
+  if (typeof document === "undefined") return;
+  if (scrollLockCount === 0) {
+    prevBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+  }
+  scrollLockCount++;
+}
+
+/** Release one unit; restores the previous overflow at zero. */
+export function unlockBodyScroll(): void {
+  if (typeof document === "undefined" || scrollLockCount <= 0) return;
+  scrollLockCount--;
+  if (scrollLockCount === 0) document.body.style.overflow = prevBodyOverflow;
+}
 
 /** True while a programmatic back waits for its popstate. ← is disabled so a double
  *  tap cannot skip two layers and leave the site. */

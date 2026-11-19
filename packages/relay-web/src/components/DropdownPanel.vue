@@ -63,6 +63,35 @@ const showSearch = computed(() => props.searchable || totalRows.value > 7);
 
 watch(() => query.value, (q) => emit("update:query", q));
 
+/** Middle-ellipsis: keep the head and the tail, cutting the middle. The budget is
+ *  ~40 mono chars at 12px — what a 390px row fits beside the icon and the trailing
+ *  check. Short values pass through untouched. */
+function ellipsizeMiddle(s: string, head = 20, tail = 18): string {
+  if (s.length <= head + tail + 1) return s;
+  return `${s.slice(0, head)}…${s.slice(-tail)}`;
+}
+/** Display form of each `sub`, keyed by the full value. Inside a group, the shared
+ *  directory prefix is dropped so rows that differ only mid-path stay
+ *  distinguishable after the ellipsis; the full value is still the row's title. */
+const subLabels = computed(() => {
+  const labels = new Map<string, string>();
+  for (const group of filtered.value) {
+    const subs = group.rows.flatMap((r) => (r.sub ? [r.sub] : []));
+    if (subs.length < 2) continue;
+    let shared = subs[0]!;
+    for (const s of subs) {
+      let i = 0;
+      while (i < shared.length && i < s.length && shared[i] === s[i]) i++;
+      shared = shared.slice(0, i);
+    }
+    // Only to a directory boundary: half a segment reads as noise.
+    const cut = shared.lastIndexOf("/") + 1;
+    if (cut === 0) continue;
+    for (const s of subs) labels.set(s, s.slice(cut));
+  }
+  return labels;
+});
+
 function navIndexOf(row: DropdownRow): number {
   return navRows.value.indexOf(row);
 }
@@ -154,25 +183,34 @@ const listRole = computed(() => props.role ?? "listbox");
 <template>
   <!-- <lg: the same rows inside a bottom sheet (title = the dropdown's scene name). -->
   <MobileSheet v-if="isMobile && dd.open" :title="title ?? ''" :z-class="sheetZ" :test-id="sheetTestId ?? testId" dd-panel @close="dd.closeMenu()">
-    <div v-if="showSearch" class="sticky top-0 z-10 -mx-2 bg-glass-strong px-3 pb-1 pt-1">
+    <!-- Search sits in the sheet's fixed band: the header and the field stay put
+         while only the rows scroll. -->
+    <template v-if="showSearch" #fixed>
       <div class="flex h-11 items-center gap-2 rounded-lg bg-surface-2 px-3">
         <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
         <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
                :placeholder="searchPlaceholder ?? t('common.filter')"
                class="min-w-0 flex-1 bg-transparent text-base text-fg outline-none placeholder:text-fg-muted-overlay" />
       </div>
-    </div>
+    </template>
     <template v-for="(g, gi) in filtered" :key="gi">
       <p v-if="g.label" class="px-3 pb-1 pt-2 text-xs text-fg-muted-overlay">{{ g.label }}</p>
       <button v-for="row in g.rows" :key="row.value" type="button" :role="listRole === 'menu' ? 'menuitem' : 'option'"
               :data-value="row.value"
               :data-test="row.testId"
               :disabled="row.disabled" :aria-selected="row.selected"
-              class="flex h-11 w-full items-center gap-3 rounded-item px-3 text-ui"
+              :title="row.sub ?? undefined"
+              class="flex min-h-11 w-full items-center gap-3 rounded-item px-3 text-ui"
               :class="rowClass(row, true)"
               @click="activate(row)">
         <component :is="row.icon" v-if="row.icon" :size="16" class="shrink-0 text-fg-muted-overlay" />
-        <span class="min-w-0 truncate" :class="row.mono ? 'font-mono text-ui' : ''">{{ row.label }}</span>
+        <span class="min-w-0 flex-1" :class="row.sub ? 'py-1.5' : 'truncate'">
+          <span class="block truncate" :class="row.mono ? 'font-mono text-ui' : ''">{{ row.label }}</span>
+          <!-- Second line: the group's shared directory prefix is dropped, then the
+               rest is middle-ellipsized, so rows that differ mid-path stay apart.
+               `title` carries the full value for a hover read. -->
+          <span v-if="row.sub" class="block truncate font-mono text-xs text-fg-muted-overlay">{{ ellipsizeMiddle(subLabels.get(row.sub) ?? row.sub) }}</span>
+        </span>
         <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted-overlay">{{ row.hint }}</span>
         <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent-text" />
       </button>
@@ -206,11 +244,15 @@ const listRole = computed(() => props.role ?? "listbox");
                 :data-value="row.value"
                 :data-test="row.testId"
                 :disabled="row.disabled" :aria-selected="row.selected"
-                class="flex h-[30px] w-full items-center gap-2 rounded-item px-2 text-ui"
-                :class="rowClass(row, false)"
+                class="flex w-full items-center gap-2 rounded-item px-2 text-ui"
+                :class="[rowClass(row, false), row.sub ? 'min-h-[30px] py-1' : 'h-[30px]']"
+                :title="row.sub ?? undefined"
                 @click="activate(row)" @mouseenter="!row.disabled && (dd.highlight = navIndexOf(row))">
           <component :is="row.icon" v-if="row.icon" :size="14" class="shrink-0 text-fg-muted-overlay" />
-          <span class="min-w-0 truncate" :class="row.mono ? 'font-mono' : ''">{{ row.label }}</span>
+          <span class="min-w-0 flex-1" :class="row.sub ? '' : 'truncate'">
+            <span class="block truncate" :class="row.mono ? 'font-mono' : ''">{{ row.label }}</span>
+            <span v-if="row.sub" class="block truncate font-mono text-xs text-fg-muted-overlay">{{ ellipsizeMiddle(subLabels.get(row.sub) ?? row.sub) }}</span>
+          </span>
           <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted-overlay">{{ row.hint }}</span>
           <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent-text" />
         </button>

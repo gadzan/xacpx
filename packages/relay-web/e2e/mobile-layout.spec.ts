@@ -138,6 +138,25 @@ test.describe("mobile layout", () => {
     await expect(page.getByTestId("fab-instance-sheet")).toHaveCount(0);
   });
 
+  test("a sheet backdrop swallows the rest of its own tap", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
+    await loginAndShowInstances(page);
+    await page.getByTestId("session-row").first().getByTestId("session-name").click();
+    await expect(page.getByTestId("mobile-session-bar")).toBeVisible();
+
+    // The bar's ← sits under the sheet's backdrop. A press that tore the backdrop
+    // down on pointerdown would deliver the release to ← and leave the session.
+    const backBox = (await page.getByTestId("mobile-back").boundingBox())!;
+    await page.getByTestId("mobile-more").click();
+    await expect(page.getByTestId("mobile-more-sheet")).toBeVisible();
+    await page.mouse.move(backBox.x + backBox.width / 2, backBox.y + backBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+
+    await expect(page.getByTestId("mobile-more-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("mobile-session-bar")).toBeVisible();
+  });
+
   test("settings segments and the back link are 44px targets", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
     await page.goto("/settings");

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import ModelPicker from "../components/ModelPicker.vue";
@@ -26,16 +26,27 @@ function mountPicker() {
 }
 
 describe("ModelPicker dropdown contract", () => {
-  it("closes on an outside pointerdown, like every other dropdown", async () => {
+  it("closes on an outside pointerdown at desktop width, and that click still reaches the page", async () => {
     window.innerWidth = 1280;
+    const covered = document.createElement("button");
+    const onCovered = vi.fn();
+    covered.addEventListener("click", onCovered);
+    document.body.appendChild(covered);
+
     const w = mountPicker();
     await w.get('[data-test="ns-model"]').trigger("focus");
     await nextTick();
     expect(document.querySelector('[data-test="ns-model-list"]')).not.toBeNull();
 
-    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    // The desktop popover has no scrim to tear down, so it closes on the
+    // pointerdown itself and the click that follows belongs to the page.
+    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
     await nextTick();
     expect(document.querySelector('[data-test="ns-model-list"]')).toBeNull();
+
+    covered.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(onCovered).toHaveBeenCalledTimes(1);
+    covered.remove();
     w.unmount();
   });
 

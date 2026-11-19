@@ -698,11 +698,15 @@ const dragDx = ref(0);
 function onDocPointerDown(e: MouseEvent) {
   const target = e.target as Element | null;
   if (target?.closest?.("[data-dd-panel]")) return;
+  openSwipeFor.value = null;
+  // Below lg these panels are scrimmed sheets, and the unified controller closes
+  // them on the tap's CLICK. Unmounting on mousedown would drop the scrim before
+  // that click lands, and the click would hit the row or filter it uncovered.
+  if (window.innerWidth < 1024) return;
   // A mousedown on a panel's own trigger must not close it: the click that follows
   // would read "closed" and reopen it, so the trigger could never toggle it shut.
   if (!(target && menuDd.trigger?.contains(target))) menuDd.closeMenu();
   if (!(target && filterDd.trigger?.contains(target))) filterDd.closeMenu();
-  openSwipeFor.value = null;
 }
 onMounted(() => document.addEventListener("mousedown", onDocPointerDown));
 onUnmounted(() => document.removeEventListener("mousedown", onDocPointerDown));
@@ -872,8 +876,12 @@ const rowSwipes = computed(() => {
          class="sticky top-0 z-10 -mx-2 -mt-1.5 bg-surface px-2 pb-1 pt-1.5">
       <!-- The rail is the 32px recessed fill. On a coarse pointer the row grows
            to 44 so each segment owns a real 44 hit box, while the rail and the
-           selected pill keep their 32 and 28 visual heights. -->
-      <div data-test="instance-nav-track" class="relative flex min-w-0 items-center gap-0.5 [@media(pointer:coarse)]:h-11">
+           selected pill keep their 32 and 28 visual heights. `px-0.5` is the
+           rail's uniform 2px inset: 2 + 28 + 2 vertically, and the same 2px
+           left/right, so the first and last pill never touch the rail edge.
+           The thirds divide the content box (after that padding), never the
+           padded width, and the 44 hit boxes stay unpainted. -->
+      <div data-test="instance-nav-track" class="relative flex min-w-0 items-center gap-0.5 px-0.5 [@media(pointer:coarse)]:h-11">
         <span aria-hidden="true" data-test="instance-nav-rail"
               class="pointer-events-none absolute inset-x-0 top-1/2 h-8 -translate-y-1/2 rounded-btn bg-fill-track"></span>
         <button

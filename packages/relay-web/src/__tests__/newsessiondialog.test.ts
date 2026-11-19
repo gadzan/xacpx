@@ -153,7 +153,7 @@ describe("NewSessionDialog", () => {
     expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "demo-project-codex", "codex", "demo-project", undefined, undefined);
   });
 
-  it("an un-installed (unknown) driver is shown but disabled in the agent picker", async () => {
+  it("collapses a driver label that repeats the name, and shows undetected CLIs as a weak hint without disabling them", async () => {
     const { wrapper } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],
       workspaces: [{ name: "backend", cwd: "/b" }],
@@ -165,12 +165,49 @@ describe("NewSessionDialog", () => {
     });
     await flushPromises();
     await wrapper.get('[data-test="ns-agent"]').trigger("click");
+    // `codex · codex` reads as one word.
+    const configured = wrapper.find('[data-value="codex"]');
+    expect(configured.text()).toBe("codex");
+    // An undetected CLI is a secondary hint, not a disable: `installed` is a
+    // probe result, not an eligibility verdict.
     const opt = wrapper.find('[data-value="qwen"]');
     expect(opt.exists()).toBe(true);
-    expect(opt.classes()).toContain("cursor-not-allowed");
-    // Clicking a disabled option must not select it.
-    await opt.trigger("mousedown");
-    expect(wrapper.find('[data-value="qwen"]').exists()).toBe(true); // menu stays open
+    expect(opt.text()).toContain("qwen");
+    expect(opt.text()).toContain("CLI not detected");
+    expect(opt.classes()).not.toContain("cursor-not-allowed");
+    expect(opt.attributes("disabled")).toBeUndefined();
+    // It stays selectable: the picker closes on the activation click.
+    await opt.trigger("click");
+    expect(wrapper.find('[data-value="qwen"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="ns-agent"]').attributes("data-selected")).toBe("qwen");
+  });
+
+  it("renders a workspace row as a name plus the path segment that tells it apart", async () => {
+    const { wrapper } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [
+        { name: "backend", cwd: "/srv/apps/alpha/deep/ONE/workspaces/backend" },
+        { name: "frontend", cwd: "/srv/apps/alpha/deep/TWO/workspaces/frontend" },
+      ],
+      sessions: [],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-workspace"]').trigger("click");
+    const first = wrapper.get('[data-value="backend"]');
+    // Line 1 is the name. Line 2 drops the shared "/srv/apps/alpha/deep/" prefix, so
+    // the segment two rows differ in survives any ellipsis.
+    expect(first.text()).toContain("backend");
+    expect(first.text()).toContain("ONE/workspaces/backend");
+    expect(wrapper.get('[data-value="frontend"]').text()).toContain("TWO/workspaces/frontend");
+    // The full path stays on the row's title and under the picker: never hover-only.
+    expect(first.attributes("title")).toBe("/srv/apps/alpha/deep/ONE/workspaces/backend");
+    expect(wrapper.get('[data-test="ns-workspace-path"]').text()).toBe("/srv/apps/alpha/deep/ONE/workspaces/backend");
+    // The check sits at the row's right edge (`ml-auto`), not after the text.
+    expect(first.find("svg.ml-auto").exists()).toBe(true);
+    // New-path mode swaps the readout for the path field instead of showing both.
+    await wrapper.get('[data-test="ns-ws-mode-path"]').trigger("click");
+    expect(wrapper.find('[data-test="ns-workspace-path"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="ns-ws-path"]').exists()).toBe(true);
   });
 
   it("New-path mode with an all-symbols path shows an error and does not create a session", async () => {

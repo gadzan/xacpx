@@ -527,6 +527,35 @@ describe("InstanceTree session management", () => {
     w.unmount();
   });
 
+  it("below lg an outside tap keeps the filter sheet up until its click, then closes it", async () => {
+    const prevWidth = window.innerWidth;
+    window.innerWidth = 400;
+    try {
+      const store = useInstancesStore();
+      store.instances = [instance([{ alias: "active", agent: "claude", workspace: "home", transportSession: "t1", running: false, archived: false }])] as never;
+      const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
+      await w.find('[data-test="instance-filter"]').trigger("click");
+      expect(document.querySelector('[data-test="sheet-backdrop"]')).not.toBeNull();
+
+      // The mousedown used to tear the scrim down, so the click that follows hit
+      // the session row it uncovered. The scrim now stays through the sequence.
+      const seq = (type: string) =>
+        document.body.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+      seq("pointerdown");
+      seq("mousedown");
+      await w.vm.$nextTick();
+      expect(document.querySelector('[data-test="sheet-backdrop"]')).not.toBeNull();
+
+      seq("pointerup");
+      seq("click");
+      await w.vm.$nextTick();
+      expect(document.querySelector('[data-test="sheet-backdrop"]')).toBeNull();
+      w.unmount();
+    } finally {
+      window.innerWidth = prevWidth;
+    }
+  });
+
   it("hides row actions when the instance is offline", () => {
     const store = useInstancesStore();
     store.instances = [{ ...instance([{ alias: "a", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }]), online: false }] as never;

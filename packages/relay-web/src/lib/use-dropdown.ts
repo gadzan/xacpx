@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, reactive, ref, watch, nextTick } from "vue";
+import { onBeforeUnmount, onMounted, reactive, ref, nextTick } from "vue";
 import type { Component, Ref } from "vue";
 
 // ── shared dropdown behaviour (relay-web redesign §F) ──────────────────────
@@ -14,7 +14,9 @@ export interface DropdownRow {
   icon?: Component;
   disabled?: boolean;
   danger?: boolean;
-  /** Trailing muted note (e.g. "not installed"). */
+  /** Secondary line (e.g. a workspace path): middle-ellipsized, full value on `title`. */
+  sub?: string;
+  /** Trailing muted note (e.g. "not installed"); on mobile it is the weak hint. */
   hint?: string;
   /** Render the label in the mono face (model ids, branches). */
   mono?: boolean;
@@ -89,6 +91,7 @@ export function useDropdown(): DropdownController {
       if (!dd.open) return;
       dd.open = false;
       dd.highlight = -1;
+      armedOutside = false;
       if (activeClose === closer) activeClose = null;
       releaseKeyboard(dd);
       if (options?.focusTrigger) dd.trigger?.focus();
@@ -113,6 +116,24 @@ export function useDropdown(): DropdownController {
   // Set by a Tab keydown so the focusin that follows can close the desktop panel
   // when keyboard focus leaves trigger + panel (pointer focus changes are left alone).
   let tabbing = false;
+
+  // Mask isolation (below lg only). The sheet's backdrop covers the page, so an
+  // outside tap must close on its CLICK, never on its pointerdown: closing on
+  // pointerdown unmounts the scrim before that sequence's click dispatches, and
+  // the click then lands on whatever the close uncovered (a Bot row, the New
+  // button). The pointerdown only arms; the click closes this menu and leaves
+  // the backdrop's own handler to close the sheet, so one sequence closes one
+  // layer. A drag or a cancelled gesture disarms, so no later independent click
+  // is ever lost. The desktop popover has no scrim, so it keeps closing on
+  // pointerdown and the same click still reaches the control behind it.
+  let armedOutside = false;
+  let downX = 0;
+  let downY = 0;
+  const DRAG_PX = 10;
+
+  function isOwn(t: Element | null): boolean {
+    return !!t && (!!dd.trigger?.contains(t) || !!t.closest?.("[data-dd-panel]"));
+  }
 
   function onKeydown(e: KeyboardEvent): void {
     tabbing = e.key === "Tab";
@@ -152,13 +173,43 @@ export function useDropdown(): DropdownController {
     }
   }
 
-  function onPointerDown(e: PointerEvent): void {
+  function onOutsidePointerDown(e: PointerEvent): void {
     if (!dd.open) return;
     const target = e.target as Element | null;
     // The trigger and the panel keep it open; so does any floating layer the
     // panel owns (a row's ContextMenu), found via the shared marker attribute.
-    if (target && (dd.trigger?.contains(target) || target.closest?.("[data-dd-panel]"))) return;
-    // Outside click closes WITHOUT stealing focus back to the trigger.
+    if (isOwn(target)) {
+      armedOutside = false;
+      return;
+    }
+    if (typeof window !== "undefined" && window.innerWidth >= 1024) {
+      armedOutside = false;
+      // Outside click closes WITHOUT stealing focus back to the trigger.
+      dd.closeMenu();
+      return;
+    }
+    armedOutside = true;
+    downX = e.clientX;
+    downY = e.clientY;
+  }
+
+  function onPointerUp(e: PointerEvent): void {
+    // A drag that ends far from where it started (scroll, swipe, grabber drag)
+    // never produces a tap click: disarm so a later independent click is not
+    // mistaken for this sequence's.
+    if (!armedOutside) return;
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > DRAG_PX) armedOutside = false;
+  }
+
+  function onPointerCancel(): void {
+    // The platform took the gesture, so no click is coming.
+    armedOutside = false;
+  }
+
+  function onClick(e: MouseEvent): void {
+    if (!dd.open || !armedOutside) return;
+    armedOutside = false;
+    if (isOwn(e.target as Element | null)) return;
     dd.closeMenu();
   }
 
@@ -175,14 +226,21 @@ export function useDropdown(): DropdownController {
 
   onMounted(() => {
     // Capture phase: run before bubbling document listeners (useModalA11y), so its
-    // Escape sees defaultPrevented regardless of which component mounted first.
+    // Escape sees defaultPrevented regardless of which component mounted first,
+    // and so the sheet's click-to-close resolves before the tap reaches anything.
     document.addEventListener("keydown", onKeydown, true);
-    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("pointerdown", onOutsidePointerDown, true);
+    document.addEventListener("pointerup", onPointerUp, true);
+    document.addEventListener("pointercancel", onPointerCancel, true);
+    document.addEventListener("click", onClick, true);
     document.addEventListener("focusin", onFocusIn, true);
   });
   onBeforeUnmount(() => {
     document.removeEventListener("keydown", onKeydown, true);
-    document.removeEventListener("pointerdown", onPointerDown, true);
+    document.removeEventListener("pointerdown", onOutsidePointerDown, true);
+    document.removeEventListener("pointerup", onPointerUp, true);
+    document.removeEventListener("pointercancel", onPointerCancel, true);
+    document.removeEventListener("click", onClick, true);
     document.removeEventListener("focusin", onFocusIn, true);
     // Only release what this instance holds; another open dropdown keeps its claim.
     if (activeClose === closer) activeClose = null;

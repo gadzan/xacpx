@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { MessageSquare, Search } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
-import { navigateBack, pushModal } from "../lib/mobile-back";
+import { lockBodyScroll, navigateBack, pushModal, unlockBodyScroll } from "../lib/mobile-back";
 
 const emit = defineEmits<{
   close: [];
@@ -66,20 +66,36 @@ function onKeydown(e: KeyboardEvent) {
   else if (e.key === "Enter") { e.preventDefault(); const r = rows.value[active.value]; if (r) choose(r); }
 }
 
+// Focus returns to whatever opened the palette: a command surface that drops
+// the caret on <body> strands keyboard users after Escape.
+let previouslyFocused: HTMLElement | null = null;
+
 onMounted(() => {
+  previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   unregister = pushModal({ id: "palette", close: () => emit("close") });
+  lockBodyScroll();
   void nextTick(() => input.value?.focus());
 });
-onBeforeUnmount(() => { unregister?.(); unregister = null; });
+onBeforeUnmount(() => {
+  unregister?.();
+  unregister = null;
+  unlockBodyScroll();
+  previouslyFocused?.focus?.();
+});
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-24 backdrop-blur-scrim" data-test="command-palette" @click.self="navigateBack">
+  <div class="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-24 backdrop-blur-scrim pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]"
+       data-test="command-palette" @click.self="navigateBack">
+    <!-- Stays a TOP panel: global session search, not a field's option list. The
+         safe-area-aware side insets keep >=16px on every edge, and max-w-lg (512)
+         can never exceed viewport - 32px because the padding lives inside the
+         flex container. -->
     <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
       <div class="flex min-h-12 items-center gap-2 px-4">
         <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
         <input ref="input" v-model="query" data-test="palette-input" data-ring="container"
-               class="w-full bg-transparent text-sm text-fg placeholder:text-fg-muted-overlay outline-none"
+               class="w-full bg-transparent text-base text-fg placeholder:text-fg-muted-overlay outline-none"
                @input="active = 0; clampActive()" @keydown="onKeydown" />
       </div>
       <ul class="max-h-80 overflow-y-auto p-1 text-ui">
@@ -88,8 +104,10 @@ onBeforeUnmount(() => { unregister?.(); unregister = null; });
                   :class="i === active ? 'bg-fill-strong text-fg' : 'text-fg hover:bg-fill-hover'"
                   @mouseenter="active = i" @click="choose(r)">
             <MessageSquare :size="14" class="shrink-0" />
-            <span class="font-medium">{{ r.label }}</span>
-            <span class="truncate text-xs text-fg-muted-overlay">{{ r.sub }}</span>
+            <!-- Title truncates, the instance · agent subtitle keeps its own
+                 truncation: a long name never pushes the secondary line out. -->
+            <span class="min-w-0 truncate font-medium">{{ r.label }}</span>
+            <span class="min-w-0 shrink truncate text-xs text-fg-muted-overlay">{{ r.sub }}</span>
           </button>
         </li>
         <li v-if="!rows.length" class="px-4 py-3 text-xs text-fg-muted-overlay">{{ $t("palette.noMatches") }}</li>
