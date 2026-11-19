@@ -22,7 +22,9 @@ function apply(): void {
 useModalA11y(dialogEl, () => emit("close"));
 
 let detach: (() => void) | null = null;
-let prevOverflow = "";
+// The body scroll lock lives in the shared modal stack (useModalA11y). A second
+// local lock here would restore over it and strand the page locked-but-scrollable
+// in the wrong order, so the viewer owns no overflow state at all.
 onMounted(() => {
   if (stageEl.value) {
     detach = attachPanZoomGestures(stageEl.value, panZoom, apply, { oneFingerTouchPan: true });
@@ -42,12 +44,9 @@ onMounted(() => {
       apply();
     }
   }
-  prevOverflow = document.body.style.overflow;
-  document.body.style.overflow = "hidden";
 });
 onBeforeUnmount(() => {
   detach?.();
-  document.body.style.overflow = prevOverflow;
 });
 
 function zoomButton(factor: number): void {

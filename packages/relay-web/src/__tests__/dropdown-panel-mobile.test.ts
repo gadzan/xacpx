@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h, nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import DropdownPanel from "../components/DropdownPanel.vue";
@@ -93,7 +93,7 @@ describe("DropdownPanel mobile sheet", () => {
     w.unmount();
   });
 
-  it("closes the dropdown when the tap lands in a plain page sheet instead", async () => {
+  it("closes the dropdown on a tap that lands in a plain page sheet instead", async () => {
     window.innerWidth = 420;
     const MixedHost = defineComponent({
       setup() {
@@ -115,9 +115,85 @@ describe("DropdownPanel mobile sheet", () => {
     await nextTick();
     expect(document.querySelector(SHEET)).not.toBeNull();
     const plainRow = document.querySelector<HTMLElement>('[data-test="plain-row"]')!;
-    plainRow.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    // The close lands on the sequence's click, not its pointerdown.
+    plainRow.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    await nextTick();
+    expect(document.querySelector(SHEET)).not.toBeNull();
+    plainRow.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    plainRow.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await nextTick();
     expect(document.querySelector(SHEET)).toBeNull();
+    w.unmount();
+  });
+
+  it("puts the search field in the sheet's fixed band, outside the row scroller", async () => {
+    window.innerWidth = 420;
+    const SearchHost = defineComponent({
+      setup() {
+        const dd = useDropdown();
+        return () => h("div", [
+          h("button", { "data-test": "trigger", onClick: () => dd.toggle() }, "open"),
+          h(DropdownPanel, {
+            dd, title: "Workspace", testId: "dd", searchable: true,
+            groups: [{ rows: [{ value: "a", label: "backend", testId: "row" }] }],
+          }),
+        ]);
+      },
+    });
+    const w = mount(SearchHost, { attachTo: document.body, global: { plugins: [i18n] } });
+    await w.find('[data-test="trigger"]').trigger("click");
+    await nextTick();
+    const search = document.querySelector<HTMLElement>('[data-test="dd-search"]');
+    expect(search).not.toBeNull();
+    const row = document.querySelector<HTMLElement>('[data-test="row"]')!;
+    const scroller = row.closest(".thin-scroll") as HTMLElement;
+    expect(scroller).not.toBeNull();
+    expect(scroller.contains(search)).toBe(false);
+    w.unmount();
+  });
+
+  // Item 5 (blocking): one pointerdown→pointerup→click on the backdrop closes the
+  // top layer and NOTHING under it. The bottom layer is a Bot row and the blue
+  // New button — the two places users reported click-through.
+  it("a backdrop tap sequence never reaches the covered Bot row or New button", async () => {
+    window.innerWidth = 420;
+    const onBotRow = vi.fn();
+    const onNewButton = vi.fn();
+    const Host = defineComponent({
+      setup() {
+        const dd = useDropdown();
+        return () => h("div", [
+          h("button", { "data-test": "trigger", onClick: () => dd.toggle() }, "open"),
+          h(DropdownPanel, {
+            dd, title: "Bot", testId: "dd",
+            groups: [{ rows: [{ value: "edit", label: "Edit bot", testId: "row" }] }],
+          }),
+          // The covered page: a Bot row and the New button live underneath.
+          h("button", { "data-test": "bot-row", onClick: onBotRow }, "codex"),
+          h("button", { "data-test": "new-button", onClick: onNewButton }, "New"),
+        ]);
+      },
+    });
+    const w = mount(Host, { attachTo: document.body, global: { plugins: [i18n] } });
+    await w.find('[data-test="trigger"]').trigger("click");
+    await nextTick();
+    const backdrop = document.querySelector<HTMLElement>('[data-test="sheet-backdrop"]')!;
+    expect(backdrop).not.toBeNull();
+
+    const sequence = (type: string) =>
+      backdrop.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 195, clientY: 400 }));
+
+    sequence("pointerdown");
+    await nextTick();
+    // Isolation holds through the whole sequence: the sheet is still mounted.
+    expect(document.querySelector(SHEET)).not.toBeNull();
+    sequence("pointerup");
+    sequence("click");
+    await nextTick();
+
+    expect(document.querySelector(SHEET)).toBeNull();
+    expect(onBotRow).toHaveBeenCalledTimes(0);
+    expect(onNewButton).toHaveBeenCalledTimes(0);
     w.unmount();
   });
 });

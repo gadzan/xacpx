@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { ref } from "vue";
 import { ChevronLeft, ChevronRight, X } from "lucide-vue-next";
 import { closeLightbox, stepLightbox, useImageLightbox } from "../lib/use-image-lightbox";
 import { useModalA11y } from "../lib/use-modal-a11y";
@@ -16,17 +16,9 @@ const { state, current, counter, hasPrev, hasNext } = useImageLightbox();
 const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, closeLightbox);
 
-// Scroll lock for the open duration. Safe to do in mount/unmount ONLY because the
-// parent gates this component with v-if on the singleton state (mount == open);
-// a permanently-mounted instance would lock scrolling for the whole app session.
-let prevOverflow = "";
-onMounted(() => {
-  prevOverflow = document.body.style.overflow;
-  document.body.style.overflow = "hidden";
-});
-onBeforeUnmount(() => {
-  document.body.style.overflow = prevOverflow;
-});
+// The body scroll lock is the shared modal stack's (useModalA11y), ref-counted
+// with every dialog below it. This component keeps no overflow state of its own:
+// a local lock would restore over the stack and desync the page.
 
 // Swipe: one active pointer; a clearly-horizontal drag ≥48px flips pages and the
 // image follows the finger live. Dragging past an end does nothing.

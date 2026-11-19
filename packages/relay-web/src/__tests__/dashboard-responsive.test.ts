@@ -95,6 +95,14 @@ async function selectSession(alias = "demo") {
   chat.sessionAlias = alias;
   await flushPromises();
 }
+/** Sheets teleport to <body> so a nested one can escape a dialog's containing
+ *  block; assertions and taps therefore read the document, not the wrapper. */
+function need<T extends HTMLElement = HTMLElement>(selector: string): T {
+  const el = document.querySelector<T>(selector);
+  if (!el) throw new Error(`missing ${selector}`);
+  return el;
+}
+
 
 test("renders the single mobile top bar with its more-sheet entries", async () => {
   const wrapper = mountDash();
@@ -109,16 +117,15 @@ test("renders the single mobile top bar with its more-sheet entries", async () =
 
   await wrapper.find('[data-test="mobile-more"]').trigger("click");
   await flushPromises();
-  const sheet = wrapper.find('[data-test="mobile-more-sheet"]');
-  expect(sheet.exists()).toBe(true);
+  const sheet = need('[data-test="mobile-more-sheet"]');
   for (const id of ["sheet-open-tabs", "sheet-files", "sheet-tasks", "sheet-terminal"]) {
-    expect(sheet.find(`[data-test="${id}"]`).exists()).toBe(true);
+    expect(sheet.querySelector(`[data-test="${id}"]`)).not.toBeNull();
   }
   // No separate 「工作区」 entry: 「文件」 already opens the files panel.
-  expect(sheet.find('[data-test="sheet-workspace"]').exists()).toBe(false);
+  expect(sheet.querySelector('[data-test="sheet-workspace"]')).toBeNull();
   // The model stays on the composer chip — never a sheet entry.
-  expect(sheet.text()).not.toContain("model");
-  expect(sheet.find('[data-test="sheet-model"]').exists()).toBe(false);
+  expect(sheet.textContent).not.toContain("model");
+  expect(sheet.querySelector('[data-test="sheet-model"]')).toBeNull();
 });
 
 test("chat column is shrinkable (min-w-0) so wide tool content can't push the right panel off-screen", async () => {
@@ -171,7 +178,7 @@ test("the more sheet's Files entry opens the Files drawer on the files tab", asy
   const right = wrapper.find('[data-drawer="right"]');
   expect(right.classes()).toContain("translate-x-full");
 
-  await wrapper.find('[data-test="sheet-files"]').trigger("click");
+  need('[data-test="sheet-files"]').click();
   await flushPromises();
   // Drawer is open...
   expect(right.classes()).toContain("translate-x-0");
@@ -181,7 +188,7 @@ test("the more sheet's Files entry opens the Files drawer on the files tab", asy
   expect(filesTab.classes()).toContain("text-accent-text");
   expect(filesTab.classes()).toContain("font-semibold");
   // The sheet that launched it is gone.
-  expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
+  expect(document.querySelector('[data-test="mobile-more-sheet"]')).toBeNull();
 });
 
 test("file viewer Close removes the tab and returns to chat", async () => {
@@ -220,7 +227,7 @@ test("tasks drawer opens via the more sheet's Tasks entry", async () => {
 
   await wrapper.find('[data-test="mobile-more"]').trigger("click");
   await flushPromises();
-  await wrapper.find('[data-test="sheet-tasks"]').trigger("click");
+  need('[data-test="sheet-tasks"]').click();
   await flushPromises();
   expect(right.classes()).toContain("translate-x-0");
   expect(right.classes()).not.toContain("translate-x-full");
@@ -233,7 +240,7 @@ test("backdrop click closes the open files/tasks drawer", async () => {
   await selectSession();
   await wrapper.find('[data-test="mobile-more"]').trigger("click");
   await flushPromises();
-  await wrapper.find('[data-test="sheet-files"]').trigger("click");
+  need('[data-test="sheet-files"]').click();
   await flushPromises();
   expect(wrapper.find('[data-drawer="right"]').classes()).toContain("translate-x-0");
 
@@ -422,7 +429,7 @@ test("opening the terminal closes an already-open right drawer (rightOpen mutual
   await selectSession();
   await wrapper.find('[data-test="mobile-more"]').trigger("click");
   await flushPromises();
-  await wrapper.find('[data-test="sheet-files"]').trigger("click");
+  need('[data-test="sheet-files"]').click();
   await flushPromises();
   const right = wrapper.find('[data-drawer="right"]');
   expect(right.classes()).toContain("translate-x-0");
@@ -500,29 +507,28 @@ test("open-tabs sheet switches tabs and closes them through the guarded path", a
 
   await wrapper.find('[data-test="mobile-more"]').trigger("click");
   await flushPromises();
-  await wrapper.find('[data-test="sheet-open-tabs"]').trigger("click");
+  need('[data-test="sheet-open-tabs"]').click();
   await flushPromises();
 
-  const sheet = wrapper.find('[data-test="open-tabs-sheet"]');
-  expect(sheet.exists()).toBe(true);
+  const sheet = need('[data-test="open-tabs-sheet"]');
   // Sheets are mutually exclusive: the tabs sheet replaces ⋯ instead of stacking on it.
-  expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
-  expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1);
-  const rows = sheet.findAll('[data-test="open-tab-row"]');
+  expect(document.querySelector('[data-test="mobile-more-sheet"]')).toBeNull();
+  expect(document.querySelectorAll("[role='dialog']")).toHaveLength(1);
+  const rows = Array.from(sheet.querySelectorAll<HTMLElement>('[data-test="open-tab-row"]'));
   expect(rows).toHaveLength(2); // pinned Chat + the open file
-  expect(rows[0].attributes("data-tab-id")).toBe("chat");
-  expect(rows[1].attributes("data-tab-id")).toBe("file:src/a.ts");
+  expect(rows[0]!.getAttribute("data-tab-id")).toBe("chat");
+  expect(rows[1]!.getAttribute("data-tab-id")).toBe("file:src/a.ts");
   // The active tab is the highlighted one.
-  expect(rows[1].classes()).toContain("bg-accent-soft");
-  expect(rows[1].classes()).toContain("text-accent-text");
+  expect(rows[1]!.className.split(/\s+/)).toContain("bg-accent-soft");
+  expect(rows[1]!.className.split(/\s+/)).toContain("text-accent-text");
 
   // Tapping Chat switches back and dismisses the sheet.
-  await backAndSettle(() => rows[0].find("button").trigger("click"));
+  await backAndSettle(() => rows[0]!.querySelector("button")!.click());
   await settleBacks();
   expect(centerTabs.activeFor(key)).toBe("chat");
-  expect(wrapper.find('[data-test="open-tabs-sheet"]').exists()).toBe(false);
+  expect(document.querySelector('[data-test="open-tabs-sheet"]')).toBeNull();
   // ...and does not fall back to the ⋯ sheet.
-  expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
+  expect(document.querySelector('[data-test="mobile-more-sheet"]')).toBeNull();
 
   // Closing runs the same guarded path as the strip's X: a dirty file asks first.
   centerTabs.openFile(key, "src/a.ts");
@@ -530,16 +536,16 @@ test("open-tabs sheet switches tabs and closes them through the guarded path", a
   await flushPromises();
   await wrapper.find('[data-test="mobile-more"]').trigger("click");
   await flushPromises();
-  await wrapper.find('[data-test="sheet-open-tabs"]').trigger("click");
+  need('[data-test="sheet-open-tabs"]').click();
   await flushPromises();
   const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-  await wrapper.find('[data-test="open-tab-close"]').trigger("click");
+  need('[data-test="open-tab-close"]').click();
   await flushPromises();
   expect(confirmSpy).toHaveBeenCalled();
   expect(centerTabs.tabsFor(key)).toHaveLength(1); // declined → kept open
 
   confirmSpy.mockReturnValue(true);
-  await wrapper.find('[data-test="open-tab-close"]').trigger("click");
+  need('[data-test="open-tab-close"]').click();
   await flushPromises();
   expect(centerTabs.tabsFor(key)).toHaveLength(0);
   confirmSpy.mockRestore();
@@ -589,14 +595,14 @@ test("FAB with several online instances opens a picker with the last-used instan
 
   await wrapper.find('[data-test="fab-new-session"]').trigger("click");
   await flushPromises();
-  const sheet = wrapper.find('[data-test="fab-instance-sheet"]');
-  expect(sheet.exists()).toBe(true);
+  const sheet = need('[data-test="fab-instance-sheet"]');
   // Only online instances, last-used (i2) first.
-  expect(sheet.findAll('[data-test="fab-instance-option"]').map((o) => o.text())).toEqual(["second", "pc"]);
+  expect(Array.from(sheet.querySelectorAll('[data-test="fab-instance-option"]')).map((o) => o.textContent))
+    .toEqual(["second", "pc"]);
 
-  await sheet.findAll('[data-test="fab-instance-option"]')[0].trigger("click");
+  (sheet.querySelector('[data-test="fab-instance-option"]') as HTMLElement).click();
   await flushPromises();
-  expect(wrapper.find('[data-test="fab-instance-sheet"]').exists()).toBe(false);
+  expect(document.querySelector('[data-test="fab-instance-sheet"]')).toBeNull();
   expect(wrapper.find('[data-test="ns-stub"]').text()).toBe("i2");
 });
 

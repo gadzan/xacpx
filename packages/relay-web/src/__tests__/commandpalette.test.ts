@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import { useInstancesStore } from "../stores/instances";
+
+afterEach(() => { document.body.innerHTML = ""; document.body.style.overflow = ""; });
 
 function seed() {
   const instances = useInstancesStore();
@@ -97,5 +100,68 @@ describe("CommandPalette", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].text()).toContain("API hotfix");
     });
+  });
+
+  it("stays a top panel with 16px + safe-area side insets, 2xl corners and a 16px input", () => {
+    const w = mount(CommandPalette);
+    const root = w.find('[data-test="command-palette"]');
+    const rootClasses = root.classes();
+    // Top-anchored command surface, never a bottom sheet.
+    expect(rootClasses).toContain("items-start");
+    expect(rootClasses).toContain("bg-scrim");
+    expect(rootClasses).not.toContain("items-end");
+    expect(rootClasses).toEqual(expect.arrayContaining([
+      "pl-[max(1rem,env(safe-area-inset-left))]",
+      "pr-[max(1rem,env(safe-area-inset-right))]",
+    ]));
+    const panel = root.element.firstElementChild as HTMLElement;
+    expect(panel.className.split(/\s+/)).toEqual(expect.arrayContaining(["w-full", "max-w-lg", "rounded-2xl"]));
+    // 16px input: iOS must not zoom on focus.
+    expect(w.find('[data-test="palette-input"]').classes()).toContain("text-base");
+    // Selection background is inset by the list's own padding, never flush.
+    expect(panel.querySelector("ul")!.className.split(/\s+/)).toContain("p-1");
+    w.unmount();
+  });
+
+  it("restores focus to the opener on close and holds the body scroll lock", async () => {
+    const opener = document.createElement("button");
+    opener.id = "palette-opener";
+    document.body.appendChild(opener);
+    opener.focus();
+
+    const w = mount(CommandPalette, { attachTo: document.body });
+    await nextTick();
+    // The palette takes the caret while open, then hands it back on close.
+    expect(document.activeElement?.getAttribute("data-test")).toBe("palette-input");
+    expect(document.body.style.overflow).toBe("hidden");
+    w.unmount();
+    expect(document.body.style.overflow).toBe("");
+    expect(document.activeElement?.id).toBe("palette-opener");
+    opener.remove();
+  });
+
+  it("a backdrop pointer sequence closes once on click and never reaches the page under it", async () => {
+    const onNew = vi.fn();
+    const covered = document.createElement("button");
+    covered.setAttribute("data-test", "covered-new");
+    covered.addEventListener("click", onNew);
+    document.body.appendChild(covered);
+
+    const w = mount(CommandPalette, { attachTo: document.body });
+    await nextTick();
+    const root = document.querySelector('[data-test="command-palette"]') as HTMLElement;
+    const seq = (type: string) =>
+      root.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+
+    seq("pointerdown");
+    await nextTick();
+    expect(w.emitted("close")).toBeUndefined();
+    seq("pointerup");
+    seq("click");
+    await nextTick();
+    expect(w.emitted("close")).toHaveLength(1);
+    expect(onNew).toHaveBeenCalledTimes(0);
+    w.unmount();
+    covered.remove();
   });
 });

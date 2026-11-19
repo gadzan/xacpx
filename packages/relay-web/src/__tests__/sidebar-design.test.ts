@@ -174,6 +174,11 @@ describe("sidebar mode segmented control", () => {
     expect(rail.classes()).toContain("rounded-btn");
     expect(rail.classes()).toContain("h-8");
     expect(track.classes()).toContain("[@media(pointer:coarse)]:h-11");
+    // Uniform 2px visual inset: 2 + 28 + 2 vertically, 2px left/right for the
+    // first and last pill. The padding lives on the track's content box, so the
+    // thirds are computed after it — never with a negative margin.
+    expect(track.classes()).toContain("px-0.5");
+    expect(track.classes()).not.toContain("-mx-0.5");
 
     // The active segment is a raised 28px pill inside the 44px button.
     const sessions = w.find('[data-test="instance-nav-sessions"]');
@@ -181,6 +186,8 @@ describe("sidebar mode segmented control", () => {
     expect(sessions.classes()).toContain("[@media(pointer:coarse)]:h-11");
     expect(sessions.classes()).toContain("font-semibold");
     expect(sessions.classes()).toContain("text-fg");
+    // The 44 hit box stays unpainted: the raised fill is only the 28px pill.
+    for (const bg of ["bg-raised", "bg-surface", "bg-bg"]) expect(sessions.classes()).not.toContain(bg);
     const sessionsPill = sessions.find('[data-test="instance-nav-pill"]');
     expect(sessionsPill.classes()).toContain("bg-raised");
     expect(sessionsPill.classes()).toContain("shadow-press");
@@ -194,11 +201,20 @@ describe("sidebar mode segmented control", () => {
     expect(botsPill.classes()).toContain("hover:bg-fill-hover");
     expect(botsPill.classes()).not.toContain("bg-raised");
 
-    // Switching the mode moves the raised pill.
-    await bots.trigger("click");
-    await flushPromises();
-    expect(w.find('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]').classes()).toContain("bg-raised");
-    expect(w.find('[data-test="instance-nav-sessions"] [data-test="instance-nav-pill"]').classes()).not.toContain("bg-raised");
+    // First, middle and last segments all paint the same inset 28px pill and
+    // never a translate/negative-margin offset.
+    for (const mode of ["instance-nav-sessions", "instance-nav-bots", "instance-nav-groups"]) {
+      await w.find(`[data-test="${mode}"]`).trigger("click");
+      await flushPromises();
+      for (const segment of ["instance-nav-sessions", "instance-nav-bots", "instance-nav-groups"]) {
+        const button = w.find(`[data-test="${segment}"]`);
+        const pill = button.find('[data-test="instance-nav-pill"]');
+        expect(pill.classes()).toContain("h-7");
+        expect(button.classes().concat(pill.classes()).some((c) => c.includes("translate"))).toBe(false);
+        if (segment === mode) expect(pill.classes()).toContain("bg-raised");
+        else expect(pill.classes()).not.toContain("bg-raised");
+      }
+    }
   });
 
   it("switches every instance card from the one global track", async () => {

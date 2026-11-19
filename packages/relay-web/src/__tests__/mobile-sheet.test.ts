@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import MobileSheet from "../components/MobileSheet.vue";
+import { pushModal } from "../lib/mobile-back";
 
 // The sheet's pull-to-close is pointer-driven: tests dispatch pointer-typed
 // mouse events (jsdom has no PointerEvent) straight at the grabber strip.
@@ -48,30 +49,34 @@ async function drag(clientYs: number[]): Promise<void> {
 describe("MobileSheet pull-to-close", () => {
   it("renders a decorative grab handle: a centred 36x5 rounded bar", () => {
     const wrapper = mountSheet();
-    const grabber = wrapper.find('[data-test="sheet-grabber"]');
-    expect(grabber.exists()).toBe(true);
-    expect(grabber.attributes("aria-hidden")).toBe("true");
-    const bar = grabber.element.firstElementChild as HTMLElement;
+    // The sheet teleports to <body>, so assertions read the document.
+    const grabber = grabberEl();
+    expect(grabber).not.toBeNull();
+    expect(grabber.getAttribute("aria-hidden")).toBe("true");
+    const bar = grabber.firstElementChild as HTMLElement;
     expect(bar.className.split(/\s+/)).toEqual(
       expect.arrayContaining(["mx-auto", "h-[5px]", "w-9", "rounded-full"]),
     );
     wrapper.unmount();
   });
 
-  it("carries the glass treatment, 24px top radius and glass scrim", () => {
+  it("carries the glass treatment, 24px top radius, an 85dvh cap with top headroom and glass scrim", () => {
     const wrapper = mountSheet();
-    const panel = wrapper.find('[data-test="sheet"]');
-    expect(panel.classes()).toEqual(
+    const panel = panelEl();
+    expect(panel.className.split(/\s+/)).toEqual(
       expect.arrayContaining([
         "bg-glass-strong",
         "backdrop-blur-glass",
         "backdrop-saturate-glass",
         "shadow-glass-float",
         "rounded-t-[24px]",
-        "max-h-[78dvh]",
+        "max-h-[85dvh]",
       ]),
     );
-    expect(panel.classes()).not.toContain("bg-raised");
+    expect(panel.className).not.toContain("bg-raised");
+    // The measured cap is one notch headroom above the panel: 85dvh in normal
+    // viewports, shrinking when the notch (`safe-area-inset-top`) claims space.
+    expect(panel.style.maxHeight).toBe("min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - 12px))");
     const scrim = document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement;
     // One scrim blur for every dimming layer.
     expect(scrim.className.split(/\s+/)).toEqual(
@@ -80,6 +85,51 @@ describe("MobileSheet pull-to-close", () => {
     expect(scrim.className).not.toContain("bg-black/50");
 
     wrapper.unmount();
+  });
+
+  it("keeps the #fixed band outside the scrolling body", () => {
+    const wrapper = mount(MobileSheet, {
+      props: { title: "Sessions", testId: "sheet" },
+      slots: {
+        fixed: '<input data-test="fixed-search" />',
+        default: '<button data-test="content-row">row</button>',
+      },
+      attachTo: document.body,
+    });
+    const search = document.querySelector('[data-test="fixed-search"]') as HTMLElement;
+    const row = document.querySelector('[data-test="content-row"]') as HTMLElement;
+    const scroller = row.closest(".thin-scroll") as HTMLElement;
+    expect(search).not.toBeNull();
+    expect(scroller.contains(search)).toBe(false);
+    expect(scroller.contains(row)).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("drops its own dimming only when it opens over a lower modal, and raises one rung", async () => {
+    // A dialog is already open when the sheet appears: the Agent picker inside
+    // NewSessionDialog. The lower layer keeps the dimming and the blur.
+    const closeLower = pushModal({ id: "parent-dialog", close: () => {} });
+    const over = mountSheet();
+    await nextTick();
+    const overScrim = document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement;
+    expect(overScrim.className.split(/\s+/)).not.toContain("bg-scrim");
+    expect(overScrim.className.split(/\s+/)).not.toContain("backdrop-blur-scrim");
+    expect(overScrim.className.split(/\s+/)).toContain("bg-transparent");
+    expect(panelEl().className.split(/\s+/)).toContain("z-dialog-nested");
+    over.unmount();
+    closeLower();
+
+    // The reverse order: a layer that mounts after the sheet sits above it, so
+    // the sheet keeps its own scrim and its base rung instead of covering it.
+    const under = mountSheet();
+    await nextTick();
+    const closeUpper = pushModal({ id: "late-dialog", close: () => {} });
+    await nextTick();
+    const underScrim = document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement;
+    expect(underScrim.className.split(/\s+/)).toContain("bg-scrim");
+    expect(panelEl().className.split(/\s+/)).toContain("z-sheet");
+    closeUpper();
+    under.unmount();
   });
 
   it("follows the finger, then closes past a quarter of the panel height", async () => {

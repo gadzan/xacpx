@@ -300,7 +300,6 @@ export default {
     creatingButton: "创建中…",
     configured: "已配置",
     availableDrivers: "可用驱动",
-    cliNotDetected: "{driver} — 未检测到 CLI",
     autoAlias: "自动",
     pickConfiguredAgent: "请选择一个已配置的 Agent 以列出其原生会话。",
     failedLoadOptions: "加载选项失败",

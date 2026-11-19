@@ -304,7 +304,6 @@ export default {
     creatingButton: "Creating…",
     configured: "Configured",
     availableDrivers: "Available drivers",
-    cliNotDetected: "{driver} — CLI not detected",
     autoAlias: "auto",
     pickConfiguredAgent: "Pick a configured agent to list its native sessions.",
     failedLoadOptions: "failed to load options",

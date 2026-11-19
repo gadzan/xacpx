@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, type CSSProperties } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, type CSSProperties } from "vue";
 import { useModalA11y } from "../lib/use-modal-a11y";
-import { navigateBack } from "../lib/mobile-back";
+import { modalLayers, navigateBack } from "../lib/mobile-back";
 import { X } from "lucide-vue-next";
 defineOptions({ inheritAttrs: false });
 
@@ -26,7 +26,7 @@ const props = withDefaults(defineProps<{
   testId?: string;
   zClass?: string;
   ddPanel?: boolean;
-  /** Retained for call-site compatibility; both densities share the 78dvh cap. */
+  /** Retained for call-site compatibility; both densities share the 85dvh cap. */
   height?: "md" | "tall";
   /** Document padding for reading surfaces (the trace) instead of row padding. */
   padded?: boolean;
@@ -44,11 +44,59 @@ defineExpose({ body });
 // height (or with a fast downward flick) closes through navigateBack, the same
 // close the backdrop and the ✕ use, and a short release springs back through
 // the sheet-panel transition (disabled under prefers-reduced-motion).
+// A sheet opened OVER another modal (the Agent picker inside a dialog) keeps the
+// lower scrim and drops its own dimming and blur, and takes one rung up so it
+// paints above that dialog. The depth is the layer count at mount, captured
+// before useModalA11y pushes this sheet's own layer: a sheet that later gains a
+// dialog above it keeps z-sheet, so that dialog stays on top.
+const layerDepth = ref(0);
+const stacked = computed(() => layerDepth.value > 0);
+const resolvedZ = computed(() => props.zClass ?? (stacked.value ? "z-dialog-nested" : "z-sheet"));
+const backdropClass = computed(() => stacked.value ? "bg-transparent" : "bg-scrim backdrop-blur-scrim");
 const dragOffset = ref(0);
 const dragging = ref(false);
-const panelStyle = computed<CSSProperties>(() =>
-  dragOffset.value > 0 ? { transform: `translateY(${dragOffset.value}px)` } : {},
-);
+
+// Keyboard-aware offset. `dvh` units track most resizes, but when the software
+// keyboard only shrinks the *visual* viewport (iOS Safari), `bottom-0` would
+// park the sheet behind it. The keyboard height is
+// `innerHeight − vv.height − vv.offsetTop`; the panel rides up by exactly that
+// (zero when no keyboard) and its cap shrinks to the visible height. No
+// visualViewport in the environment (jsdom, old WebViews) → the 85dvh cap and
+// the safe-area headroom below carry the layout on their own.
+const vvBottom = ref(0);
+const vvCap = ref<number | null>(null);
+let vv: VisualViewport | null = null;
+function syncVv(): void {
+  if (!vv || typeof window === "undefined") return;
+  const kb = window.innerHeight - vv.height - vv.offsetTop;
+  vvBottom.value = Math.max(0, kb);
+  vvCap.value = vv.height < window.innerHeight - 1 ? Math.max(200, vv.height - 16) : null;
+}
+onMounted(() => {
+  layerDepth.value = modalLayers.value.length;
+  if (typeof window !== "undefined" && window.visualViewport) {
+    vv = window.visualViewport;
+    vv.addEventListener("resize", syncVv);
+    vv.addEventListener("scroll", syncVv);
+    syncVv();
+  }
+});
+onBeforeUnmount(() => {
+  vv?.removeEventListener("resize", syncVv);
+  vv?.removeEventListener("scroll", syncVv);
+  vv = null;
+});
+const panelStyle = computed<CSSProperties>(() => {
+  // 85dvh caps long lists; the min() keeps 12px plus the notch headroom above
+  // the panel so it never touches the status bar.
+  const style: CSSProperties = {
+    maxHeight: "min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - 12px))",
+  };
+  if (dragOffset.value > 0) style.transform = `translateY(${dragOffset.value}px)`;
+  if (vvBottom.value > 0) style.bottom = `${vvBottom.value}px`;
+  if (vvCap.value != null) style.maxHeight = `${vvCap.value}px`;
+  return style;
+});
 const CLOSE_FRACTION = 0.25;
 const FLICK_PX_PER_MS = 0.5;
 const FLICK_MIN_PX = 24;
@@ -112,13 +160,19 @@ useModalA11y(panel, () => emit("close"), {
 </script>
 
 <template>
+  <!-- Teleport to body: a sheet opened inside a dialog (the Agent/Workspace
+       pickers inside NewSessionDialog) must resolve `fixed` against the
+       viewport, not against the dialog panel — the panel's backdrop-filter
+       establishes a containing block that parks an in-place `fixed` sheet
+       mid-screen with a straight bottom edge. -->
+  <Teleport to="body">
   <!-- Attributes belong to the dialog, not its backdrop. -->
-  <div data-test="sheet-backdrop" class="sheet-backdrop fixed inset-0 bg-scrim backdrop-blur-scrim lg:hidden" :class="zClass ?? 'z-sheet'" @click="navigateBack" />
+  <div data-test="sheet-backdrop" class="sheet-backdrop fixed inset-0 lg:hidden" :class="[resolvedZ, backdropClass]" @click="navigateBack" />
   <div ref="panel" v-bind="$attrs" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1"
        :data-dd-panel="ddPanel || undefined"
        :data-test="testId"
-       class="sheet-panel fixed inset-x-0 bottom-0 flex max-h-[78dvh] flex-col overflow-hidden rounded-t-[24px] bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:hidden"
-       :class="[zClass ?? 'z-sheet', dragging ? 'sheet-dragging' : '']" :style="panelStyle">
+       class="sheet-panel fixed inset-x-0 bottom-0 flex max-h-[85dvh] flex-col overflow-hidden rounded-t-[24px] bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:hidden"
+       :class="[resolvedZ, dragging ? 'sheet-dragging' : '']" :style="panelStyle">
     <!-- Pull-to-close hot zone: the bar is decorative, the strip takes the drag. -->
     <div data-test="sheet-grabber" aria-hidden="true"
          class="shrink-0 cursor-grab touch-none select-none px-4 pb-1 pt-2 active:cursor-grabbing"
@@ -134,6 +188,11 @@ useModalA11y(panel, () => emit("close"), {
                 @click="navigateBack"><X :size="18" /></button>
       </div>
     </slot>
+    <!-- Pinned below the header, above the scroller: search and filters stay
+         put while only the rows scroll. -->
+    <div v-if="$slots.fixed" class="shrink-0 px-2 pb-1">
+      <slot name="fixed" />
+    </div>
     <div ref="body" class="thin-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain break-words"
          :class="padded
            ? ['detail-scroll px-5 pt-1', $slots.footer ? 'pb-2' : 'pb-[calc(1.25rem+env(safe-area-inset-bottom))]']
@@ -146,6 +205,7 @@ useModalA11y(panel, () => emit("close"), {
       <slot name="footer" />
     </div>
   </div>
+  </Teleport>
 </template>
 
 <style scoped>

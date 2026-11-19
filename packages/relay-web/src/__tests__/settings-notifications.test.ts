@@ -1,4 +1,4 @@
-import { mount } from "@vue/test-utils";
+import { mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -42,12 +42,22 @@ async function flush(): Promise<void> {
   }
 }
 
+/** The desktop-notification control is a switch, not an action button. */
+function notifSwitch(w: VueWrapper) {
+  const el = w.find('[data-test="notif-toggle"]');
+  return {
+    exists: el.exists(),
+    checked: el.exists() ? el.attributes("aria-checked") === "true" : null,
+    tag: el.exists() ? el.element.tagName : null,
+    attrs: el.exists() ? el.attributes() : {},
+  };
+}
+
 describe("settings notifications section", () => {
   // jsdom/bun does not ship a Notification global; SettingsView probes
   // `typeof Notification === "undefined"` as its capability boundary, so most
   // tests need a minimal granted-permission stub installed.
   const notificationStub = Object.assign(function () {}, { permission: "granted" });
-
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
@@ -60,22 +70,29 @@ describe("settings notifications section", () => {
     lib.getExistingSubscription.mockResolvedValue(null);
     lib.isDesktopNotificationsEnabled.mockReturnValue(false);
   });
-  it("renders On when isDesktopNotificationsEnabled is true", async () => {
+  it("renders an on switch when the app preference is enabled and the browser grants it", async () => {
     lib.isDesktopNotificationsEnabled.mockReturnValue(true);
     const w = mountSettings();
     await flush();
     expect(w.find('[data-test="notif-state"]').text()).toBe("On");
-    expect(w.find('[data-test="notif-toggle"]').text()).toBe("Disable notifications");
+    const sw = notifSwitch(w);
+    expect(sw.exists).toBe(true);
+    expect(sw.tag).toBe("BUTTON");
+    expect(sw.attrs.role).toBe("switch");
+    expect(sw.checked).toBe(true);
+    // A switch carries no action copy: the visual state IS the affordance.
+    expect(w.find('[data-test="notif-toggle"]').text()).toBe("");
+    expect(sw.attrs["aria-label"]).toBe("Desktop notifications");
     vi.unstubAllGlobals();
   });
 
-  it("renders Off when matching subscription exists but isDesktopNotificationsEnabled is false", async () => {
+  it("renders an off switch when a subscription exists but the app preference is off", async () => {
     lib.getExistingSubscription.mockResolvedValue({ endpoint: "https://push/e1" });
     lib.isDesktopNotificationsEnabled.mockReturnValue(false);
     const w = mountSettings();
     await flush();
     expect(w.find('[data-test="notif-state"]').text()).toBe("Off");
-    expect(w.find('[data-test="notif-toggle"]').text()).toBe("Enable notifications");
+    expect(notifSwitch(w).checked).toBe(false);
     vi.unstubAllGlobals();
   });
 
@@ -85,30 +102,33 @@ describe("settings notifications section", () => {
     const w = mountSettings();
     await flush();
     expect(w.find('[data-test="notif-state"]').text()).toBe("Off");
-    expect(w.find('[data-test="notif-toggle"]').exists()).toBe(true);
-    expect(w.find('[data-test="notif-toggle"]').text()).toBe("Enable notifications");
+    expect(notifSwitch(w).exists).toBe(true);
+    expect(notifSwitch(w).checked).toBe(false);
     await w.find('[data-test="notif-toggle"]').trigger("click");
     await flush();
     expect(lib.enableDesktopNotifications).toHaveBeenCalledWith(null);
     expect(w.find('[data-test="notif-state"]').text()).toBe("On");
+    expect(notifSwitch(w).checked).toBe(true);
     vi.unstubAllGlobals();
   });
 
-  it("renders On and allows disabling when local notifications are enabled even if VAPID is null", async () => {
+  it("turning the switch off stops app notifications without claiming the permission was revoked", async () => {
     lib.fetchVapidPublicKey.mockResolvedValue(null);
     lib.isDesktopNotificationsEnabled.mockReturnValue(true);
     const w = mountSettings();
     await flush();
-    expect(w.find('[data-test="notif-state"]').text()).toBe("On");
-    expect(w.find('[data-test="notif-toggle"]').exists()).toBe(true);
+    expect(notifSwitch(w).checked).toBe(true);
     await w.find('[data-test="notif-toggle"]').trigger("click");
     await flush();
     expect(lib.disableDesktopNotifications).toHaveBeenCalledTimes(1);
     expect(w.find('[data-test="notif-state"]').text()).toBe("Off");
+    expect(notifSwitch(w).checked).toBe(false);
+    // The browser permission is still granted; the copy must not imply otherwise.
+    expect(w.text()).not.toContain("permission denied");
     vi.unstubAllGlobals();
   });
 
-  it("toggle-on calls enableDesktopNotifications and flips to 已开启", async () => {
+  it("switch-on calls enableDesktopNotifications and flips to On", async () => {
     vi.stubGlobal("navigator", {
       ...navigator,
       serviceWorker: { ready: Promise.resolve({ pushManager: { getSubscription: vi.fn().mockResolvedValue(null) } }) },
@@ -119,10 +139,11 @@ describe("settings notifications section", () => {
     await flush();
     expect(lib.enableDesktopNotifications).toHaveBeenCalledWith("PK");
     expect(w.find('[data-test="notif-state"]').text()).toBe("On");
+    expect(notifSwitch(w).checked).toBe(true);
     vi.unstubAllGlobals();
   });
 
-  it("toggle-off calls disableDesktopNotifications and flips to 未开启", async () => {
+  it("switch-off calls disableDesktopNotifications and flips to Off", async () => {
     lib.isDesktopNotificationsEnabled.mockReturnValue(true);
     lib.getExistingSubscription.mockResolvedValue({ endpoint: "https://push/e1" });
     const w = mountSettings();
@@ -134,7 +155,7 @@ describe("settings notifications section", () => {
     vi.unstubAllGlobals();
   });
 
-  it("permission-denied during enable shows denied state with hint", async () => {
+  it("permission-denied during enable shows a blocked state with the info hint and an off switch", async () => {
     lib.enableDesktopNotifications.mockRejectedValueOnce(new Error("permission-denied"));
     vi.stubGlobal("navigator", {
       ...navigator,
@@ -146,8 +167,51 @@ describe("settings notifications section", () => {
     await flush();
     expect(w.find('[data-test="notif-state"]').text()).toBe("Notification permission denied");
     expect(w.find('[data-test="notif-info"]').exists()).toBe(true);
+    expect(notifSwitch(w).checked).toBe(false);
     const texts = w.findAllComponents(Tooltip).map((tip) => String(tip.props("text")));
     expect(texts.join(" ")).toContain("browser site settings");
+    vi.unstubAllGlobals();
+  });
+
+  it("re-probes when the browser permission changes, so a denied row can recover", async () => {
+    // A PermissionStatus is an EventTarget; jsdom lacks navigator.permissions.
+    const status = new EventTarget() as PermissionStatus;
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      permissions: { query: vi.fn().mockResolvedValue(status) },
+    });
+    const deniedStub = Object.assign(function () {}, { permission: "denied" });
+    globalThis.Notification = deniedStub as unknown as typeof Notification;
+    const w = mountSettings();
+    await flush();
+    expect(w.find('[data-test="notif-state"]').text()).toBe("Notification permission denied");
+
+    // The user unblocks the site elsewhere; the permission object flips.
+    globalThis.Notification = notificationStub as unknown as typeof Notification;
+    status.dispatchEvent(new Event("change"));
+    await flush();
+    expect(w.find('[data-test="notif-state"]').text()).toBe("Off");
+    expect(notifSwitch(w).checked).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("marks the switch busy while the permission request is in flight", async () => {
+    const pending = Promise.withResolvers<void>();
+    lib.enableDesktopNotifications.mockImplementationOnce(() => pending.promise);
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      serviceWorker: { ready: Promise.resolve({ pushManager: { getSubscription: vi.fn().mockResolvedValue(null) } }) },
+    });
+    const w = mountSettings();
+    await flush();
+    await w.find('[data-test="notif-toggle"]').trigger("click");
+    await flush();
+    const sw = w.find('[data-test="notif-toggle"]');
+    expect(sw.attributes("aria-busy")).toBe("true");
+    expect(sw.attributes("disabled")).toBeDefined();
+    pending.resolve();
+    await flush();
+    expect(w.find('[data-test="notif-toggle"]').attributes("aria-busy")).toBe("false");
     vi.unstubAllGlobals();
   });
 
@@ -167,8 +231,8 @@ describe("settings notifications section", () => {
     await w.find('[data-test="notif-toggle"]').trigger("click");
     await flush();
     expect(w.find('[data-test="notif-state"]').text()).toBe("On");
-    expect(w.find('[data-test="notif-toggle"]').exists()).toBe(true);
-    expect(w.find('[data-test="notif-toggle"]').text()).toBe("Disable notifications");
+    expect(notifSwitch(w).exists).toBe(true);
+    expect(notifSwitch(w).checked).toBe(true);
     vi.unstubAllGlobals();
   });
 
