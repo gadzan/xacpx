@@ -34,13 +34,15 @@ UX1 is the first implementation PR. It does not change the relay protocol, the c
 
 ### Problem
 
-An agent that waits for an approval or an answer already produces:
+An agent that waits for an answer already produces:
 
 - `interaction-opened` and `interaction-closed` events.
 - an authoritative `interaction-snapshot` after reconnect.
 - a per-session `attention-dot`.
 - a session or conversation form when the user opens the right pane.
 - a Web Push notification.
+
+The shipped inbox covers elicitation questions. `InteractionKindDto` has two members, and only `elicitation` is implemented today: `permission` is a reserved kind that the transport does not carry and the Web store drops on arrival. Permission cards therefore stay out of scope until the reserved permission interaction kind is implemented, and this PR does not implement it.
 
 The user still has to find the right instance, session, Bot, or Group. On a phone this is the difference between answering in five seconds and missing the request until it expires.
 
