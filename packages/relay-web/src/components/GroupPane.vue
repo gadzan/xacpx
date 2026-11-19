@@ -37,7 +37,6 @@ import MobileSheet from "./MobileSheet.vue";
 import UiButton from "./UiButton.vue";
 import { useIsMobile } from "../lib/use-dropdown";
 import { backInFlight } from "../lib/mobile-back";
-import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
 import { useConversationTimelineFeed } from "../lib/use-timeline-feed";
 import {
   activeSpeakerTurnId,
@@ -256,8 +255,7 @@ watch(() => groupsStore.instanceId, (instId) => {
     void instancesStore.loadFormOptions(instId).catch(() => null);
   }
 }, { immediate: true });
-// Member order follows the group's own botIds: the collage falls back to that
-// order for members nobody has heard from yet.
+// Member order follows the group's own botIds, and the collage draws that order.
 const memberBots = computed<BotSummaryDto[]>(() => {
   const byId = new Map(bots.value.filter((b) => b.retired !== true).map((b) => [b.id, b]));
   return (group.value?.botIds ?? []).flatMap((id) => {
@@ -266,7 +264,6 @@ const memberBots = computed<BotSummaryDto[]>(() => {
   });
 });
 const disabledMemberCount = computed(() => memberBots.value.filter((b) => !b.enabled || b.retired).length);
-const activityBotIds = useGroupAvatarActivity();
 type MemberStatus =
   | { kind: "none-enabled" }
   | { kind: "some-disabled"; names: string; lead?: string; fallback?: string };
@@ -666,10 +663,8 @@ const worktreeRunId = computed(() => {
         <button type="button" data-test="group-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
                 class="grid h-9 w-9 shrink-0 place-items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
                 @click="memberPanelOpen = true">
-          <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="28" :name="group?.title ?? $t('group.nav.title')"
-                            :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
-                            :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
-                            style="--avatar-ring: transparent" />
+          <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
+                            :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount" />
         </button>
         <span class="max-w-32 truncate text-xs font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span>
       </div>
@@ -710,14 +705,15 @@ const worktreeRunId = computed(() => {
          fixed/absolute descendants, which would trap TopicSwitcher's popover, confirm
          dialog and row menu inside this header. -->
     <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
-      <!-- The desktop collage opens the same member panel as the mobile one. 32px keeps this
-           header close to one content-bar height; the mobile bar keeps its 44px stack. -->
+      <!-- One collage layout serves both bars: only the container size changes, so
+           a four-member Group draws four cells here and in the sidebar. 32px keeps
+           this header close to one content-bar height; the mobile bar uses the same
+           32 inside its 36px button (44px on a coarse pointer). -->
       <button type="button" data-test="group-desktop-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
               class="grid h-8 w-8 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="memberPanelOpen = true">
         <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
-                          :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
                           style="--avatar-ring: rgb(var(--c-surface))" />
       </button>
       <div class="flex min-w-0 flex-col">

@@ -68,9 +68,10 @@ test("a literal ~ workspace cwd survives adding another workspace", async () => 
   expect(workspaces.home).toEqual({ cwd: "~", description: "home directory" });
   expect(workspaces.notes).toEqual({ cwd: "~/notes" });
 
-  // The returned read model expands `~` for runtime use.
-  expect(config.workspaces.home?.cwd).toBe(homedir());
-  expect(config.workspaces.notes?.cwd).toBe(`${homedir()}/notes`);
+  // The returned read model expands `~` for runtime use — normalized to
+  // forward slashes, which is the canonical stored/spawn form.
+  expect(config.workspaces.home?.cwd).toBe(homedir().replaceAll("\\", "/"));
+  expect(config.workspaces.notes?.cwd).toBe(`${homedir().replaceAll("\\", "/")}/notes`);
 
   await rm(dir, { recursive: true, force: true });
 });

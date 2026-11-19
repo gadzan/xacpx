@@ -12,6 +12,7 @@ import { createConfig } from "../../../commands/command-router-test-support";
 import { makeGoldenHarness } from "../../../orchestration/golden/golden-harness";
 import { OrchestrationService } from "../../../../../src/orchestration/orchestration-service";
 import { ScheduledTaskService } from "../../../../../src/scheduled/scheduled-service";
+import { quoteIfNeeded } from "../../../../../src/util/text";
 
 test("PR8 Real Worker Topology: RuntimeEngine with compiled runtime-worker-main + acpx/runtime + real xacpx mcp-stdio -> Orchestration", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-mcp-real-worker-"));
@@ -77,7 +78,11 @@ test("PR8 Real Worker Topology: RuntimeEngine with compiled runtime-worker-main 
   const originalOrchSocket = process.env.XACPX_ORCHESTRATION_SOCKET;
   const originalCliCommand = process.env.XACPX_CLI_COMMAND;
   process.env.XACPX_ORCHESTRATION_SOCKET = endpoint.path;
-  process.env.XACPX_CLI_COMMAND = `${process.execPath} ${join(process.cwd(), "src/cli.ts")}`;
+  // Quote each part exactly as resolveDefaultXacpxCommand does: the value is
+  // parsed by splitCommandLine, where a bare backslash is an escape character,
+  // so raw Windows paths lose their separators and the mcp-stdio child can
+  // never spawn.
+  process.env.XACPX_CLI_COMMAND = `${quoteIfNeeded(process.execPath)} ${quoteIfNeeded(join(process.cwd(), "src/cli.ts"))}`;
 
   try {
     const MOCK_DELEGATE_AGENT = join(process.cwd(), "tests/fixtures/mock-acp-delegate-agent.mjs");

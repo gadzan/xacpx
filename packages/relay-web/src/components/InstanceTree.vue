@@ -28,8 +28,6 @@ import DropdownPanel from "./DropdownPanel.vue";
 import Tooltip from "./Tooltip.vue";
 import type { GroupArchivedMode, GroupArchivedState, InstanceView } from "../stores/instances";
 import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
-
 
 // Local directive: focus + select an element on mount (the rename input).
 const vFocus = {
@@ -43,8 +41,6 @@ const terminals = useTerminalStore();
 const directBotsStore = useDirectBotsStore();
 const groupsStore = useGroupsStore();
 const { t } = useI18n();
-// The collage order of the open Group; other rows keep their botIds order.
-const activityBotIds = useGroupAvatarActivity();
 
 // A session row carries the agent NAME; the brand glyph keys on its driver. Prefer the
 // driver carried on the row itself (server-resolved; sleeping rows live outside the
@@ -148,7 +144,7 @@ function botsWithEnabled(instanceId: string, enabled: boolean): BotSummaryDto[] 
   return (directBotsStore.botsByInstance[instanceId] ?? [])
     .filter((b) => b.enabled === enabled && b.retired !== true);
 }
-/** A group's members in the group's own order: the collage's fallback order. */
+/** A group's members in the group's own order, which is also the collage's. */
 function groupMemberBots(instanceId: string, group: GroupSummaryDto): BotSummaryDto[] {
   const byId = new Map((directBotsStore.botsByInstance[instanceId] ?? []).map((b) => [b.id, b]));
   return group.botIds.flatMap((id) => {
@@ -774,36 +770,53 @@ const rowSwipes = computed(() => {
     <!-- Sticky so the instance list scrolls under the mode row. -->
     <div v-if="store.instances.length" data-test="instance-nav-track-wrap"
          class="sticky top-0 z-10 -mx-2 -mt-1.5 bg-surface px-2 pb-1 pt-1.5">
-      <div data-test="instance-nav-track" class="flex min-w-0 items-center gap-0.5 rounded-btn bg-fill-track p-0.5">
+      <!-- The rail is the 32px recessed fill. On a coarse pointer the row grows
+           to 44 so each segment owns a real 44 hit box, while the rail and the
+           selected pill keep their 32 and 28 visual heights. -->
+      <div data-test="instance-nav-track" class="relative flex min-w-0 items-center gap-0.5 [@media(pointer:coarse)]:h-11">
+        <span aria-hidden="true" data-test="instance-nav-rail"
+              class="pointer-events-none absolute inset-x-0 top-1/2 h-8 -translate-y-1/2 rounded-btn bg-fill-track"></span>
         <button
           type="button"
           data-test="instance-nav-sessions"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
-          :class="navMode === 'sessions' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
+          class="relative flex h-7 min-w-0 flex-1 items-center justify-center text-xs font-medium [@media(pointer:coarse)]:h-11"
+          :class="navMode === 'sessions' ? 'font-semibold text-fg' : 'text-fg-muted'"
           @click="setMode('sessions')"
         >
-          <MessageSquare :size="11" class="shrink-0" />
-          <span class="truncate" :title="$t('nav.sessions')">{{ $t("nav.sessions") }}</span>
+          <span data-test="instance-nav-pill"
+                class="flex h-7 w-full min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 transition-colors"
+                :class="navMode === 'sessions' ? 'bg-raised shadow-press' : 'hover:bg-fill-hover'">
+            <MessageSquare :size="11" class="shrink-0" />
+            <span class="truncate" :title="$t('nav.sessions')">{{ $t("nav.sessions") }}</span>
+          </span>
         </button>
         <button
           type="button"
           data-test="instance-nav-bots"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
-          :class="navMode === 'bots' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
+          class="relative flex h-7 min-w-0 flex-1 items-center justify-center text-xs font-medium [@media(pointer:coarse)]:h-11"
+          :class="navMode === 'bots' ? 'font-semibold text-fg' : 'text-fg-muted'"
           @click="setMode('bots')"
         >
-          <Bot :size="11" class="shrink-0" />
-          <span class="truncate" :title="$t('nav.bots')">{{ $t("nav.bots") }}</span>
+          <span data-test="instance-nav-pill"
+                class="flex h-7 w-full min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 transition-colors"
+                :class="navMode === 'bots' ? 'bg-raised shadow-press' : 'hover:bg-fill-hover'">
+            <Bot :size="11" class="shrink-0" />
+            <span class="truncate" :title="$t('nav.bots')">{{ $t("nav.bots") }}</span>
+          </span>
         </button>
         <button
           type="button"
           data-test="instance-nav-groups"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
-          :class="navMode === 'groups' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
+          class="relative flex h-7 min-w-0 flex-1 items-center justify-center text-xs font-medium [@media(pointer:coarse)]:h-11"
+          :class="navMode === 'groups' ? 'font-semibold text-fg' : 'text-fg-muted'"
           @click="setMode('groups')"
         >
-          <Users :size="11" class="shrink-0" />
-          <span class="truncate" :title="$t('nav.groups')">{{ $t("nav.groups") }}</span>
+          <span data-test="instance-nav-pill"
+                class="flex h-7 w-full min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 transition-colors"
+                :class="navMode === 'groups' ? 'bg-raised shadow-press' : 'hover:bg-fill-hover'">
+            <Users :size="11" class="shrink-0" />
+            <span class="truncate" :title="$t('nav.groups')">{{ $t("nav.groups") }}</span>
+          </span>
         </button>
       </div>
     </div>
@@ -920,7 +933,7 @@ const rowSwipes = computed(() => {
             <div
               v-else
               data-test="bot-row"
-              class="bot-sidebar-row group relative flex h-10 items-center rounded-sm transition-colors"
+              class="bot-sidebar-row group relative flex min-h-10 items-center rounded-sm transition-colors"
               :class="isBotSelected(inst.id, entry.bot.id) ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'"
             >
               <button
@@ -928,7 +941,7 @@ const rowSwipes = computed(() => {
                 class="flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1.5 text-left"
                 @click="onBotTap(inst.id, entry.bot.id)"
               >
-                <BotAvatar :avatar="entry.bot.avatar" :driver="driverForAgentName(inst, entry.bot.agent)" :name="entry.bot.name" :size="24"
+                <BotAvatar :avatar="entry.bot.avatar" :driver="driverForAgentName(inst, entry.bot.agent)" :name="entry.bot.name" :size="40" crop
                            :disabled="!entry.bot.enabled" :retired="entry.bot.retired" :state="inst.online ? 'idle' : 'offline'"
                            :class="!entry.bot.enabled ? 'opacity-50' : ''" />
                 <span class="flex min-w-0 flex-1 flex-col">
@@ -966,7 +979,7 @@ const rowSwipes = computed(() => {
             </div>
           </template>
 
-          <!-- Bots footer: new Bot + manage (the disabled toggle moved above the list). -->
+          <!-- Bots footer: New Bot and manage instance. -->
           <div class="flex items-center gap-0.5 pb-px pl-2 pt-1">
             <button
               type="button"
@@ -1023,13 +1036,11 @@ const rowSwipes = computed(() => {
                class="group relative flex items-center rounded-sm transition-colors"
                :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'">
             <button
-              class="relative flex min-h-10 min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
+              class="relative flex min-h-10 min-w-0 flex-1 items-center gap-2 py-1 pl-2.5 pr-1.5 text-left"
               @click="onGroupTap(inst.id, g.id)"
             >
-              <GroupAvatarStack :bots="groupMemberBots(inst.id, g)" :instance-id="inst.id" :size="36" :name="g.title"
+              <GroupAvatarStack :bots="groupMemberBots(inst.id, g)" :instance-id="inst.id" :size="40" :name="g.title"
                                 :total-count="g.botIds.length" :disabled-count="groupDisabledCount(inst.id, g)"
-                                :lead-bot-id="g.leadBotId"
-                                :activity-bot-ids="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? activityBotIds : undefined"
                                 decorative
                                 :style="{ '--avatar-ring': groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'rgb(var(--c-raised))' : 'rgb(var(--c-surface))' }" />
               <div class="flex min-w-0 flex-1 flex-col">
@@ -1305,7 +1316,7 @@ const rowSwipes = computed(() => {
 
 <style scoped>
 @media (hover: none), (pointer: coarse) {
-  .bot-sidebar-row { height: 44px; }
+  .bot-sidebar-row { min-height: 44px; }
   .bot-menu-trigger { width: 44px; height: 44px; margin-right: 0; }
   .bot-disabled-toggle { min-height: 44px; }
 }

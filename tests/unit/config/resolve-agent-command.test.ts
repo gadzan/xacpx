@@ -96,7 +96,11 @@ test("runtime resolution uses a statically valid active release and falls back o
     }));
     const pointerPath = join(runtimeRoot, "adapters", "codex", "active.json");
     await writeFile(pointerPath, JSON.stringify({ version: "2.2.2", releaseId, activatedAt: "now" }));
-    expect(resolveRuntimeAgentCommand("codex", undefined, true, undefined, undefined, runtimeRoot)).toContain(entry);
+    // POSIX renders the active release as a bare command line; Windows renders
+    // it as quoted argv with escaped backslashes. Flatten both to the paths.
+    const flatten = (value: string) => value.replaceAll('"', "").replaceAll("\\\\", "\\");
+    expect(flatten(resolveRuntimeAgentCommand("codex", undefined, true, undefined, undefined, runtimeRoot)))
+      .toContain(entry);
     await writeFile(pointerPath, "not-json");
     expect(resolveRuntimeAgentCommand("codex", undefined, true, undefined, undefined, runtimeRoot)).toContain("npx -y");
   } finally {

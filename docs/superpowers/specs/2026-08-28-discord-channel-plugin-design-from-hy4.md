@@ -119,7 +119,7 @@ packages/channel-discord/
     ├── provider.ts              # parseBooleanFlag / takeFlagValue 的**包内副本**
     │                            # （这两个 helper 未从 xacpx/plugin-api 运行时导出，见 §13 红线）
     ├── inbound.ts               # chatKey 构造/解析、门控、mention 清洗
-    ├── outbound.ts              # sendWithThreadFallback：唯一的归档 thread 降级入口（round 8 删掉零引用的 sendRouteText helper）
+    ├── outbound.ts              # sendWithThreadFallback：归档 thread 降级入口之一（sendRouteText 仍在使用，见 §18）
     ├── preview-stream.ts        # ⭐ 过程预览流控（核心，语义见 F2）
     ├── chunk.ts                 # ⭐ 2000 字符分片器（核心）
     ├── markdown.ts              # tableMode 转换 + 出站降级

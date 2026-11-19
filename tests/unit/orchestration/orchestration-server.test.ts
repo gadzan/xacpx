@@ -1211,7 +1211,10 @@ test("skips socket chmod for windows named-pipe endpoints", async () => {
 
 test("socket chmod failure is non-fatal and reported", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-orch-server-"));
-  const endpoint = resolveOrchestrationEndpoint(dir);
+  // Force a unix-socket endpoint: on Windows the resolver returns a named pipe,
+  // and hardening is deliberately skipped there (the pipe DACL already
+  // restricts access), which would leave nothing for this case to assert.
+  const endpoint = { kind: "unix" as const, path: join(dir, "orch.sock") };
   const hardenErrors: unknown[] = [];
   const server = new OrchestrationServer(endpoint, makeServerHandlers(), {
     createServer: (() => new FakeNetServer()) as unknown as typeof createServer,

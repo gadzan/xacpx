@@ -1,5 +1,13 @@
 # Agent 气泡重构：文本独立气泡 + 常驻过程入口 + 执行过程抽屉
 
+> **组件已被替换（2026-11 复核）**：本文点名的 `ThinkingDotsTrigger.vue`、`TraceLink.vue`、
+> `ConversationMessageList.vue`、`GroupTranscript.vue`、`GroupAgentTurnRow.vue`、
+> `lib/group-live-stream.ts` 均已删除——`packages/relay-web/src/__tests__/group-components.test.ts`
+> 断言这些模块**不得**再解析；当前渲染由 `components/ConversationTimeline.vue` /
+> `TimelineRow.vue` 承载（见 `docs/relay-web-module.md`）。
+> 唯一仍存在的命名是 `textBubblesOf`（`packages/relay-web/src/lib/turn-presentation.ts`）。
+> 本文保留为设计记录。
+
 - 日期：2026-11-03
 - 状态：设计定稿，实施中（Autopilot-full）
 - 分支：`feature/agent-bubble-text-dots-trace`

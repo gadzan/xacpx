@@ -3357,6 +3357,56 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const terminalInteractionCount = computed<number>(() => terminalInteractions.value.size);
 
   /**
+   * The clock the inbox reads for expiry and time-left. `Date.now()` is not
+   * reactive, so a computed that filtered on it would freeze: an expired row
+   * would stay countable until an unrelated write happened to re-evaluate it.
+   * The inbox starts this clock on mount and stops it on unmount (refcounted,
+   * so a sheet and a popover mounted together do not double-tick); tests set
+   * `inboxNowMs` directly instead of waiting for a tick.
+   */
+  const inboxNowMs = ref<number>(Date.now());
+  let inboxClock: NodeJS.Timeout | null = null;
+  let inboxClockUsers = 0;
+  function startInboxClock(): void {
+    inboxClockUsers += 1;
+    if (inboxClock !== null) return;
+    inboxNowMs.value = Date.now();
+    inboxClock = setInterval(() => {
+      inboxNowMs.value = Date.now();
+    }, 1000);
+    // A live interval holds the Node/test loop open; the browser clears it on
+    // unmount through stopInboxClock. Unref where supported so a forgotten
+    // stop cannot hold the process open.
+    if (typeof inboxClock.unref === "function") inboxClock.unref();
+  }
+  function stopInboxClock(): void {
+    inboxClockUsers = Math.max(0, inboxClockUsers - 1);
+    if (inboxClockUsers > 0 || inboxClock === null) return;
+    clearInterval(inboxClock);
+    inboxClock = null;
+  }
+
+  /**
+   * Every open interaction under the account, oldest deadline first. A READ
+   * view over `pendingInteractions`: no second map, so an answer submitted
+   * from the inbox updates the same state the pane form renders, and the
+   * existing `interaction-closed` / snapshot / expiry paths retire the row
+   * everywhere at once. Terminal entries stay in their pane and never appear
+   * here. Expired entries are hidden once the clock passes them; the store
+   * retires them through its existing paths (submit guard, pane reconcile).
+   * `Array.sort` is stable, so equal deadlines keep arrival order.
+   */
+  const openInteractions = computed<PendingInteractionState[]>(() => {
+    const now = inboxNowMs.value;
+    return [...pendingInteractions.value.values()]
+      .filter((state) => state.request.expiresAt > now)
+      .sort((a, b) => a.request.expiresAt - b.request.expiresAt);
+  });
+  /** Badge count. Reads the same filtered view, so an expired row leaves the
+   *  badge with its row instead of lingering until the next store write. */
+  const openInteractionCount = computed<number>(() => openInteractions.value.length);
+
+  /**
    * Is this request still held OPEN, rather than retired or dropped?
    *
    * Exists because `pendingInteraction` is the VISIBLE form for the current pane,
@@ -4439,6 +4489,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // terminal set is bounded (see TERMINAL_INTERACTION_LIMIT), and this makes the
     // bound observable rather than an internal implementation detail.
     terminalInteractionCount,
+    // The UX1 cross-instance inbox: every open interaction under the account,
+    // oldest deadline first, plus the badge count. Read-only views over
+    // `pendingInteractions` — the store keeps no second copy.
+    openInteractions,
+    openInteractionCount,
+    inboxNowMs,
+    startInboxClock,
+    stopInboxClock,
     requestStillHeld,
     interactionForMember,
     terminalInteractionOutcome,

@@ -31,9 +31,11 @@
 
 ```text
 /config set channel.replyMode final
+/config set channels.feishu.replyMode final
 /config set logging.level debug
 /config set transport.permissionMode approve-reads
 /config set workspaces.backend.description backend repo
+/config set language en
 ```
 
 ---
@@ -53,14 +55,19 @@
 - `logging.maxFiles`
 - `logging.retentionDays`
 - `channel.replyMode`
+- `channels.<id>.replyMode`（频道级默认；运行时热改，立即对该频道新回合生效）
+- `language`
 
 
 说明：性能 debug 日志 `logging.perf.*` 不支持通过聊天里的 `/config set` 动态开关。需要手动编辑 `~/.xacpx/config.json` 的 `logging.perf`，然后重启 daemon；该 tracer 在启动时绑定。
+
+说明：`/config set transport.type` 与 `/config set transport.command` 会写入 `~/.xacpx/config.json`，但**不会热生效**——daemon 重启前运行时传输仍保持当前取值（会记录 `config.topology_pending_restart`）。上面其余路径均为热生效。使用 `xacpx restart` 重启。
 
 兼容旧配置：
 
 - `channel.type`（旧单频道配置；多频道请使用 `xacpx channel ...`）
 - `channels[]`（多频道运行配置；推荐使用 `xacpx channel ...` 管理）
+- `wechat.replyMode`（已废弃别名；写入会映射到 `channel.replyMode`，接受值 `stream` / `final` / `verbose`）
 
 飞书凭据和多频道配置请优先用电脑终端里的频道 CLI 管理，例如 `xacpx channel add feishu`。完整说明见 [`docs/channel-management.md`](./channel-management_zh.md)。
 

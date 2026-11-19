@@ -50,6 +50,9 @@ xacpx status
 | `task_list` | 列出当前协调者拥有的所有任务。 |
 | `task_watch` | 长轮询任务，直到下一个事件、任务需要协调者处理，或达到终态（或超时）。返回 `events` 和 `nextAfterSeq`；下次调用时传入 `nextAfterSeq` 作为 `afterSeq` 可避免重放旧事件。终态响应包含 `- Result:`；需要处理的状态包含 `- Open question:`——无需单独调用 `task_get`。默认超时 60 秒；最长 20 分钟。 |
 | `task_cancel` | 取消任务。取消 `needs_confirmation` 状态的任务等同于拒绝。取消 `queued` 状态的任务立即生效，此时尚未分配会话。 |
+| `task_approve` | 批准一个由 `delegate_request` 返回为 `needs_confirmation` 状态的任务（需用户已授权）。任务随后开始运行。 |
+| `agent_list` | 列出范围内已授权的对等智能体会话，包括其角色、工作区和当前活动。发送前先查看此列表，确保目标与当前任务相关。 |
+| `agent_send` | 向另一个智能体发送高价值的异步对等消息。单向投递：目标运行时接受后即返回，绝不等待目标模型理解、完成或回复。 |
 | `coordinator_answer_question` | 为工作者提出的阻塞问题提供答案。 |
 | `coordinator_review_contested_result` | 解决工作者提出的有争议结果。 |
 
@@ -58,6 +61,16 @@ xacpx status
 | 工具 | 说明 |
 |------|------|
 | `worker_raise_question` | 在委托任务内部调用，用于阻塞执行并向协调者提问。**不要从协调者侧调用此工具。** |
+
+### 仅限群组执行的工具
+
+仅在群组话题（Group Topic）执行内部暴露——外部协调者不可用：
+
+| 工具 | 说明 |
+|------|------|
+| `group_say` | 通过公开消息路径发布一条简短有界的公开备注（`text`），与最终回复走同一路径；不唤醒、不分发任何其他成员。每次成员回合最多 3 次调用，每次最多 1,000 个字符。 |
+| `group_send` | 在本次 Run 中公开分配给另一个当前群组 Bot 一个具体任务（`to`、`task`、可选 `expectedOutput`）。接受是持久化的，不授予任何人工许可权限。 |
+| `group_read_result` | 只读：列出发已完成的分配元数据（每页 16 行）或读取已完成的公开结果（每页 4,000 个字符），范围限定于本次执行的 Run。使用 `offset` / `limit` 分页，并跟随 `nextOffset` 直至为 null。 |
 
 ## 委托生命周期
 

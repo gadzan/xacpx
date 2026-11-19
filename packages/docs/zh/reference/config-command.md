@@ -53,7 +53,14 @@
 - `logging.maxFiles`
 - `logging.retentionDays`
 - `channel.replyMode`
+- `channels.<id>.replyMode`
 - `language`
+
+**向后兼容字段：**
+
+- `channel.type`（旧版单频道配置；多频道场景请使用 `xacpx channel ...`）
+- `channels[]`（多频道运行时配置；建议使用 `xacpx channel ...` 管理）
+- `wechat.replyMode`（已废弃别名；写入会映射到 `channel.replyMode`，接受值 `stream` / `final` / `verbose`）
 
 **动态字段**（命名目标必须已存在）：
 
@@ -63,6 +70,8 @@
 - `workspaces.<name>.description`
 
 > **性能日志**（`logging.perf.*`）不在 `/config set` 白名单中。若需启用，请直接编辑 `~/.xacpx/config.json` 并重启守护进程——性能追踪器在启动时绑定。
+
+> **传输拓扑**（`transport.type`、`transport.command`）会写入磁盘但不会热生效：守护进程重启前，运行时传输仍保持当前取值（会记录 `config.topology_pending_restart`）。上面其余路径均为热生效。使用 `xacpx restart` 重启。
 
 > **飞书凭据和多频道配置**最好在终端管理：`xacpx channel add feishu`。
 
@@ -102,6 +111,7 @@
 | 路径 | 接受的值 |
 |------|----------|
 | `channel.replyMode` | `stream`、`final`、`verbose` |
+| `channels.<id>.replyMode` | `stream`、`final`、`verbose` |
 | `transport.permissionMode` | `approve-all`、`approve-reads`、`deny-all` |
 | `transport.nonInteractivePermissions` | `deny`、`fail` |
 | `logging.maxFiles` | 正整数 |

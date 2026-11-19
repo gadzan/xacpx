@@ -177,7 +177,7 @@ xacpx channel add relay --url relay.example.com --token <T> [--name home-pc]
 xacpx restart
 ```
 
-把 `--url` 指向**与看板相同的主机**——裸域名会解析为 `wss://relay.example.com`，合并后的网关与该主机共用。`xacpx plugin add` 会从 npm 安装连接器，并自动拉取其依赖 `@ganglion/xacpx-relay-protocol`。实例侧的 `xacpx` 核心需 **≥ 0.11.0**（连接器的 peer 要求）。
+把 `--url` 指向**与看板相同的主机**——裸域名会解析为 `wss://relay.example.com`，合并后的网关与该主机共用。`xacpx plugin add` 会从 npm 安装连接器，并自动拉取其依赖 `@ganglion/xacpx-relay-protocol`。实例侧的 `xacpx` 核心需 **≥ 0.24.10-beta.18**（连接器的 peer 要求）。
 
 ::: details 从源码检出目录配对（开发）
 如果你从仓库检出目录运行实例，workspace 已经链接好了 `channel-relay` 与 `relay-protocol`——跳过 `plugin add`，直接运行 `xacpx channel add relay …` 即可。
@@ -203,7 +203,7 @@ xacpx restart
 
 ### 配对工作原理
 
-首次连接时，实例会用访问令牌换取一个长期有效的专属凭据，以 `0600` 权限写入 `<xacpx-home>/relay/credential.json`——**绝不会**写入 `config.json`（后者只保存 url/name）。令牌**仅在首次配对时使用**——后续所有重连均使用存储的凭据。
+首次连接时，实例会用访问令牌换取一个长期有效的专属凭据，以 `0600` 权限写入 `<xacpx-home>/relay/credential.json`。配对令牌本身**会**持久化保存在 `~/.xacpx/config.json` 中（与 url/name 并列）——请把该文件当作机密对待，因为拿到令牌即可冒充该实例。令牌**仅在首次配对时使用**——后续所有重连均使用存储的凭据。
 
 ::: tip 一个令牌，多个实例
 可以在多台机器（如 `home-pc`、`work-laptop`）上复用同一个令牌，它们都会在看板中归属于同一个用户。
@@ -248,6 +248,56 @@ server {
 }
 ```
 
+### 别让桌面票据进访问日志
+
+如果你启用了实例桌面（RFB/VNC），浏览器和连接器会各自建立一条 WebSocket，其票据**必须**放在查询字符串里：
+
+```text
+/desktop/observe?ticket=<browser-ticket>
+/desktop/instance?ticket=<connector-ticket>
+```
+
+浏览器的 WebSocket API 无法设置自定义认证头，所以查询字符串是那里唯一的载体；连接器侧沿用同样的形状，让两个平面行为一致。xacpx 自己的日志从不写这些票据（连接器只上报 origin+path），但**任何记录了请求 URI 的代理都会以明文把它们记下来**。
+
+票据是一次性的，TTL 60 秒，并在 upgrade 过程中被消费，所以泄露的票据通常已经失效——但请按 `/invite/<code>` 的情形同等对待：为这些路径关闭访问日志。
+
+Caddy —— 把 matcher 和 skip 声明为站点级指令：
+
+```caddyfile
+relay.example.com {
+    @desktop_ticket {
+        path /desktop/observe* /desktop/instance*
+    }
+
+    log
+    log_skip @desktop_ticket
+
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+`log_skip` 本身是一条 HTTP 指令——它**不是** `reverse_proxy` 的子指令，所以必须放在站点（或 route）块里。`log` 才是真正发出访问日志的指令；如果你从未配置 `log`，Caddy 不会写访问日志，也就没什么可跳过的。使用**命名** logger（`log <name> { ... }`）时，请把 `log_skip` 作为同级指令保留，并以同样的方式把 matcher 传给它——它作用于该 logger 的条目。
+
+> `log_skip` 需要 **Caddy 2.8+**。更老的 Caddy 中该指令名为 `skip_log`；如果 `caddy validate` 不接受 `log_skip`，就改用那个名字。
+
+nginx —— 保留代理，但停止记录这两个 location：
+
+```nginx
+    # Ticket-bearing WebSocket upgrades: must NOT appear in access logs.
+    location ~ ^/desktop/(observe|instance) {
+        access_log off;
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+```
+
+这个正则 location 必须声明成能在这两个路径上胜出 `location /` 的形式（nginx 优先最长字面前缀，但正则按顺序匹配——请按上面所示放置，或者如果你更喜欢前缀匹配，就用 `location ^~ /desktop/`）。
+
+受支持的 RFB 服务端的服务端配置见 [`docs/desktop-rfb-setup.md`](https://github.com/gadzan/xacpx/blob/main/docs/desktop-rfb-setup.md)；更精简的运维速查手册是 `docs/relay-deployment.md`。
+
 ::: details 进阶：专用网关端口（`--ws-port`）
 如果你用 `xacpx-relay start --ws-port 8788` 启动 Hub，实例网关会获得自己的端口，而不再搭乘 HTTP 端口。届时你可以再加一个被代理的域名（`gateway.example.com` → `8788`），并让连接器指向 `wss://gateway.example.com`。仅当你想把网关与看板分开配置防火墙时才需要这样做。
 :::
@@ -259,6 +309,128 @@ server {
 | 8787 | 浏览器（看板 + API + 看板 `/ws`）**以及** xacpx 实例（合并后的网关） | 是，需置于 TLS 之后 |
 | 8788 | 仅当你启用 `--ws-port` 时——专用实例网关 | 是，需置于 TLS 之后 |
 | — | `relay.db` | 绝不——它是一个本地文件 |
+
+## 实例桌面（RFB/VNC） {#instance-desktop}
+
+每个在线实例都可以选择把它的**本地图形桌面**开放给看板，这样你不只能操控它的会话，还能观看和控制这台机器本身。本节是各平台配置与排障指南的站点内对应内容；完整参考见 [`docs/desktop-rfb-setup.md`](https://github.com/gadzan/xacpx/blob/main/docs/desktop-rfb-setup.md)（中文），运维速查手册是 `docs/relay-deployment.md`。
+
+### 你能得到什么，不能得到什么
+
+| | 当前 |
+|---|---|
+| **支持的服务端** | 提供 **outer VNC Auth（security type 2）** 的 RFB 服务端，以及 macOS 屏幕共享（**Apple Remote Desktop，type 30**，由连接器侧终止握手） |
+| **平台** | Linux、Windows 和 macOS 的交互式用户会话 |
+| **Viewer 数** | 每个实例同时一个桌面流 |
+| **传输** | 一条**独立的二进制 WebSocket**——framebuffer 不会进入控制平面，因此桌面流量不会阻塞聊天或终端输入 |
+| **端口** | 不新增任何公网端口。连接器在实例上主动连 `127.0.0.1:<port>`；**5900 绝不会暴露到互联网** |
+| **设计上拒绝的认证方式** | `None`（无认证）、Tight-only、VeNCrypt/TLS-only 与专有认证 |
+| **本版本不支持** | 多 viewer、文件传输、剪贴板同步、会话录制 |
+
+启用桌面会声明 `desktop.rfb.v1` 与 `desktop.ard-auth.v1` 能力。没有 `desktop.rfb.v1` 的实例在看板中不会显示 Desktop 入口。macOS 登录会在标签页里要求账户名和密码；什么都不保存，重连会再问一次。
+
+### 在实例上启用
+
+桌面按实例选择性开启，写在连接器已经在用的 channel-relay 配置里：
+
+```json
+{
+  "channels": {
+    "relay": {
+      "enabled": true,
+      "options": {
+        "url": "wss://relay.example.com",
+        "desktop": {
+          "enabled": true,
+          "port": 5900,
+          "connectTimeoutMs": 1500,
+          "maxStreams": 1
+        }
+      }
+    }
+  }
+}
+```
+
+| 选项 | 默认值 | 说明 |
+|---|---|---|
+| `enabled` | `false` | 总开关。省略或 `false` → 完全不会创建流状态。 |
+| `port` | `5900` | 1–65535 的整数。这是连接器在 loopback 上**主动连接**的端口——配置指引和错误信息里报的就是这个值。 |
+| `connectTimeoutMs` | `1500` | 250–10000。loopback TCP 连接、banner 预检和 Hub upgrade 三者共用。 |
+| `maxStreams` | `1` | v1 固定为 `1`（单 viewer）——填其他值会在配置解析时被拒绝。 |
+
+`host` / `hostname` / `target` 会**被拒绝**——目标固定为 loopback，因此连接器不可能变成通用 TCP 代理。
+
+VNC 密码在看板中按标签页输入，只保存在标签页内存中：绝不写入磁盘、绝不出现在日志里、也绝不放在 URL 中。
+
+### Windows（TightVNC）
+
+1. 安装 TightVNC，并以**已登录用户的会话**运行 **server**——不要作为服务运行。服务会话显示的是另一个（空白的）桌面。
+2. 认证：选择 **VNC password** 模式。必须设置主密码；除非你也打算在看板里输入 Windows 用户名，否则保持 "Require user authentication" 关闭。
+3. 确认外层安全类型列表提供了 **type 2（VNC Auth）**。只提供 Tight（外层 type 16）的服务端会被拒绝——Tight-only 端点可以把子协商降到无认证。
+4. 访问控制：使用 **LoopbackOnly** 访问控制加 Windows 防火墙。`LoopbackOnly` 是*访问控制*，不是绑定地址控制——绑定 `0.0.0.0` 加上仅回环的访问控制是可以接受的部署，因为外部连接仍然被拒绝。
+5. 先在本地验证，再从外部验证：
+
+```powershell
+netstat -ano | findstr :5900
+```
+
+优先 `127.0.0.1:5900`。如果看到 `0.0.0.0:5900`，这**本身不算失败**——可接受的部署是 `0.0.0.0` 绑定 + 仅回环访问控制 + 防火墙。请改为确认 5900 从**第二台机器**不可达。
+
+**锁屏、UAC 和登录界面不予保证。** 这是 Windows 交互式桌面的硬性限制，不是 bug：
+
+- 锁定工作站后，TightVNC 仍然继续渲染，但键盘和鼠标事件到不了锁屏。看板会显示一张看起来是实时的画面，但输入没有任何效果。
+- UAC 提权渲染在**安全桌面**上，VNC 既看不到也无法驱动。
+- 要远程一台主机，它必须**已经登录**。如果你需要登录界面，请使用平台自带的 RDP/远程管理。
+
+### Linux（TigerVNC / x11vnc）
+
+标准 VncAuth，并且 RFB 服务端必须拒绝外部连接：
+
+```bash
+ss -ltnp | grep 5900
+```
+
+优先 `127.0.0.1:5900`。`0.0.0.0` 绑定不必然错误，但必须配合访问控制/防火墙，并验证从另一台机器不可达。
+
+- **TigerVNC / x11vnc** —— 标准 VncAuth，首选。
+- **WayVNC** —— 默认的安全配置会**被拒绝**。必须以 legacy VncAuth 兼容模式运行（`relax_encryption` + `allow_broken_crypto`）。这是一个刻意为之的弱安全过渡配置：只在保持 loopback-only 时可接受，不要复制到任何非 loopback 部署中。它还要求 **WayVNC 0.10.0 或更新版本**（legacy DES 认证在该版本才落地）。
+- **GNOME 屏幕共享**（VeNCrypt v1）—— Phase A 不支持。
+
+### macOS
+
+macOS 屏幕共享是一条受支持的路径：连接器在实例本机完成 Apple Remote Desktop（type 30）握手（`desktop.ard-auth.v1`），浏览器看到的是普通的 RFB 3.8 流。
+
+1. 系统设置 › 通用 › 共享 › **屏幕共享**，并允许你要登录的账户。
+2. 在 macOS 提示时授予屏幕录制和辅助功能权限。
+3. 除非你就是想走 VNC 密码路径，否则关掉「VNC 观看者可以使用密码控制屏幕」——同时提供两者的 Mac 会走 VNC 密码路径。
+
+在看板中点击 **Desktop**：标签页会要求 macOS 账户名（短名或全名）和密码。它们经你已登录的控制连接送到这台 Mac 的连接器，只用于 ARD 握手，然后丢弃——什么都不保存，每次重连都会再问一次（账户名会在标签页中预填）。过旧、还不支持 ARD pre-auth 的连接器构建会报 `desktop-auth-unsupported`；请更新 `@ganglion/xacpx-channel-relay`。
+
+### 排障：打开失败
+
+错误会在看板横幅中显示，带一个稳定错误码加上 RFB 服务端自己的拒绝原文，指引是平台相关的——请逐字照做。
+
+| 错误码 | 含义 | 处理 |
+|---|---|---|
+| `desktop-disabled` | 实例未启用桌面 | 改 `enabled=true`，重连连接器 |
+| `desktop-busy` | 已有 viewer 接入 | 关掉另一个 Desktop 标签页 |
+| `desktop-rfb-unavailable` | loopback 端口被拒绝 | RFB 服务端没启动，或配置的 `port` 不对——信息里报的是**你**配置的端口 |
+| `desktop-not-rfb` | 端口有响应，但不是 RFB | `desktop.port` 指向了别的服务 |
+| `desktop-auth-unsupported` | 认证方式不被接受 | Tight-only 外层 16 / VeNCrypt / `None` / 专有认证——见上方各平台小节 |
+| `desktop-credentials-required` | macOS 要求账户名和密码 | 标签页显示的是表单，不是错误横幅 |
+| `desktop-credentials-rejected` | macOS 拒绝了账户名或密码 | 表单保持打开；改正它们，或在屏幕共享中允许该账户 |
+| `desktop-permission-denied` | 登录成功，但 macOS 没有开始会话 | 检查屏幕共享、屏幕录制和辅助功能权限 |
+| `desktop-protocol-error` | RFB 握手破坏了协议约定 | 检查 RFB 服务端类型和版本；见上方各平台小节 |
+| `desktop-stream-timeout` | tunnel 或 upgrade 超时 | 瞬时问题；重试 |
+| `desktop-instance-offline` | 实例掉线了 | 等实例回来；重试 |
+
+该看哪里：
+
+- **Hub 日志** —— `relay.desktop.stream.*`：`stream_active`、`stream_closed`（含原因），以及 `text_frame`、`oversize_frame`、`backpressure_close`、`preattach_overflow`。
+- **连接器日志** —— `relay.desktop.probe_rejected`（含 RFB 服务端自己的 `detail`）、`probe_ok`、`tunnel_failed`。
+- **看板** —— 横幅显示错误码加详情；VNC 密码输错会在密码框里提示认证失败，而不是笼统的超时。
+
+本功能刻意**没有单独的 desktop doctor 命令**（Phase A）。打开失败被做成可诊断的——错误码、服务端自己的拒绝原文、平台相关指引和连接器日志——因此没有为这个功能引入新的 doctor 框架。
 
 ## 令牌与用户管理
 

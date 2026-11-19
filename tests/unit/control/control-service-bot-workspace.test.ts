@@ -588,7 +588,10 @@ test("a marker pointing outside the bots root keeps the directory", async () => 
   expect(existsSync(outside)).toBe(true);
 });
 
-test("a cleanup that cannot delete the directory reports failed and leaves the Bot retired", async () => {
+// Induces the delete failure with chmod(0o500) on the parent, which Windows
+// cannot honour (chmod there only toggles the write bit), so the removal would
+// succeed and the assertions below would not describe reality.
+test.skipIf(process.platform === "win32")("a cleanup that cannot delete the directory reports failed and leaves the Bot retired", async () => {
   const errors: Array<{ event: string; context?: Record<string, unknown> }> = [];
   const w = await wire({
     logger: {

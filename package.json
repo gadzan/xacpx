@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx",
-  "version": "0.24.10-beta.18",
+  "version": "0.24.10-beta.19",
   "description": "随时随地通过聊天频道（微信 / 飞书 / 元宝等）远程控制 `acpx` 上的 Claude Code、Codex 等 Agents。",
   "keywords": [
     "acpx",
@@ -76,6 +76,10 @@
     "docs:dev": "bun run --cwd packages/docs dev",
     "docs:build": "bun run --cwd packages/docs build",
     "docs:preview": "bun run --cwd packages/docs preview",
+    "docs:check": "node ./scripts/sync-docs-site.mjs check",
+    "docs:reconcile": "node ./scripts/sync-docs-site.mjs reconcile",
+    "docs:status": "node ./scripts/sync-docs-site.mjs status",
+    "doc:i18n": "node ./scripts/check-doc-i18n.mjs",
     "dev": "bun run ./src/cli.ts run",
     "dry-run": "bun run ./src/dry-run.ts",
     "login": "bun run ./src/cli.ts login",

@@ -159,12 +159,13 @@ Suitable for: production environments, more stable long-running operation.
 
 ### `command` Resolution Priority
 
-When `transport.command` is not specified, acpx is looked up in the following order:
+Resolution order (highest first):
 
-1. `acpx` installed inside the current project (`node_modules/.bin/acpx`)
-2. `acpx` in the shell `PATH`
+1. `transport.command` — the explicit override wins outright.
+2. The **bundled `acpx` dependency** — xacpx's own `node_modules/acpx` (pinned to an exact version, currently `0.22.0`; no caret), resolved through `require.resolve("acpx/package.json")`.
+3. `acpx` in the shell `PATH` — the fallback when no bundled dependency exists.
 
-Explicitly specifying `command` overrides the above behavior.
+Explicitly specifying `command` skips tiers 2 and 3 entirely. Note that tier 2 is the *bundled dependency*, not an arbitrary "current project" install: a different or unknown bundled version still fails closed where version-sensitive contracts apply (e.g. read-only enforcement).
 
 ### Reducing agent cold starts (`queueOwnerTtlSeconds`)
 
@@ -188,15 +189,15 @@ This compatibility path does not write to the working directory's `.acpxrc.json`
 
 The default injection command is resolved in the following order:
 
-1. `WEACPX_CLI_COMMAND`
-2. `WEACPX_DAEMON_ARG0` + the current Node executable
+1. `XACPX_CLI_COMMAND` (legacy `WEACPX_CLI_COMMAND` still honored as fallback)
+2. `XACPX_DAEMON_ARG0` + the current Node executable (legacy `WEACPX_DAEMON_ARG0` fallback)
 3. The current process entry `process.argv[1]` + the current Node executable
 4. `xacpx`
 
-If xacpx is not launched through the standard CLI/daemon, or the path needs special wrapping, you can explicitly set `WEACPX_CLI_COMMAND`, for example:
+If xacpx is not launched through the standard CLI/daemon, or the path needs special wrapping, you can explicitly set `XACPX_CLI_COMMAND`, for example:
 
 ```bash
-WEACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
+XACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
 ```
 
 ---
@@ -321,7 +322,7 @@ See full operation instructions in: [docs/channel-management.md](./channel-manag
 
 | Field | Type | Required | Description |
 |------|------|------|------|
-| `id` | `string` | Yes | Unique channel identifier, must be the same as `type` (built-in: `"weixin"`; plugins: e.g. `"feishu"`, `"yuanbao"`) |
+| `id` | `string` | Yes | Unique channel identifier (must be non-empty and unique across `channels[]`; the only built-in channel is `"weixin"`; plugins register types like `"feishu"`, `"yuanbao"`, `"discord"`, `"relay"`). Core does not require `id === type` — that equality is a per-plugin convention (the Yuanbao provider enforces it for itself); multi-account plugins such as Feishu/Discord use distinct ids per account |
 | `type` | `string` | Yes | Channel type. The only built-in channel type is `"weixin"`. `"feishu"` is provided by `@ganglion/xacpx-channel-feishu`, `"yuanbao"` is provided by `@ganglion/xacpx-channel-yuanbao`; other types are provided by installed plugins |
 | `enabled` | `boolean` | No | Whether to enable. Defaults to `true` |
 | `replyMode` | `"stream"` \| `"final"` \| `"verbose"` | No | Per-channel default reply mode. When set, it overrides the global `channel.replyMode` for this channel; when omitted, the channel falls back to `channel.replyMode`. The per-session `/replymode` override still takes precedence over this. |
@@ -432,7 +433,7 @@ Long-lived instance credentials live at `<xacpx-home>/relay/credential.json` (mo
 
 **Security:** enabling desktop exposes the instance's graphical desktop (keyboard + mouse) to hub login holders. The VNC server must be reachable on `127.0.0.1:<port>`. Outer VncAuth and macOS Screen Sharing (Apple Remote Desktop, terminated by the connector) are accepted. Unauthenticated (`None`), Tight-only, VeNCrypt/TLS-only, and proprietary auth are rejected. The loopback target is one-sided: it fixes where the connector dials, not what the server binds. External reachability is a deployment requirement — for Windows TightVNC that means loopback-only access control plus firewall, since a `0.0.0.0` bind with loopback-only access control still refuses external connections. See `docs/desktop-rfb-setup.md` §3 and design §5.1. The VNC password is entered in relay-web per tab and kept in tab memory only — it never enters RelayEnvelope, tickets, logs, or storage. Tickets are single-use with a 60s TTL and bound to account + instance + side; framebuffer bytes travel on an independent binary WebSocket (`/desktop/observe` + `/desktop/instance`), never through the control plane.
 
-**Setup / troubleshooting:** [`docs/desktop-rfb-setup.md`](docs/desktop-rfb-setup.md) — per-platform VNC server setup (TightVNC / TigerVNC / x11vnc / WayVNC), lock-and-UAC limits, and the open-time error-code table.
+**Setup / troubleshooting:** [`desktop-rfb-setup.md`](desktop-rfb-setup.md) — per-platform VNC server setup (TightVNC / TigerVNC / x11vnc / WayVNC), lock-and-UAC limits, and the open-time error-code table.
 
 ### WeChat Channel Extended Configuration (`openclaw.json`)
 
@@ -560,7 +561,7 @@ The registered agent mapping, keyed by agent name (used by `/agent add`, `/sessi
 | `model` | `string` | No | Default LLM model id for this agent's sessions (e.g. `gpt-5.2[high]`), passed to acpx as `--model`. A session-level model (`/session new --model` or `/model`) overrides it. When omitted, the agent adapter's default is used |
 | `modelCandidates` | `string[]` | No | Optional model ids shown as suggestions in Relay Web. They are not adapter-verified. Changing `command`, `argv`, or the managed adapter pin invalidates the capability cache because the launch identity changed. Do not put secrets or the adapter command in this list |
 
-acpx 0.16.0 advertises models only after `sessions new` (ACP `session/new`, no user prompt). `control.agents.capabilities.get` reads an owned runtime, a saved model list, or an ordinary session, and can run a transport probe that closes its reserved session. There is no separate model-inspect command. A probe that cannot authenticate or cannot enumerate models returns that state. It does not invent a Claude or Codex catalog.
+Cold model enumeration goes through a single inspector seam: `src/transport/acpx-model-inspector.ts` is the sole wrapper around `acpx/runtime`'s `inspectAgentModels` (75 s timeout), which reads the adapter's model catalog **without creating a session and without a user prompt** — xacpx resolves the agent argv upstream and only maps the snapshot onto `AgentCapabilityProbeResult`. `control.agents.capabilities.get` reads an owned runtime, a saved model list, or an ordinary session, and can run that probe (an explicit refresh always re-probes). A probe that cannot authenticate or cannot enumerate models returns that state. It does not invent a Claude or Codex catalog.
 
 A verified model list is persisted in the regenerable `capability_lists` section of `state.json`, keyed by agent + launch identity (driver, settings policy, adapter pin/command/argv, registry) + auth material, so a daemon restart keeps showing the list. Workspace cwd is not part of the key: every workspace of that agent on this daemon reuses the same list. The daemon process is the instance boundary; another instance has its own `state.json`. Changing any of the remaining keys yields a different key: an old list is never reused for a new adapter pin, and lists saved under the previous workspace-scoped key are left unread until retention pruning. An explicit "Fetch model list" (`probe: true`) always re-probes instead of replaying the saved list; when that refresh fails, the saved list is still returned but the state carries a `reason` marking it as not freshly verified. A corrupt or malformed cache entry is dropped on load, never blocking startup.
 | `settingsPolicy` | `"provider-only"` \| `"isolated"` \| `"full-user"` | No | Claude user-settings policy. The implicit default is `"provider-only"`; other drivers ignore this field. See below |
@@ -696,6 +697,7 @@ The following built-in templates are used when you send `/agent add <name>` via 
 | `kilocode` | `"kilocode"` | None (uses acpx default) |
 | `kimi` | `"kimi"` | None (uses acpx default) |
 | `kiro` | `"kiro"` | None (uses acpx default) |
+| `mcode` | `"mcode"` | None (uses acpx default) |
 | `mux` | `"mux"` | None (uses acpx default) |
 | `octomind` | `"octomind"` | None (uses acpx default) |
 | `omp` | `"omp"` | None (uses `omp acp` when the `omp` binary is on PATH; acpx doesn't list this driver) |
@@ -703,6 +705,7 @@ The following built-in templates are used when you send `/agent add <name>` via 
 | `pool` | `"pool"` | None (uses acpx default) |
 | `qoder` | `"qoder"` | None (uses acpx default) |
 | `qwen` | `"qwen"` | None (uses acpx default) |
+| `reasonix` | `"reasonix"` | None (uses `reasonix acp` when the `reasonix` binary is on PATH; acpx doesn't list this driver) |
 | `trae` | `"trae"` | None (uses acpx default) |
 | `zeroclaw` | `"zeroclaw"` | None (uses acpx default) |
 
@@ -907,14 +910,24 @@ The `unsupported` status still means the report did not prove the limit, and `fa
 
 ## Environment Variable Overrides
 
-The following environment variables can override configuration file paths:
+**Prefix rule:** the canonical prefix is `XACPX_`. Every reader below prefers `XACPX_<SUFFIX>` and falls
+back to the legacy `WEACPX_<SUFFIX>` (same suffix), so old setups keep working; new setups should use
+`XACPX_`. There is no `WEACPX_WEIXIN_SDK` override — the weixin-agent-sdk entry is resolved from the
+dependency, not from an env var.
 
 | Environment Variable | Description |
 |----------|------|
-| `WEACPX_CONFIG` | Configuration file path (defaults to `~/.xacpx/config.json`) |
-| `WEACPX_STATE` | State file path (defaults to `~/.xacpx/state.json`) |
-| `WEACPX_WEIXIN_SDK` | Force-specify the weixin-agent-sdk entry file path |
-| `WEACPX_ILINK_APP_ID` | The `iLink-App-Id` header carried by the WeChat channel's outbound requests. When left empty, this header is not sent (backward compatible) |
+| `XACPX_CONFIG` (legacy `WEACPX_CONFIG`) | Configuration file path (defaults to `~/.xacpx/config.json`) |
+| `XACPX_STATE` (legacy `WEACPX_STATE`) | State file path (defaults to `~/.xacpx/state.json`) |
+| `XACPX_ILINK_APP_ID` (legacy `WEACPX_ILINK_APP_ID`) | The `iLink-App-Id` header carried by the WeChat channel's outbound requests. When left empty, this header is not sent (backward compatible) |
+| `XACPX_PLUGIN_HOME` (legacy `WEACPX_PLUGIN_HOME`) | Plugin install root (defaults to `~/.xacpx/plugins`) |
+| `XACPX_PLUGIN_REGISTRY` (legacy `WEACPX_PLUGIN_REGISTRY`) | npm registry used by `xacpx plugin add/update` (defaults to public npm so bun/npm don't inherit a company mirror that 404s `@ganglion/*` optionals; must be a valid http(s) URL) |
+| `XACPX_CLI_COMMAND` / `XACPX_DAEMON_ARG0` (legacy `WEACPX_*`) | Explicit xacpx command used for orchestration MCP injection (see [transport](#automatic-orchestration-mcp-injection)) |
+| `XACPX_ORCHESTRATION_SOCKET` (legacy `WEACPX_ORCHESTRATION_SOCKET`) | Orchestration IPC socket path override |
+| `XACPX_BRIDGE_*` (legacy `WEACPX_BRIDGE_*`) | Bridge/runtime internals: `ACPX_COMMAND`, `AGENT_OVERLAYS`, `STATE_DIR`, `RUNTIME_DURABLE_DIR`, `RUNTIME_QUEUE_DIR`, `RUNTIME_FENCE_DIR`, `SESSION_INIT_TIMEOUT_MS`, `GENERATION_FILE`, `ELICITATION_FORM_CAPABLE`, `PERMISSION_INTERACTION_CAPABLE` |
+
+The core also writes its own child env under the canonical name (`XACPX_DAEMON_RUN`, …); readers still
+resolve either prefix.
 
 ---
 

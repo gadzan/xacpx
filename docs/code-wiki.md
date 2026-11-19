@@ -33,12 +33,12 @@ At its core, `xacpx` is a bridging system of "message channel ↔ command routin
 Key repository entrypoints:
 
 - CLI entrypoint: [src/cli.ts](../src/cli.ts)
-- Application assembly entrypoint: [buildApp()](../src/main.ts#L111-L600)
-- Foreground run entrypoint: [main()](../src/main.ts#L608-L637)
-- Main loop orchestration: [runConsole()](../src/run-console.ts#L45-L152)
-- Command routing hub: [CommandRouter](../src/commands/command-router.ts#L80-L590)
-- Session model: [SessionService](../src/sessions/session-service.ts#L27-L347)
-- transport boundary: [SessionTransport](../src/transport/types.ts#L46-L64)
+- Application assembly entrypoint: [buildApp()](../src/main.ts)
+- Foreground run entrypoint: [main()](../src/main.ts)
+- Main loop orchestration: [runConsole()](../src/run-console.ts)
+- Command routing hub: [CommandRouter](../src/commands/command-router.ts)
+- Session model: [SessionService](../src/sessions/session-service.ts)
+- transport boundary: [SessionTransport](../src/transport/types.ts)
 
 ---
 
@@ -47,21 +47,21 @@ Key repository entrypoints:
 ### 2.1 chatKey (conversation identity)
 
 - `chatKey` is the stable identifier for a "message conversation", running through channels / sessions / orchestration / quota.
-- `MessageChannelRegistry` routes outbound via `chatKey -> channelId`: [getByChatKey()](../src/channels/channel-registry.ts#L49-L52)
+- `MessageChannelRegistry` routes outbound via `chatKey -> channelId`: [getByChatKey()](../src/channels/channel-registry.ts)
 
 ### 2.2 Two Kinds of Session: Logical vs Transport
 
 - Logical session (xacpx internal): `alias/agent/workspace` + persisted state (replyMode/modeId/context, etc.), managed by `SessionService` and stored in `state.json`.
   - Typical APIs:
-    - `createSession()/attachSession()`: [session-service.ts](../src/sessions/session-service.ts#L39-L65)
-    - `useSession()/getCurrentSession()/listSessions()`: [session-service.ts](../src/sessions/session-service.ts#L89-L195)
+    - `createSession()/attachSession()`: [session-service.ts](../src/sessions/session-service.ts)
+    - `useSession()/getCurrentSession()/listSessions()`: [session-service.ts](../src/sessions/session-service.ts)
 - Transport session (acpx-layer named session): the `transportSession` string; `xacpx` uses it as the underlying session name, and the actual execution happens in the transport.
-  - `ResolvedSession` is the full context "routed to the transport" (including cwd/agentCommand/transportSession…): [transport/types.ts](../src/transport/types.ts#L21-L33)
+  - `ResolvedSession` is the full context "routed to the transport" (including cwd/agentCommand/transportSession…): [transport/types.ts](../src/transport/types.ts)
 
 ### 2.3 ReplyMode / ModeId
 
-- `replyMode` (xacpx reply strategy, stream/final/verbose) is stored in the logical session: [ResolvedSession.replyMode](../src/transport/types.ts#L30-L31)
-- `modeId` (the underlying agent mode, such as codex plan/…) is stored in the logical session: [ResolvedSession.modeId](../src/transport/types.ts#L29-L30)
+- `replyMode` (xacpx reply strategy, stream/final/verbose) is stored in the logical session: [ResolvedSession.replyMode](../src/transport/types.ts)
+- `modeId` (the underlying agent mode, such as codex plan/…) is stored in the logical session: [ResolvedSession.modeId](../src/transport/types.ts)
 
 ### 2.4 Orchestration: Coordinator / Worker / Task / Group
 
@@ -70,7 +70,7 @@ Key repository entrypoints:
 - task: a single delegation unit (states: pending/needs_confirmation/running/completed/failed/cancelled…)
 - group: a task group that aggregates multiple tasks and supports fan-out/fan-in
 
-The assembly point is in `buildApp()`: it injects capabilities such as worker dispatch / cancel / wake into the `OrchestrationService`: [main.ts](../src/main.ts#L472-L543)
+The assembly point is in `buildApp()`: it injects capabilities such as worker dispatch / cancel / wake into the `OrchestrationService`: [main.ts](../src/main.ts)
 
 ---
 
@@ -119,19 +119,19 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
 
 - Entrypoints: `xacpx run` and direct [main()](../src/main.ts) both delegate to [runDefaultRuntime()](../src/cli.ts)
 - Core steps:
-  - Resolve runtimePaths: `resolveRuntimePaths()`: [main.ts](../src/main.ts#L653-L668)
+  - Resolve runtimePaths: `resolveRuntimePaths()`: [main.ts](../src/main.ts)
   - Refuse to overlap a live/indeterminate daemon, then acquire the same core runtime ownership lock used by background mode; foreground runs do not create `DaemonRuntime` or write daemon PID/status: [cli.ts](../src/cli.ts)
-  - Create the channels registry and enter `runConsole()`: [run-console.ts](../src/run-console.ts#L45-L152)
+  - Create the channels registry and enter `runConsole()`: [run-console.ts](../src/run-console.ts)
 
 ### 4.2 Background daemon (normal usage)
 
 - `xacpx start/status/stop/restart` manages the background process through `DaemonController`.
-- The daemon's readiness check: after spawn, poll status.json, and consider it ready once the pid matches: [daemon-controller.ts](../src/daemon/daemon-controller.ts#L75-L151)
+- The daemon's readiness check: after spawn, poll status.json, and consider it ready once the pid matches: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
 
 ### 4.3 MCP stdio server (external host integration)
 
 - `xacpx mcp-stdio`:
-  - Resolve identity (coordinatorSession/sourceHandle/workspace) and register the external coordinator: [prepareMcpCoordinatorStartup()](../src/cli.ts#L49-L104)
+  - Resolve identity (coordinatorSession/sourceHandle/workspace) and register the external coordinator: [prepareMcpCoordinatorStartup()](../src/cli.ts)
   - Run the MCP server: [runXacpxMcpServer()](../src/mcp/xacpx-mcp-server.ts)
 - This mode usually requires the daemon to be already running (so the orchestration IPC endpoint is available).
 
@@ -141,7 +141,7 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
 
 ### 5.1 CLI and Command Surface (src/cli.ts)
 
-- Unified CLI entrypoint: [runCli()](../src/cli.ts#L242-L372)
+- Unified CLI entrypoint: [runCli()](../src/cli.ts)
 - Main responsibilities:
   - daemon lifecycle control (start/status/stop/restart)
   - foreground `run`
@@ -155,50 +155,50 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
 `buildApp()` is the dependency-injection center; it assembles config/state/logger/sessions/transport/orchestration/router/agent into an `AppRuntime`:
 
 - Config and logging:
-  - `ensureConfigExists()`: [main.ts](../src/main.ts#L111-L116)
-  - `loadConfig()` + `createAppLogger()`: [main.ts](../src/main.ts#L114-L125)
+  - `ensureConfigExists()`: [main.ts](../src/main.ts)
+  - `loadConfig()` + `createAppLogger()`: [main.ts](../src/main.ts)
 - State and sessions:
-  - `StateStore.load()` + `new SessionService(...)`: [main.ts](../src/main.ts#L127-L131)
+  - `StateStore.load()` + `new SessionService(...)`: [main.ts](../src/main.ts)
   - At startup, `computeAgentOverlayEntries(config)` provisions config-derived `xacpx-managed-*` aliases into `~/.acpx/config.json` via `ensureAgentOverlays` so new structured launches resolve on Windows. Module: [acpx-agent-overlay.ts](../src/transport/acpx-agent-overlay.ts)
 - transport selection:
-  - `acpx-bridge`: `spawnAcpxBridgeClient()` + `new AcpxBridgeTransport(...)`: [main.ts](../src/main.ts#L132-L146)
-  - `acpx-cli`: `new AcpxCliTransport(...)`: [main.ts](../src/main.ts#L145-L146)
+  - `acpx-bridge`: `spawnAcpxBridgeClient()` + `new AcpxBridgeTransport(...)`: [main.ts](../src/main.ts)
+  - `acpx-cli`: `new AcpxCliTransport(...)`: [main.ts](../src/main.ts)
 - orchestration:
-  - `new OrchestrationService({... injected callbacks ...})`: [main.ts](../src/main.ts#L472-L543)
-  - hosts the IPC server within the daemon: `new OrchestrationServer(...)`: [main.ts](../src/main.ts#L569-L573)
+  - `new OrchestrationService({... injected callbacks ...})`: [main.ts](../src/main.ts)
+  - hosts the IPC server within the daemon: `new OrchestrationServer(...)`: [main.ts](../src/main.ts)
 - Agent Messaging:
   - stable node identity is persisted in `<xacpx-home>/agent-messaging/node.json`; endpoint identities derive from logical sessions and persisted worker/external bindings
   - [AgentEndpointRegistry](../src/orchestration/agent-endpoint-registry.ts) provides same-coordinator discovery and authorization without publishing private runtime metadata
   - [AgentMessageRouter](../src/orchestration/agent-message-router.ts) owns message ids, envelope semantics, FIFO, dedupe/limits, safe delivery logs, and the Local Route receipt
   - [LocalAgentMessageDeliveryAdapter](../src/orchestration/local-agent-message-delivery.ts) resolves the private runtime binding and calls `SessionTransport.injectMessage`
 - router/agent:
-  - `new CommandRouter(...)`: [main.ts](../src/main.ts#L573-L574)
-  - `new ConsoleAgent(...)`: [main.ts](../src/main.ts#L574-L574)
+  - `new CommandRouter(...)`: [main.ts](../src/main.ts)
+  - `new ConsoleAgent(...)`: [main.ts](../src/main.ts)
 
 ### 5.3 Main Loop Orchestration (src/run-console.ts)
 
 `runConsole()` is responsible for "startup ordering, signal-based exit, cleanup consistency":
 
-- Build the runtime: `runtime = buildApp(paths)`: [run-console.ts](../src/run-console.ts#L66-L69)
+- Build the runtime: `runtime = buildApp(paths)`: [run-console.ts](../src/run-console.ts)
 - In daemon mode:
-  - Write daemon runtime metadata: `daemonRuntime.start(...)`: [run-console.ts](../src/run-console.ts#L70-L82)
-  - Start the orchestration IPC server: `runtime.orchestration.server.start()`: [run-console.ts](../src/run-console.ts#L75-L75)
-  - Periodic heartbeat: [run-console.ts](../src/run-console.ts#L76-L81)
+  - Write daemon runtime metadata: `daemonRuntime.start(...)`: [run-console.ts](../src/run-console.ts)
+  - Start the orchestration IPC server: `runtime.orchestration.server.start()`: [run-console.ts](../src/run-console.ts)
+  - Periodic heartbeat: [run-console.ts](../src/run-console.ts)
 - required runtime ownership lock (before shared-state reconciliation, orphan sweeps, scheduler, or channel activation):
   - A failed acquire follows the generic `ActiveConsumerLockError` contract; POSIX core ownership is a kernel-held `flock`, while Windows uses the runtime-owner IPC guard: [runtime-consumer-lock.ts](../src/daemon/runtime-consumer-lock.ts), [run-console.ts](../src/run-console.ts)
-- Start the channels: `channels.startAll(...)`: [run-console.ts](../src/run-console.ts#L132-L137)
-- finally cleanup: stop IPC / dispose / stopAll / release lock: [run-console.ts](../src/run-console.ts#L154-L209)
+- Start the channels: `channels.startAll(...)`: [run-console.ts](../src/run-console.ts)
+- finally cleanup: stop IPC / dispose / stopAll / release lock: [run-console.ts](../src/run-console.ts)
 
 ### 5.4 Channels (src/channels/*)
 
 Core ships only the Weixin runtime plus generic channel/plugin infrastructure. Feishu, Yuanbao, and future non-Weixin channels are plugin-backed and should live in `packages/channel-*` or external npm packages, not as product-specific implementations under `src/channels/`.
 
-Unified abstraction: `MessageChannelRuntime` (login/start/send message/notify task progress): [channels/types.ts](../src/channels/types.ts#L62-L78)
+Unified abstraction: `MessageChannelRuntime` (login/start/send message/notify task progress): [channels/types.ts](../src/channels/types.ts)
 
 Aggregator: `MessageChannelRegistry`
 
-- `startAll()` starts channels in parallel, tolerating partial failures, but throws if all fail: [channel-registry.ts](../src/channels/channel-registry.ts#L27-L41)
-- Routes outbound by chatKey: `notifyTaskProgress/notifyTaskCompletion/sendCoordinatorMessage`: [channel-registry.ts](../src/channels/channel-registry.ts#L53-L65)
+- `startAll()` starts channels in parallel, tolerating partial failures, but throws if all fail: [channel-registry.ts](../src/channels/channel-registry.ts)
+- Routes outbound by chatKey: `notifyTaskProgress/notifyTaskCompletion/sendCoordinatorMessage`: [channel-registry.ts](../src/channels/channel-registry.ts)
 
 > Channel capability bit: the render format of the `/ssn` native session list is determined by the channel-declared `MessageChannelRuntime.nativeSessionListFormat` (`"cards" | "table"`, defaults to `table`); weixin declares `cards`. The registry exposes `nativeSessionListFormat(chatKey)`, which is injected via `CommandRouter` into `CommandRouterContext.resolveNativeSessionListFormat` and read by [native-session-handler.ts](../src/commands/handlers/native-session-handler.ts). A new channel that wants card-style rendering only needs to declare this capability bit; no handler changes are required.
 
@@ -206,51 +206,51 @@ Aggregator: `MessageChannelRegistry`
 
 ConsoleAgent is the adaptation layer from "channel message protocol → router protocol":
 
-- `chat()`: normalizes media, rejects empty messages, logs, then calls `router.handle(...)`: [console-agent.ts](../src/console-agent.ts#L25-L53)
+- `chat()`: normalizes media, rejects empty messages, logs, then calls `router.handle(...)`: [console-agent.ts](../src/console-agent.ts)
 - This layer is the channels' sole "agent entrypoint"; channels do not directly depend on the implementation details of CommandRouter, only on `WechatAgent` behavior.
 
 #### 5.4.2 Weixin Bot and Quota (src/weixin/*)
 
 `src/weixin` is in fact a WeChat provider implemented inside the repository (login, polling send/receive, media handling, risk control/quota, etc.), hosted as a channel runtime by WeixinChannel (in `src/channels/weixin-channel.ts`).
 
-- Interactive login: `login()` (QR code output, preferring `qrcode-terminal`, falling back to printing the URL on failure): [bot.ts](../src/weixin/bot.ts#L60-L111)
-- Start polling: `start(agent, opts)` (resolve account, check token, call `monitorWeixinProvider`): [bot.ts](../src/weixin/bot.ts#L141-L185)
-- Outbound quota: `QuotaManager` (a sliding-window budget per chatKey; distinguishes mid segment from final; supports final pagination and a pendingFinal queue): [quota-manager.ts](../src/weixin/messaging/quota-manager.ts#L15-L166)
+- Interactive login: `login()` (QR code output, preferring `qrcode-terminal`, falling back to printing the URL on failure): [bot.ts](../src/weixin/bot.ts)
+- Start polling: `start(agent, opts)` (resolve account, check token, call `monitorWeixinProvider`): [bot.ts](../src/weixin/bot.ts)
+- Outbound quota: `QuotaManager` (a sliding-window budget per chatKey; distinguishes mid segment from final; supports final pagination and a pendingFinal queue): [quota-manager.ts](../src/weixin/messaging/quota-manager.ts)
 
 ### 5.5 Command System (src/commands/*)
 
 #### 5.5.1 Parsing
 
-- `parseCommand()`: slash command parsing and compatibility aliases (`/ss`→`/session`, `/ws`→`/workspace`, `/stop`→`/cancel`): [parse-command.ts](../src/commands/parse-command.ts#L61-L422)
+- `parseCommand()`: slash command parsing and compatibility aliases (`/ss`→`/session`, `/ws`→`/workspace`, `/stop`→`/cancel`): [parse-command.ts](../src/commands/parse-command.ts)
 
 #### 5.5.2 Routing and Execution
 
 `CommandRouter`'s responsibility is not just switch dispatch; it also covers "transport call observability + auto-repair + diagnostic summary":
 
-- Main entrypoint: `handle(chatKey, input, reply, replyContextToken, accountId, media)`: [command-router.ts](../src/commands/command-router.ts#L106-L258)
-- session handler context injection (lifecycle/interaction/recovery): [command-router.ts](../src/commands/command-router.ts#L264-L358)
+- Main entrypoint: `handle(chatKey, input, reply, replyContextToken, accountId, media)`: [command-router.ts](../src/commands/command-router.ts)
+- session handler context injection (lifecycle/interaction/recovery): [command-router.ts](../src/commands/command-router.ts)
 - transport wrapping:
-  - `ensureTransportSession()`: supports automatic installation and re-verification of a missing optional dependency: [command-router.ts](../src/commands/command-router.ts#L411-L448)
-  - `promptTransportSession()`: uniformly passes through reply/quota/media and ensures the mcpCoordinatorSession default value: [command-router.ts](../src/commands/command-router.ts#L513-L524)
-  - `measureTransportCall()`: uniformly records success/failure logs and extracts an stdout/stderr diagnostic summary for `PromptCommandError`: [command-router.ts](../src/commands/command-router.ts#L549-L590)
+  - `ensureTransportSession()`: supports automatic installation and re-verification of a missing optional dependency: [command-router.ts](../src/commands/command-router.ts)
+  - `promptTransportSession()`: uniformly passes through reply/quota/media and ensures the mcpCoordinatorSession default value: [command-router.ts](../src/commands/command-router.ts)
+  - `measureTransportCall()`: uniformly records success/failure logs and extracts an stdout/stderr diagnostic summary for `PromptCommandError`: [command-router.ts](../src/commands/command-router.ts)
 
 ### 5.6 Session Management (src/sessions/session-service.ts)
 
 `SessionService` is the sole writer of the "logical session" and `state.json` (serializing writes via `AsyncMutex`):
 
 - Create/attach:
-  - `createSession()`: the default transport session looks like `${workspace}:${alias}`: [session-service.ts](../src/sessions/session-service.ts#L39-L41)
-  - `attachSession()`: binds to an already-existing transport session: [session-service.ts](../src/sessions/session-service.ts#L56-L65)
+  - `createSession()`: the default transport session looks like `${workspace}:${alias}`: [session-service.ts](../src/sessions/session-service.ts)
+  - `attachSession()`: binds to an already-existing transport session: [session-service.ts](../src/sessions/session-service.ts)
 - Current session and listing:
-  - `useSession()`: points the chatKey's current_session at some internal alias: [session-service.ts](../src/sessions/session-service.ts#L89-L102)
-  - `getCurrentSession()`/`listSessions()`: [session-service.ts](../src/sessions/session-service.ts#L165-L195)
+  - `useSession()`: points the chatKey's current_session at some internal alias: [session-service.ts](../src/sessions/session-service.ts)
+  - `getCurrentSession()`/`listSessions()`: [session-service.ts](../src/sessions/session-service.ts)
 - Key constraints:
-  - `validateSession()` enforces that the agent/workspace is already registered in config: [session-service.ts](../src/sessions/session-service.ts#L326-L346)
-  - Prevents the transport session from conflicting with an external coordinator: [session-service.ts](../src/sessions/session-service.ts#L298-L300)
+  - `validateSession()` enforces that the agent/workspace is already registered in config: [session-service.ts](../src/sessions/session-service.ts)
+  - Prevents the transport session from conflicting with an external coordinator: [session-service.ts](../src/sessions/session-service.ts)
 
 ### 5.7 Transport (src/transport/*)
 
-Unified boundary: `SessionTransport`: [transport/types.ts](../src/transport/types.ts#L46-L64)
+Unified boundary: `SessionTransport`: [transport/types.ts](../src/transport/types.ts)
 
 Before entering that boundary, [resolve-agent-command.ts](../src/config/resolve-agent-command.ts) resolves an explicit per-agent command first, then xacpx's exact managed Codex/Claude npx pin, then the local/native fallback for other drivers. Generated managed commands recorded in session state are derived state: [SessionService](../src/sessions/session-service.ts) refreshes them from the current configured/default pin after restart, while preserving genuinely custom recorded commands.
 
@@ -275,15 +275,15 @@ The Bridge's goal is to isolate the acpx driving into a subprocess and provide a
 
 Protocol:
 
-- method: `ensureSession/hasSession/prompt/setMode/cancel/removeSession/...`: [acpx-bridge-protocol.ts](../src/transport/acpx-bridge/acpx-bridge-protocol.ts#L1-L66)
+- method: `ensureSession/hasSession/prompt/setMode/cancel/removeSession/...`: [acpx-bridge-protocol.ts](../src/transport/acpx-bridge/acpx-bridge-protocol.ts)
 - message: request/response + event (`prompt.segment`, `session.progress`, `session.note`)
 
 Server side:
 
-- `BridgeServer.handleLine()`: one line of JSON in → one line of JSON out; on error, uniformly wraps it as `BridgeErrorResponse`: [bridge-server.ts](../src/bridge/bridge-server.ts#L47-L78)
+- `BridgeServer.handleLine()`: one line of JSON in → one line of JSON out; on error, uniformly wraps it as `BridgeErrorResponse`: [bridge-server.ts](../src/bridge/bridge-server.ts)
 - session scoped scheduling:
   - Requests for `SESSION_SCOPED_METHODS` form a scheduleKey based on `[agentIdentity,cwd,name]`; the same key is serialized
-  - `cancel`/`isSessionWarm` and the read-only `getSessionModel`/`getSessionEffort` go through the `control` lane (preempts a running turn, which `prompt` occupies unboundedly); everything else — including mutating `setModel`/`setSessionEffort` — queues on the `normal` lane: [bridge-server.ts](../src/bridge/bridge-server.ts#L261-L286)
+  - `cancel`/`isSessionWarm` and the read-only `getSessionModel`/`getSessionEffort` go through the `control` lane (preempts a running turn, which `prompt` occupies unboundedly); everything else — including mutating `setModel`/`setSessionEffort` — queues on the `normal` lane: [bridge-server.ts](../src/bridge/bridge-server.ts)
 
 ### 5.9 Daemon (src/daemon/*)
 
@@ -303,7 +303,7 @@ Server side:
 - Generating a "human question package" when human confirmation is required
 - Triggering a coordinator wake (injecting pending state into the coordinator session)
 
-The dependency-injection interface is in `OrchestrationServiceDeps`: [orchestration-service.ts](../src/orchestration/orchestration-service.ts#L197-L217)
+The dependency-injection interface is in `OrchestrationServiceDeps`: [orchestration-service.ts](../src/orchestration/orchestration-service.ts)
 
 ### 5.11 MCP (src/mcp/*)
 
@@ -321,9 +321,9 @@ The dependency-injection interface is in `OrchestrationServiceDeps`: [orchestrat
 
 `AppLogger` is the core observability surface at runtime, focused on "structured events + local rolling file":
 
-- Create: `createAppLogger({ filePath, level, maxSizeBytes, maxFiles, retentionDays })`: [app-logger.ts](../src/logging/app-logger.ts#L43-L91)
-- Rotation policy: when exceeding `maxSizeBytes`, rotate as `.1/.2/...`, and clean up beyond `maxFiles`: [app-logger.ts](../src/logging/app-logger.ts#L93-L134)
-- Retention policy: clean up historical rotated files per `retentionDays`: [app-logger.ts](../src/logging/app-logger.ts#L136-L166)
+- Create: `createAppLogger({ filePath, level, maxSizeBytes, maxFiles, retentionDays })`: [app-logger.ts](../src/logging/app-logger.ts)
+- Rotation policy: when exceeding `maxSizeBytes`, rotate as `.1/.2/...`, and clean up beyond `maxFiles`: [app-logger.ts](../src/logging/app-logger.ts)
+- Retention policy: clean up historical rotated files per `retentionDays`: [app-logger.ts](../src/logging/app-logger.ts)
 
 ---
 
@@ -331,17 +331,17 @@ The dependency-injection interface is in `OrchestrationServiceDeps`: [orchestrat
 
 ### 6.1 Channel Runtime Boundary
 
-- `MessageChannelRuntime` only exposes "login/start/send/notify" capabilities, not router/transport details: [channels/types.ts](../src/channels/types.ts#L62-L78)
+- `MessageChannelRuntime` only exposes "login/start/send/notify" capabilities, not router/transport details: [channels/types.ts](../src/channels/types.ts)
 
 ### 6.2 Bridge JSONL Protocol Boundary
 
 - The Bridge is a strict "one JSON message per line" protocol layer; the main process can receive `session.progress` and `prompt.segment` as events.
-- `prompt.text` allows an empty string, but only when media is present: [bridge-server.ts](../src/bridge/bridge-server.ts#L285-L295)
+- `prompt.text` allows an empty string, but only when media is present: [bridge-server.ts](../src/bridge/bridge-server.ts)
 
 ### 6.3 Orchestration IPC
 
 - In daemon mode, an `OrchestrationServer` is started and exposed externally (including to the CLI mcp-stdio) through a socket endpoint.
-- The endpoint's default path comes from `resolveRuntimePaths().orchestrationSocketPath`: [main.ts](../src/main.ts#L665-L667)
+- The endpoint's default path comes from `resolveRuntimePaths().orchestrationSocketPath`: [main.ts](../src/main.ts)
 
 ---
 
@@ -349,12 +349,12 @@ The dependency-injection interface is in `OrchestrationServiceDeps`: [orchestrat
 
 ### 7.1 Default Paths
 
-Determined by `resolveRuntimePaths()`: [main.ts](../src/main.ts#L653-L668)
+Determined by `resolveRuntimePaths()`: [main.ts](../src/main.ts)
 
 - config: `~/.xacpx/config.json` (can be overridden with `WEACPX_CONFIG`)
 - state: `~/.xacpx/state.json` (can be overridden with `WEACPX_STATE`)
 - runtime dir: `dirname(configPath)/runtime`
-  - app log: `${runtimeDir}/app.log`: [main.ts](../src/main.ts#L678-L682)
+  - app log: `${runtimeDir}/app.log`: [main.ts](../src/main.ts)
   - daemon pid/status/stdout/stderr, etc. are governed by `src/daemon/daemon-files.ts` (recommended to inspect with `xacpx status`)
 
 ### 7.2 Responsibility Boundary Between config and state
@@ -373,7 +373,7 @@ For detailed fields, please refer to:
 
 ### 8.1 Dependencies and Build Artifacts
 
-- `bun run build`: builds to `dist/`, outputting `dist/cli.js` and `dist/bridge/bridge-main.js` (`node-pty` is marked external): [package.json](../package.json#L13-L24)
+- `bun run build`: builds to `dist/`, outputting `dist/cli.js` and `dist/bridge/bridge-main.js` (`node-pty` is marked external): [package.json](../package.json)
 
 ### 8.2 Testing
 
@@ -387,9 +387,9 @@ Test layering notes: [docs/testing.md](./testing.md)
 
 - `bun install`
 - `bun run login`
-- `bun run dev` (equivalent to `bun run ./src/cli.ts run`): [package.json](../package.json#L14-L16)
+- `bun run dev` (equivalent to `bun run ./src/cli.ts run`): [package.json](../package.json)
 
 ### 8.4 Runtime Observability
 
 - Logs are written by default to `~/.xacpx/runtime/app.log` (rolling/retention controlled by config.logging)
-- For daemon status, it is recommended to use `xacpx status` (which prints PID, started/heartbeat, and the config/state/log paths): [cli.ts](../src/cli.ts#L327-L350)
+- For daemon status, it is recommended to use `xacpx status` (which prints PID, started/heartbeat, and the config/state/log paths): [cli.ts](../src/cli.ts)

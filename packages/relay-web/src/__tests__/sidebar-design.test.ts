@@ -160,38 +160,45 @@ describe("sidebar mode segmented control", () => {
     setActivePinia(createPinia());
   });
 
-  it("renders a track with a raised selected segment", async () => {
+  it("draws a 32px rail with a 28px raised segment and a 44px hit box", async () => {
     seedInstance();
     const w = mount(InstanceTree);
     await flushPromises();
 
     const track = w.find('[data-test="instance-nav-track"]');
     expect(track.exists()).toBe(true);
-    // The track is a visible recessed fill, not a bare flex row.
-    expect(track.classes()).toContain("bg-fill-track");
-    expect(track.classes()).toContain("rounded-btn");
-    expect(track.classes()).toContain("p-0.5");
+    // The recessed fill is the rail, not the row: on a coarse pointer the row
+    // takes real 44px layout space while the rail keeps its 32px height.
+    const rail = w.find('[data-test="instance-nav-rail"]');
+    expect(rail.classes()).toContain("bg-fill-track");
+    expect(rail.classes()).toContain("rounded-btn");
+    expect(rail.classes()).toContain("h-8");
+    expect(track.classes()).toContain("[@media(pointer:coarse)]:h-11");
 
-    // The active segment is raised; the others are muted.
+    // The active segment is a raised 28px pill inside the 44px button.
     const sessions = w.find('[data-test="instance-nav-sessions"]');
-    expect(sessions.classes()).toContain("bg-raised");
-    expect(sessions.classes()).toContain("shadow-press");
+    expect(sessions.classes()).toContain("h-7");
+    expect(sessions.classes()).toContain("[@media(pointer:coarse)]:h-11");
     expect(sessions.classes()).toContain("font-semibold");
     expect(sessions.classes()).toContain("text-fg");
-    expect(sessions.classes()).not.toContain("bg-accent-soft");
-    // 6px segment (rounded-sm) inside the 8px track's 2px padding, 24px tall.
-    expect(sessions.classes()).toContain("rounded-sm");
-    expect(sessions.classes()).toContain("h-6");
+    const sessionsPill = sessions.find('[data-test="instance-nav-pill"]');
+    expect(sessionsPill.classes()).toContain("bg-raised");
+    expect(sessionsPill.classes()).toContain("shadow-press");
+    expect(sessionsPill.classes()).toContain("rounded-sm");
+    expect(sessionsPill.classes()).toContain("h-7");
+    expect(sessionsPill.classes()).not.toContain("bg-accent-soft");
+
     const bots = w.find('[data-test="instance-nav-bots"]');
     expect(bots.classes()).toContain("text-fg-muted");
-    expect(bots.classes()).toContain("hover:bg-fill-hover");
-    expect(bots.classes()).not.toContain("bg-raised");
+    const botsPill = bots.find('[data-test="instance-nav-pill"]');
+    expect(botsPill.classes()).toContain("hover:bg-fill-hover");
+    expect(botsPill.classes()).not.toContain("bg-raised");
 
-    // Switching the mode moves the raised segment.
+    // Switching the mode moves the raised pill.
     await bots.trigger("click");
     await flushPromises();
-    expect(w.find('[data-test="instance-nav-bots"]').classes()).toContain("bg-raised");
-    expect(w.find('[data-test="instance-nav-sessions"]').classes()).not.toContain("bg-raised");
+    expect(w.find('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]').classes()).toContain("bg-raised");
+    expect(w.find('[data-test="instance-nav-sessions"] [data-test="instance-nav-pill"]').classes()).not.toContain("bg-raised");
   });
 
   it("switches every instance card from the one global track", async () => {

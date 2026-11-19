@@ -1,5 +1,9 @@
 # relay-web 「改动」交互重构 — 设计文档
 
+> **高亮方案已变更（2026-11 复核）**：本文计划的 `src/lib/shiki.ts` 已被 CodeMirror 统一方案取代并删除
+> （见 `docs/superpowers/plans/2026-07-04-codemirror-unify.md`）；当前实现是
+> `packages/relay-web/src/components/CodeEditor.vue` + `src/lib/cm-theme.ts`。本文保留为设计记录。
+
 - 日期：2026-06-24
 - 状态：待评审
 - 范围：relay-web 工作空间「改动 / Changes」面板 + 文件查看器；core 端 `workspace-fs` git 解析。

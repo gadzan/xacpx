@@ -1,5 +1,11 @@
 # Group Agent Thinking Bubbles — Product and Architecture Design
 
+> **Renderer superseded (2026-11 recheck):** `GroupTranscript.vue` no longer exists —
+> `packages/relay-web/src/__tests__/group-components.test.ts` asserts it must not resolve,
+> and group rendering now lives in `components/ConversationTimeline.vue` /
+> `TimelineRow.vue` (see `docs/relay-web-module.md`). The feature itself shipped in a
+> different shape (PR #447). This document is kept as the design record.
+
 Status: Approved interaction contract; implementation pending
 Date: 2026-10-19
 Area: Relay Web / Group Conversations / Core durable traces

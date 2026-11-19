@@ -14,12 +14,13 @@ xacpx 可以同时运行多个聊天频道。每个频道接收来自不同平�
 
 - `feishu` — 由 `@ganglion/xacpx-channel-feishu` 提供。使用飞书自建应用的 App ID 和 App Secret 进行配置。详见[飞书频道](/zh/plugins/feishu)。
 - `yuanbao` — 由 `@ganglion/xacpx-channel-yuanbao` 提供。使用 `appKey` 和 `appSecret` 配置，内置元宝请求签名和 WebSocket 网关。详见[元宝频道](/zh/plugins/yuanbao)。
+- `discord` — 由 `@ganglion/xacpx-channel-discord` 提供。使用 Discord **Bot Token** 与 Gateway 配置；机器人是安装进服务器的，而非扫码配对。详见[Discord 频道](/zh/plugins/discord)。
 
 第三方频道可以作为外部 npm 插件包进行分发。
 
 ## 频道标识
 
-xacpx 目前每种频道类型只允许一个实例。频道的 `id` 必须与 `type` 相同——例如 `weixin`、`feishu` 或 `yuanbao`。配置同类型的两个实例（如 `{ "id": "feishu-review", "type": "feishu" }`）会在启动时被拒绝。
+xacpx 目前每种频道类型只允许一个实例。频道的 `id` 必须与 `type` 相同——例如 `weixin`、`feishu`、`yuanbao` 或 `discord`。配置同类型的两个实例（如 `{ "id": "feishu-review", "type": "feishu" }`）会在启动时被拒绝。
 
 如需在单一频道类型中运行多个机器人，请使用下文所述的多账号（`--account`）功能。
 
@@ -109,6 +110,18 @@ xacpx channel add yuanbao \
 ```text
 Channel yuanbao requires a plugin: xacpx plugin add @ganglion/xacpx-channel-yuanbao
 ```
+
+### Discord
+
+Discord 由插件包 `@ganglion/xacpx-channel-discord` 提供。与微信（扫码登录）或飞书/元宝（平台凭据配对）不同，Discord **没有登录/配对流程**：在 Discord Developer Portal 创建机器人，把它的 **Bot Token** 填进 xacpx，再把机器人邀请进服务器即可。插件为每个 token 保持一条 Gateway 连接。
+
+```bash
+xacpx plugin add @ganglion/xacpx-channel-discord
+xacpx channel add discord        # token 通过保密提示输入
+xacpx restart
+```
+
+两个容易漏的点：必须在 Portal 里打开 **Message Content Intent**（否则 Discord 会以 `4014` 关闭 Gateway）；访问控制比对的是 **snowflake ID**，因此在设置 `--dm-policy` / `--guild-policy` 前请先开启开发者模式并复制你的用户 ID。不要给机器人授予 Administrator。完整行为参考见包 README（`packages/channel-discord/README.md`），端到端流程见仓库中的 `docs/channel-management.md`。
 
 ## 列出频道
 

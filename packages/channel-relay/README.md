@@ -3,7 +3,7 @@
 Connector channel plugin: dials out from a local xacpx instance to a
 self-hosted @ganglion/xacpx-relay hub over WebSocket.
 
-Requires xacpx >= 0.17.0 (SessionResourceCatalog + plugin-api).
+Requires xacpx >= 0.24.10-beta.18 (SessionResourceCatalog + plugin-api).
 
 Pairing: `xacpx channel add relay --url ws://<relay-host>:8787 --token <access-token>`.
 On first connect the pairing token is exchanged for a long-lived instance

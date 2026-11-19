@@ -29,12 +29,12 @@
 
 `xacpx` is a bridging system of **"message channel ↔ command router ↔ acpx session driver"**:
 
-- **Channels**: `weixin` is built in; `feishu` / `yuanbao` are distributed as first-party plugin packages; any npm package conforming to the `WeacpxPlugin` contract can be added.
-- **Command routing**: parses slash commands such as `/ss`, `/agent`, `/group` received from WeChat/Feishu/Yuanbao/CLI; plain text is fed to the current session as a prompt.
+- **Channels**: `weixin` is built in; `feishu` / `yuanbao` / `discord` / `relay` are distributed as first-party plugin packages; any npm package conforming to the `WeacpxPlugin` contract can be added.
+- **Command routing**: parses slash commands such as `/ss`, `/agent`, `/group` received from WeChat/Feishu/Yuanbao/Discord/CLI; plain text is fed to the current session as a prompt.
 - **Transport**: unifies "session ensure/prompt/cancel/setMode" into the `SessionTransport` interface, with two concrete implementations — `acpx-cli` (spawns `acpx` directly, optionally allocating a PTY via `node-pty`) and `acpx-bridge` (a standalone bridge subprocess + JSONL protocol).
 - **Orchestration** (optional): under a coordinator session, delegates multiple workers, tracking progress, questions, human confirmation, and grouped aggregation. Can be exposed to an external MCP host via `xacpx mcp-stdio`.
 - **Daemon**: `xacpx start` / `status` / `stop`, with PID + status + log landing in `~/.xacpx/runtime/`.
-- **Monorepo**: `packages/channel-feishu` and `packages/channel-yuanbao` are published from the same repo as npm workspaces alongside the main package.
+- **Monorepo**: `packages/` (channel plugins, the relay stack, and the docs site) ships from this repo as Bun workspaces alongside the main package; `platform-packages/` and `weacpx-compat/` live outside the workspaces.
 
 ---
 
@@ -90,18 +90,31 @@ Once this step passes, you're welcome to start working on the code.
 ```
 xacpx/
 ├── src/                # Main package source
-├── packages/           # First-party channel plugins
+├── packages/           # Bun workspaces: first-party plugins + relay stack + docs site
 │   ├── channel-feishu/
-│   └── channel-yuanbao/
+│   ├── channel-yuanbao/
+│   ├── channel-discord/
+│   ├── channel-relay/  # relay hub connector plugin
+│   ├── relay/          # relay hub (bin: xacpx-relay; bundles relay-web)
+│   ├── relay-protocol/ # wire protocol + DTOs (zero deps)
+│   ├── relay-web/      # dashboard SPA (private; bundled into relay)
+│   └── docs/           # VitePress documentation site
+├── platform-packages/  # @ganglion/xacpx-rmux-bridge-* (NOT in root workspaces)
+├── weacpx-compat/      # deprecated shim package (forwards weacpx/plugin-api)
 ├── tests/
 │   ├── unit/           # Default unit tests
 │   ├── smoke/          # Require real acpx / real accounts
+│   ├── compat/         # acpx compatibility smoke (real binary)
+│   ├── integration/    # cross-module tests
 │   ├── helpers/        # Shared fixtures / mocks
 │   └── fixtures/       # Static data
 ├── docs/               # User docs + this guide + design docs
+│   ├── agents/         # issue tracker / triage labels / domain / skills
+│   ├── design/         # Active design docs
+│   ├── research/       # Benchmarks and research notes
 │   ├── superpowers/    # plans/ + specs/, workflow detailed below
-│   └── releases/       # Historical release notes
-├── scripts/            # Test runner, pre-publish checks
+│   └── zh/             # Chinese translations of docs/*.md
+├── scripts/            # Test runner, release automation, pre-publish checks
 ├── package.json        # Also the npm workspaces root
 ├── bun.lock
 ├── tsconfig.json
@@ -138,7 +151,7 @@ One sentence per directory to make its responsibility clear; deeper content is i
 | `src/formatting/` | Outbound text/task rendering | — |
 | `src/util/` | General utilities like `writePrivateFileAtomic` + `proper-lockfile` | `private-file.ts` |
 | `src/weixin/` | Built-in weixin channel + media pipeline + consumer lock | `monitor/`, `messaging/` |
-| `src/weixin-sdk.ts` | weixin SDK resolver, supports the `WEACPX_WEIXIN_SDK` override | `loadWeixinSdk()` |
+| `src/weixin-sdk.ts` | WeChat SDK loader; dynamically imports the in-repo `src/weixin/` implementation (no env override) | `loadWeixinSdk()` |
 | `src/dry-run.ts` | Entry for running the router without connecting to an IM | `bun run dry-run` |
 | `src/login.ts` | WeChat QR code login flow | `xacpx login` |
 | `src/doctor/` | `xacpx doctor` diagnostic suite | — |
@@ -170,11 +183,15 @@ Key scripts in `package.json`:
 
 | Script | Purpose |
 | --- | --- |
-| `bun run build` | Main package: `bun build` produces `dist/cli.js`, `dist/bridge/bridge-main.js`, `dist/plugin-api.js` + `tsc -p tsconfig.plugin-api.json` produces `dist/plugin-api.d.ts` |
+| `bun run build` | Main package: `bun build` produces `dist/cli.js`, `dist/bridge/bridge-main.js`, `dist/bridge/engine/runtime/runtime-worker-main.js`, the adapter guards (`dist/adapters/hermes-acp-shim.js`, `acp-output-guard-main.js`, `acp-read-only-guard-main.js`), `dist/conversations/default-router-main.js` and `dist/plugin-api.js`; `tsc -p tsconfig.plugin-api.json` then produces `dist/plugin-api.d.ts` |
 | `bun run build:plugin-api` | Refresh `dist/plugin-api.d.ts` on its own (used when writing new public types) |
 | `bun run build:channel-feishu` | Main package + feishu plugin |
 | `bun run build:channel-yuanbao` | Main package + yuanbao plugin |
-| `bun run build:packages` | Main package + all packages/* |
+| `bun run build:channel-discord` | Main package + discord plugin |
+| `bun run build:relay-protocol` | Wire protocol package (also a dependency of `build:plugin-api`) |
+| `bun run build:relay` | relay hub; runs `build:relay-web` first and `bundle:relay-web` last, so the dashboard ships inside the hub package |
+| `bun run build:channel-relay` | Main package + relay connector plugin |
+| `bun run build:packages` | Main package + all of the above packages |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs` (must run before publishing) |
 | `bun run dev` | Run main package source in the foreground (no build needed first) |
 | `bun run dry-run -- ...` | dry-run entry |
@@ -185,6 +202,8 @@ Key points:
 - `bun build --target node --external node-pty`: `node-pty` is not bundled; it is resolved from `node_modules` at runtime. `packages/*` likewise use `--external xacpx`.
 - The main package only exports `xacpx/plugin-api` publicly; other paths (`xacpx/dist/*`, `xacpx/src/*`) are **not stable APIs** — don't depend on them externally.
 - Plugin packages emit `.d.ts` separately via `tsc -p packages/<name>/tsconfig.json`, because bun build currently does not emit `.d.ts`.
+- `packages/relay-web` is `private: true` and never published on its own: `bun run build:relay` copies its `dist/` into `packages/relay/dist/relay-web` (`bundle:relay-web`), and `verify:publish` fails if the tarball is missing `dist/relay-web/index.html`.
+- `platform-packages/*` (the `@ganglion/xacpx-rmux-bridge-*` platform binaries) are outside the root workspaces and are packed by `scripts/pack-rmux-bridge-platform.mjs`, not by `build:packages`.
 
 ---
 
@@ -305,8 +324,8 @@ Side paths:
 | --- | --- | --- |
 | Command parsing and routing | `src/commands/` | [commands-module.md](./commands-module.md), [commands.md](./commands.md) |
 | Daemon CLI | `src/daemon/`, `src/cli.ts` | [daemon-module.md](./daemon-module.md) |
-| Acpx-Bridge protocol | `src/bridge/` | [`docs/2026-03-25-weacpx-acpx-bridge-design.md`](./2026-03-25-weacpx-acpx-bridge-design.md) |
-| Orchestration | `src/orchestration/` | [`docs/2026-04-13-weacpx-orchestration-design.md`](./2026-04-13-weacpx-orchestration-design.md) |
+| Acpx-Bridge protocol | `src/bridge/`, `src/transport/acpx-bridge/` | [code-wiki.md](./code-wiki.md) (transport layer + centralized argv) |
+| Orchestration | `src/orchestration/`, `src/mcp/` | [external-mcp.md](./external-mcp.md), [peer-delegation.md](./peer-delegation.md) |
 | External MCP integration | `src/mcp/` | [external-mcp.md](./external-mcp.md) |
 | Channel management | `src/channels/` | [channel-management.md](./channel-management.md) |
 | Channel plugin SPI | `src/plugin-api.ts`, `src/plugins/` | [plugin-development.md](./plugin-development.md) |
@@ -323,15 +342,12 @@ Side paths:
 `src/config/resolve-acpx-command.ts:resolveAcpxCommand`:
 
 1. `transport.command` (explicit config override)
-2. **bundled** acpx: resolved from the main package's `node_modules/acpx/...` (by default `dependencies` already declares `acpx@^0.6.1`)
+2. **bundled** acpx: resolved from the main package's `node_modules/acpx/...`. `dependencies` pins it to an exact version (currently `0.22.0`, no caret), and version-sensitive contracts — e.g. the read-only enforcement proof — fail closed on a different or unknown bundled version.
 3. Shell `PATH`
 
 ### weixin SDK
 
-`src/weixin-sdk.ts:loadWeixinSdk`:
-
-1. `WEACPX_WEIXIN_SDK` environment variable
-2. The installed package `weixin-agent-sdk`
+`src/weixin-sdk.ts:loadWeixinSdk` dynamically imports the in-repo implementation under `src/weixin/` (re-exported through `src/weixin/index.ts`). There is no env-var override and no `weixin-agent-sdk` package resolution: the WeChat runtime is vendored in this repository.
 
 ### Plugin home
 
@@ -440,7 +456,7 @@ bun run publish:plugins     # When bumping first-party plugin packages
 Remember when releasing:
 
 - Bump `package.json` `version`; if you changed a first-party plugin, also bump the corresponding `packages/*/package.json`.
-- Add release notes under `docs/releases/`.
+- Write release notes into the root `CHANGELOG.md` — `node ./scripts/release.mjs notes` drafts the entry from commit subjects and `apply` splices it in. Do not hand-create files under `docs/` for this.
 - Create a git tag.
 
 ### First-party channel plugin publishing (tag-driven)
@@ -515,6 +531,5 @@ the workflow died or failed between `npm publish` and `gh release create`):
 - Code map: [code-wiki.md](./code-wiki.md)
 - Testing conventions: [testing.md](./testing.md)
 - Release process: [Releases section](#releases)
-- Multi-agent orchestration principles: [`2026-04-13-weacpx-orchestration-design.md`](./2026-04-13-weacpx-orchestration-design.md)
-- Acpx-Bridge protocol: [`2026-03-25-weacpx-acpx-bridge-design.md`](./2026-03-25-weacpx-acpx-bridge-design.md)
+- Orchestration surface: [external-mcp.md](./external-mcp.md); peer-to-peer delegation: [peer-delegation.md](./peer-delegation.md)
 - Project conventions (`AGENTS.md` / `CLAUDE.md`): [../AGENTS.md](../AGENTS.md)

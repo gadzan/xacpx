@@ -49,7 +49,9 @@ export interface MockHub {
   startAccepting(): void;
   setRole(role: "controller" | "spectator"): void;
   setDesktopMode(mode: "succeed" | "fail"): void;
-  lastDesktopOpen: { requestId: string; instanceId: string } | null;
+  /** Catalog rows the Bots / Groups listings answer with. Empty by default so
+   *  specs that assert an empty catalog keep passing. */
+  setCatalogs(catalogs: { bots?: unknown[]; groups?: unknown[] }): void;
   desktopStreamIds: string[];
   desktopCloseRequests: string[];
   setDesktopRfb(port: number): void;
@@ -99,6 +101,8 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
   const desktopStreamIds: string[] = [];
   const desktopCloseRequests: string[] = [];
   let lastDesktopOpen: { requestId: string; instanceId: string } | null = null;
+  let botsCatalog: unknown[] = [];
+  let groupsCatalog: unknown[] = [];
   let desktopRfbPort = 0;
   const desktopBinarySockets: WebSocket[] = [];
   const desktopFrames: Array<{ from: "browser" | "rfb"; bytes: number }> = [];
@@ -185,6 +189,14 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
       }
       if (type === "control.session.effort.get") {
         json(res, 200, { result: { current: "medium", available: ["low", "medium", "high"] } });
+        return;
+      }
+      if (type === "control.bots.list") {
+        json(res, 200, { result: { bots: botsCatalog } });
+        return;
+      }
+      if (type === "control.groups.list") {
+        json(res, 200, { result: { groups: groupsCatalog } });
         return;
       }
       json(res, 200, { result: {} });
@@ -432,6 +444,10 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
     startAccepting() { accepting = true; },
     setRole(next) { role = next; },
     setDesktopMode(next) { desktopMode = next; },
+    setCatalogs(next) {
+      if (next.bots) botsCatalog = next.bots;
+      if (next.groups) groupsCatalog = next.groups;
+    },
     get lastDesktopOpen() { return lastDesktopOpen; },
     desktopStreamIds,
     desktopCloseRequests,

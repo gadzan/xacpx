@@ -53,7 +53,14 @@ Examples:
 - `logging.maxFiles`
 - `logging.retentionDays`
 - `channel.replyMode`
+- `channels.<id>.replyMode`
 - `language`
+
+**Backward-compatible fields:**
+
+- `channel.type` (old single-channel config; for multi-channel use `xacpx channel ...`)
+- `channels[]` (multi-channel runtime config; recommended to manage with `xacpx channel ...`)
+- `wechat.replyMode` (deprecated alias; writes are mapped to `channel.replyMode`, accepted values `stream` / `final` / `verbose`)
 
 **Dynamic fields** (the named target must already exist):
 
@@ -63,6 +70,8 @@ Examples:
 - `workspaces.<name>.description`
 
 > **Performance logging** (`logging.perf.*`) is not on the `/config set` whitelist. To enable it, edit `~/.xacpx/config.json` directly and restart the daemon — the perf tracer is bound at startup.
+
+> **Transport topology** (`transport.type`, `transport.command`) is written to disk but does not hot-apply: the live transport keeps its current values until the daemon restarts (`config.topology_pending_restart` is logged). Every other path above hot-applies. Restart with `xacpx restart`.
 
 > **Feishu credentials and multi-channel config** are best managed from the terminal: `xacpx channel add feishu`.
 
@@ -102,6 +111,7 @@ Each path validates its value against the expected type:
 | Path | Accepted values |
 |------|----------------|
 | `channel.replyMode` | `stream`, `final`, `verbose` |
+| `channels.<id>.replyMode` | `stream`, `final`, `verbose` |
 | `transport.permissionMode` | `approve-all`, `approve-reads`, `deny-all` |
 | `transport.nonInteractivePermissions` | `deny`, `fail` |
 | `logging.maxFiles` | Positive integer |

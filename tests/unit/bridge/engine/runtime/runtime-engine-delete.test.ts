@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1127,6 +1128,7 @@ test("G4 barrier: deleteSession refuses while a live deleter's deleting fence st
   const sessionsDir = join(dir, ".acpx", "sessions");
   const fenceDir = join(dir, "fences");
   const queueDir = join(dir, "queue");
+  let liveDeleter: ReturnType<typeof spawn> | undefined;
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
@@ -1149,15 +1151,22 @@ test("G4 barrier: deleteSession refuses while a live deleter's deleting fence st
       }),
     );
     const physical = physicalFenceKeyForSession(input);
+    // A LIVE foreign pid, not pid 1: POSIX init is alive at 1, but Windows has
+    // no process there (0=Idle, 4=System), so the real identity probe reports
+    // "missing", the fence reads as a crashed deleter, and the takeover that
+    // must be refused succeeds instead. Spawn a process that outlives the test
+    // so both probes answer "alive" on both platforms.
+    liveDeleter = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    liveDeleter.unref();
     const fence = new RuntimeWorkerFence(fenceDir);
     await fence.claim({
       kind: "runtime-worker-owner",
       logicalSessionId: physical,
       generation: "gen-live",
-      // Init pid: always alive and foreign to this process, so the claim
-      // below can neither take over (dead pid) nor treat it as self
-      // re-entry (own pid) — it must refuse.
-      pid: 1,
+      pid: liveDeleter.pid,
       bootstrapVerified: false,
       phase: "deleting",
       startedAt: new Date().toISOString(),
@@ -1182,6 +1191,7 @@ test("G4 barrier: deleteSession refuses while a live deleter's deleting fence st
     }
     await engine.shutdown();
   } finally {
+    liveDeleter?.kill("SIGKILL");
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);

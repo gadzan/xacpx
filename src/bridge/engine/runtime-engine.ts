@@ -1587,8 +1587,17 @@ export class RuntimeEngine implements BridgeEngine {
         if (error instanceof RuntimeError) throw error;
         if (error instanceof WorkerTeardownPendingError) {
           this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
+          // A cooling worker needs room to finish stopping before the retry
+          // proceeds or fails closed. freeWarmProcess returns while its worker
+          // still cools, and Windows Job teardown costs an order of magnitude
+          // more than a POSIX process-group signal. The flat 300ms budget
+          // expired mid-teardown and failed the prompt that follows an archive.
+          // Windows waits on the bound waitForWorkerQuiescence already uses;
+          // POSIX keeps 300ms.
+          const graceMs =
+            process.platform === "win32" ? (this.options.workerQuiescenceTimeoutMs ?? 8_000) : 300;
           const start = Date.now();
-          while (Date.now() - start < 300) {
+          while (Date.now() - start < graceMs) {
             const existing = this.manager?.get(key);
             if (!existing || (existing.lifecycle !== "cooling" && existing.lifecycle !== "failed")) break;
             const { promise, resolve } = Promise.withResolvers<void>();

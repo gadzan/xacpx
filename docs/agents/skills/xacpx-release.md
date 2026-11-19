@@ -15,6 +15,7 @@ node ./scripts/release.mjs notes           # raw material for the prose: merged 
 node ./scripts/release.mjs apply --yes     # writes versions + derived metadata + lockfiles + CHANGELOG skeleton
 node ./scripts/release.mjs publish --yes   # gates, commit, one tag at a time, waits for each workflow
 node ./scripts/release.mjs check           # re-derives the metadata invariants; reports drift, changes nothing
+node ./scripts/release.mjs sync-lockfiles  # refresh both lockfiles from the manifests and re-pin the rmux-bridge optional deps
 ```
 
 `plan`, `apply` and `publish` without `--yes` are dry runs that print what they

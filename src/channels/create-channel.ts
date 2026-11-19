@@ -2,7 +2,7 @@ import type { ChannelConfig, ChannelRuntimeConfig } from "../config/types.js";
 import type { MessageChannelRuntime } from "./types.js";
 import type { RuntimeMediaStore } from "./media-store.js";
 import { WeixinChannel } from "./weixin-channel.js";
-import { registerKnownChannelId } from "./channel-scope.js";
+import { registerKnownChannelId, unregisterKnownChannelId } from "./channel-scope.js";
 import { normalizeChannelType } from "./channel-type.js";
 import { getMovedChannelInstallHint as getKnownMovedChannelInstallHint } from "../plugins/known-plugins.js";
 
@@ -36,6 +36,18 @@ export function registerChannelFactory(type: string, factory: ChannelFactory): v
 export function hasChannelFactory(type: string): boolean {
   bootstrapBuiltinChannelFactories();
   return channelFactories.has(type);
+}
+
+/**
+ * Exists so a caller that registered a plugin can put the process back the way
+ * it found it. Without it, one registration leaks into every later consumer in
+ * the same process (tests assert the "plugin not installed" hints, which only
+ * hold on a clean registry).
+ */
+export function unregisterChannelFactory(type: string): void {
+  const normalized = normalizeChannelType(type);
+  channelFactories.delete(normalized);
+  unregisterKnownChannelId(normalized);
 }
 
 export function getRegisteredChannelTypes(): string[] {

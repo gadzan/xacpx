@@ -19,6 +19,11 @@ test("rejects when an active consumer lock already exists", async () => {
 
   const lock = createWeixinConsumerLock({
     lockFilePath,
+    // These cases are about the metadata/liveness contract and use POSIX-style
+    // `/cfg` paths; pin the platform so they do not take the Windows guard
+    // branch (which canonicalizes `dirname("/cfg")` = `/` and tries to mkdir
+    // the drive root).
+    platform: "linux",
     isProcessRunning: (pid) => pid === 123,
     probeProcessIdentity: async () => ({
       status: "found",
@@ -58,6 +63,8 @@ test("replaces a stale consumer lock", async () => {
 
   const lock = createWeixinConsumerLock({
     lockFilePath,
+    // POSIX-style `/cfg` fixtures — see the note on the first case.
+    platform: "linux",
     isProcessRunning: () => false,
   });
 
@@ -87,6 +94,8 @@ test("emits diagnostics when it replaces a stale lock", async () => {
 
   const lock = createWeixinConsumerLock({
     lockFilePath,
+    // POSIX-style `/cfg` fixtures — see the note on the first case.
+    platform: "linux",
     isProcessRunning: () => false,
     onDiagnostic: async (event, context) => {
       diagnostics.push(`${event}:${JSON.stringify(context)}`);
@@ -119,6 +128,8 @@ test("reclaims a legacy POSIX lock when its pid was reused by a different proces
   }));
   const lock = createWeixinConsumerLock({
     lockFilePath,
+    // POSIX-style `/cfg` fixtures — see the note on the first case.
+    platform: "linux",
     isProcessRunning: () => true,
     probeProcessIdentity: async (pid) => ({
       status: "found",
@@ -151,6 +162,8 @@ test("POSIX release does not unlink a replacement lock owned by another process"
   const lockFilePath = join(dir, "weixin-consumer.lock.json");
   const lock = createWeixinConsumerLock({
     lockFilePath,
+    // POSIX-style `/cfg` fixtures — see the note on the first case.
+    platform: "linux",
     probeProcessIdentity: async (pid) => ({
       status: "found",
       identity: { pid, startedAtMs: Date.parse("2026-04-05T00:00:00.000Z") },
@@ -182,6 +195,8 @@ test("diagnostic failures cannot leak an acquired compatibility lock", async () 
   const lockFilePath = join(dir, "weixin-consumer.lock.json");
   const create = () => createWeixinConsumerLock({
     lockFilePath,
+    // POSIX-style `/cfg` fixtures — see the note on the first case.
+    platform: "linux",
     probeProcessIdentity: async (pid) => ({
       status: "found",
       identity: { pid, startedAtMs: Date.parse("2026-04-05T00:00:00.000Z") },

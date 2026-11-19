@@ -6,6 +6,31 @@ import { tmpdir } from "node:os";
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
 import { SessionService } from "../../../../../src/sessions/session-service";
 import { createEmptyState } from "../../../../../src/state/types";
+
+/**
+ * Poll until the queue for `key` is empty.
+ *
+ * A fixed iteration count (50 x 50ms = 2.5s) is not enough on Windows, where
+ * every runtime-worker spawn costs an order of magnitude more than on POSIX.
+ * Bound by wall clock instead of iterations so the wait scales with the
+ * machine, and let the caller pass the budget its own test timeout allows.
+ */
+async function waitForQueueDrained(
+  engine: RuntimeEngine,
+  key: string,
+  budgetMs: number,
+): Promise<void> {
+  const store = (engine as unknown as {
+    getQueueStore: () => { hasPending: (k: string) => Promise<boolean> };
+  }).getQueueStore();
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (!(await store.hasPending(key))) return;
+    if (Date.now() > deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 const baseInput = {
   agent: "codex",
   cwd: "/repo",
@@ -94,11 +119,15 @@ test("FIFO drain executes queued messages as normal prompt turns", async () => {
     await engine.injectMessage({ ...baseInput, text: "first", mode: "queue", messageId: "a" });
     await engine.injectMessage({ ...baseInput, text: "second", mode: "queue", messageId: "b" });
     await engine.injectMessage({ ...baseInput, text: "third", mode: "queue", messageId: "c" });
-    // Wait for drain to complete — queue should become empty and no acked loss
-    for (let i = 0; i < 50; i++) {
+    // Wait for drain to complete — queue should become empty and no acked loss.
+    // 50x50ms = 2.5s is not enough on Windows, where each runtime-worker spawn
+    // costs far more than on POSIX; poll for the whole test budget instead.
+    const deadline = Date.now() + 12_000;
+    for (;;) {
       const hasPending = await (engine as unknown as { getQueueStore: () => { hasPending: (k:string)=>Promise<boolean> } }).getQueueStore?.()?.hasPending?.(baseInput.logicalSessionId!) ?? false;
       // Alternative: check queue file gone
       if (!hasPending) break;
+      if (Date.now() > deadline) break;
       await new Promise((r) => setTimeout(r, 50));
     }
     // Queue file should be gone or empty after drain
@@ -193,11 +222,7 @@ test("queue while direct prompt active waits for turn settle then drains", async
     expect(receipt.status).toBe("queued");
     await promptPromise;
     // After direct prompt, queued should drain
-    for (let i = 0; i < 50; i++) {
-      const hasPending = await (engine as unknown as { getQueueStore: () => { hasPending: (k:string)=>Promise<boolean> } }).getQueueStore().hasPending(baseInput.logicalSessionId!);
-      if (!hasPending) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    await waitForQueueDrained(engine, baseInput.logicalSessionId!, 12_000);
     expect(await (engine as unknown as { getQueueStore: () => import("../../../../../src/bridge/engine/runtime/runtime-queue").RuntimeQueueStore }).getQueueStore().hasPending(baseInput.logicalSessionId!)).toBe(false);
   } finally {
     await engine.shutdown().catch(() => {});
@@ -217,10 +242,7 @@ test("TTL cannot cool with queue pending — worker stays warm", async () => {
     await new Promise((r) => setTimeout(r, 250));
     // If queue pending, worker should still be warm or draining, not cooled
     // Since drain will have completed by now, we check that queue eventually drains and then TTL can cool
-    for (let i = 0; i < 50; i++) {
-      if (!(await (engine as unknown as { getQueueStore: ()=>import("../../../../../src/bridge/engine/runtime/runtime-queue").RuntimeQueueStore }).getQueueStore().hasPending(baseInput.logicalSessionId!))) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    await waitForQueueDrained(engine, baseInput.logicalSessionId!, 12_000);
     expect(await (engine as unknown as { getQueueStore: ()=>import("../../../../../src/bridge/engine/runtime/runtime-queue").RuntimeQueueStore }).getQueueStore().hasPending(baseInput.logicalSessionId!)).toBe(false);
     // Now after queue empty, TTL should eventually cool
     await new Promise((r) => setTimeout(r, 300));
@@ -274,10 +296,7 @@ test("bridge restart recovery: primeQueuesFromCatalog reloads and drains", async
   // New engine primes from catalog
   const engine2 = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir: stateSessionsDir, queueDir, idleTtlMs: 200 });
   await engine2.primeQueuesFromCatalog([baseInput]);
-  for (let i = 0; i < 50; i++) {
-    if (!(await (engine2 as unknown as { getQueueStore: ()=>import("../../../../../src/bridge/engine/runtime/runtime-queue").RuntimeQueueStore }).getQueueStore().hasPending(baseInput.logicalSessionId!))) break;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  await waitForQueueDrained(engine2, baseInput.logicalSessionId!, 12_000);
   expect(await (engine2 as unknown as { getQueueStore: ()=>import("../../../../../src/bridge/engine/runtime/runtime-queue").RuntimeQueueStore }).getQueueStore().hasPending(baseInput.logicalSessionId!)).toBe(false);
   await engine2.shutdown().catch(() => {});
   await rm(dir, { recursive: true, force: true });
@@ -349,11 +368,7 @@ test("enqueue -> kill Bridge Host -> restart -> auto drain", async () => {
     await engine2.primeQueuesFromCatalog([baseInput]);
 
     // 5. Verify queued items drain automatically to empty without any additional prompt/ensure calls
-    for (let i = 0; i < 50; i++) {
-      const hasPending = await engine2.getQueueStore().hasPending(baseInput.logicalSessionId!);
-      if (!hasPending) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    await waitForQueueDrained(engine2, baseInput.logicalSessionId!, 12_000);
 
     expect(await engine2.getQueueStore().hasPending(baseInput.logicalSessionId!)).toBe(false);
     expect(await engine2.getQueueStore().queueLength(baseInput.logicalSessionId!)).toBe(0);

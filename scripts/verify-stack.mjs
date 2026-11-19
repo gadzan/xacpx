@@ -321,9 +321,13 @@ export function portOwner(port) {
  */
 export function sweepProcesses(needle) {
   if (process.platform === "win32") {
+    // Match every process name, not just node.exe: the stack may be driven by
+    // bun (local dev), node (published daemon), or a bun-built bundle. Filtering
+    // on one name silently misses the others and a teardown check then reports
+    // a clean slate while the process is still alive.
     const result = spawnSync(
       "powershell",
-      ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${needle}*' } | Select-Object -ExpandProperty ProcessId`],
+      ["-NoProfile", "-Command", `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${needle}*' } | Select-Object -ExpandProperty ProcessId`],
       { encoding: "utf8" },
     );
     if (result.error || result.status !== 0) return [];

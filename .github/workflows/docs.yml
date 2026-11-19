@@ -6,6 +6,9 @@ on:
       - main
     paths:
       - 'packages/docs/**'
+      - 'docs/**'
+      - 'scripts/sync-docs-site.mjs'
+      - 'scripts/check-doc-i18n.mjs'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -36,6 +39,11 @@ jobs:
 
       - name: Install docs dependencies
         run: npm install --prefix packages/docs --workspaces=false --no-audit --no-fund --package-lock=false
+
+      # A docs/ source of truth that changed without its site page being
+      # reconciled blocks the deploy — the site must not silently lag.
+      - name: Docs site drift gate
+        run: node ./scripts/sync-docs-site.mjs check
 
       - name: Build docs
         run: npm run --prefix packages/docs build

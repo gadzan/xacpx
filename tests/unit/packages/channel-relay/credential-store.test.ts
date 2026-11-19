@@ -27,7 +27,12 @@ test("writes the credential file with 0600 perms", () => {
   const dir = mkdtempSync(join(tmpdir(), "cred-"));
   const path = join(dir, "credential.json");
   new CredentialStore(path).save({ instanceId: "i", credential: "c", relayUrl: "ws://x" });
-  expect(statSync(path).mode & 0o777).toBe(0o600);
+  // Windows cannot clear the read bits (chmod only toggles the write bit), so
+  // the mode check is POSIX-only; the store still chmods on every platform.
+  if (process.platform !== "win32") {
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  }
+  expect(new CredentialStore(path).load()?.instanceId).toBe("i");
 });
 
 test("re-tightens perms when overwriting a loosened file", () => {
@@ -36,6 +41,8 @@ test("re-tightens perms when overwriting a loosened file", () => {
   writeFileSync(path, "{}", { mode: 0o644 });
   const store = new CredentialStore(path);
   store.save({ instanceId: "i", credential: "c", relayUrl: "ws://x" });
-  expect(statSync(path).mode & 0o777).toBe(0o600);
+  if (process.platform !== "win32") {
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  }
   expect(store.load()?.instanceId).toBe("i");
 });

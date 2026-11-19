@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -143,10 +143,26 @@ rl.on("line", (line) => {
 
   const args = [
     ...cliTarget.args,
-    "--agent", `${process.execPath} ${agentFile}`,
+  ];
+  if (process.platform === "win32") {
+    // acpx refuses a raw `--agent "<exe> <script>"` command string on Windows;
+    // the only way to hand it an argv array is its config file.
+    const configDir = join(dir, ".acpx");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      join(configDir, "config.json"),
+      `${JSON.stringify({
+        agents: { mock: { argv: [process.execPath, agentFile] } },
+        defaultAgent: "mock",
+      }, null, 2)}\n`,
+    );
+  } else {
+    args.push("--agent", `${process.execPath} ${agentFile}`);
+  }
+  args.push(
     "--cwd", dir,
     "--non-interactive-permissions", config.nonInteractivePermissions ?? "deny",
-  ];
+  );
   if (config.permissionMode === "approve-all") args.push("--approve-all");
   else if (config.permissionMode === "approve-reads") args.push("--approve-reads");
   else if (config.permissionMode === "deny-all") args.push("--deny-all");
@@ -159,7 +175,7 @@ rl.on("line", (line) => {
 
   return new Promise<"allow_once" | "reject_once">((resolveP, reject) => {
     const cp = spawn(cliTarget.command, args, {
-      env: { ...process.env, HOME: dir },
+      env: { ...process.env, HOME: dir, USERPROFILE: dir },
       stdio: ["ignore", "pipe", "pipe"],
       signal: AbortSignal.timeout(15_000),
     });

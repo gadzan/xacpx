@@ -14,5 +14,6 @@ the pinned 0.10.0 official release (fixed URL + SHA-256) matching the bridge's
 works offline and machine-local RMUX on PATH can never shadow it. The bridge
 uses the dedicated daemon binary rather than routing daemon startup through the
 public CLI; on Windows this also keeps the daemon hidden instead of opening a
-persistent console window. `checksums.json` records the SHA-256 of every
-artifact; the package verifies and installs without network access.
+persistent console window. `checksums.json` records the artifact inventory (paths and
+versions; its SHA-256 fields are currently unfilled and nothing verifies them at
+install time). The package is self-contained and installs without network access.

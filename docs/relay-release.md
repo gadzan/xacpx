@@ -10,8 +10,8 @@
         ▲                 ▲
         │                 │
 @ganglion/xacpx-relay     @ganglion/xacpx-channel-relay
-  (hub，bin: xacpx-relay；   (连接器；peerDep xacpx >= 0.17.0-beta.6)
-   已内嵌看板 relay-web)
+  (hub，bin: xacpx-relay；   (连接器；peerDep xacpx >= minXacpxVersion，
+   已内嵌看板 relay-web)     当前 0.24.10-beta.18，见 channel-relay/src/index.ts)
 
 @ganglion/xacpx           (core；channel-relay 的 peer 依赖，独立发布)
 ```
@@ -20,14 +20,19 @@
   `bun run build:relay` 时被拷进 `@ganglion/xacpx-relay` 的 `dist/relay-web`，随 hub 包一起出厂。
   因此 `xacpx-relay` 单包安装即自带看板，无需 `--web-root`。
 
-## 当前发布状态（核对后更新）
+## 当前发布状态（快照，发版前重新生成）
+
+下表是某一轮发布后的快照，**会随每次发版过期**。权威当前值以两个来源为准：
+
+- repo 侧：`node ./scripts/release.mjs plan`（打印每个包的 Next version 与派生元数据）
+- npm 侧：`npm view <pkg> version`
 
 | 包 | npm | repo | 说明 |
 |---|---|---|---|
-| `@ganglion/xacpx` | 用 `npm view` 核对 | 0.18.0 | 含会话热度（warmth）后端：`transport.isSessionWarm` + `SessionWarmthTracker` |
-| `@ganglion/xacpx-relay-protocol` | 用 `npm view` 核对 | 0.1.17 | `SessionDto.warm?` 可选字段 |
-| `@ganglion/xacpx-relay` | 用 `npm view` 核对 | 0.9.17 | 内嵌看板（尾部缓存绑定 incarnation，同名重建不复活旧尾部） |
-| `@ganglion/xacpx-channel-relay` | 用 `npm view` 核对 | 0.3.4 | 连接器 |
+| `@ganglion/xacpx` | 用 `npm view` 核对 | 0.24.10-beta.18 | 含会话热度（warmth）后端：`transport.isSessionWarm` + `SessionWarmthTracker` |
+| `@ganglion/xacpx-relay-protocol` | 用 `npm view` 核对 | 0.6.4-beta.14 | `SessionDto.warm?` 可选字段 |
+| `@ganglion/xacpx-relay` | 用 `npm view` 核对 | 0.14.12-beta.23 | 内嵌看板（尾部缓存绑定 incarnation，同名重建不复活旧尾部） |
+| `@ganglion/xacpx-channel-relay` | 用 `npm view` 核对 | 0.7.8-beta.18 | 连接器 |
 
 > 用 `npm view <pkg> version` 随时核对线上版本。
 
@@ -49,9 +54,10 @@ RMUX platform 包发布后，用 `npm install --package-lock-only --ignore-scrip
 
 当前 tag 触发的 npm 发布顺序仍是：
 
-1. **core `@ganglion/xacpx` 0.17.0-beta.6** —— channel-relay 声明
-   `peerDependencies.xacpx >= 0.17.0-beta.6`，必须先发布含 deadline-aware `setSessionModel` 的 core。
-2. **`@ganglion/xacpx-relay-protocol`** —— relay 和 channel-relay 都依赖它（`^0.1.0`）。
+1. **core `@ganglion/xacpx`** —— channel-relay 声明
+   `peerDependencies.xacpx >= <minXacpxVersion>`（当前 `0.24.10-beta.18`），
+   必须先发布含所需 core 能力的版本。
+2. **`@ganglion/xacpx-relay-protocol`** —— relay 和 channel-relay 都依赖它（当前 `^0.6.4-beta.14`）。
 3. **`@ganglion/xacpx-relay` + `@ganglion/xacpx-channel-relay`** —— 两者都依赖已发布的 protocol。
 
 `bun run publish:relay-stack` 已按 2→3 的拓扑顺序串好。半截升级时旧 hub/connector/web 组合会安全隐藏终端 UI（缺 capability），属预期。
@@ -60,7 +66,7 @@ RMUX platform 包发布后，用 `npm install --package-lock-only --ignore-scrip
 [relay-interaction-deployment](relay-interaction-deployment.md) §2.3/§6）。字段是附加的，旧 hub 会存成 `""`、
 旧 web 没有会话作用域，线协议仍然兼容、不报错，于是表单会落到无面板可渲染的状态并静默等到超时。
 因此 **`@ganglion/xacpx-relay`（含内嵌 relay-web）与 `@ganglion/xacpx-channel-relay` 必须配套发布**，
-core 不低于 `0.24.10-beta.8`；旧 core 组合会 fail-closed（resolver 不产出路由、channel 在调 hub 前就拒），不会静默。
+core 不低于 channel-relay 的 `minXacpxVersion`（当前 `0.24.10-beta.18`）；旧 core 组合会 fail-closed（resolver 不产出路由、channel 在调 hub 前就拒），不会静默。
 
 ### RMUX terminal smoke（opt-in）
 
@@ -95,9 +101,9 @@ bun run verify:publish
 `verify:publish` + tag/版本一致性校验 + `npm publish`（用 `secrets.NPM_TOKEN`）+ 发 weacpx-compat shim。
 
 ```bash
-# 确认 root package.json 的 version 与目标 tag 一致（本轮为 0.17.0-beta.6）
-git tag v0.17.0-beta.6
-git push origin v0.17.0-beta.6
+# 确认 root package.json 的 version 与目标 tag 一致（用 node ./scripts/release.mjs plan 看当前版本）
+git tag v<X.Y.Z>
+git push origin v<X.Y.Z>
 ```
 
 ## 发布 relay 三包（tag 触发，已有 CI）
@@ -107,12 +113,12 @@ relay 三包各有 tag 触发 workflow（`publish-relay-protocol.yml` / `publish
 `npm publish`（`secrets.NPM_TOKEN`）+ GitHub release）。按拓扑顺序推 tag：
 
 ```bash
-# 2. protocol 先发（确认 packages/relay-protocol/package.json version=0.1.0）
-git tag relay-protocol-v0.1.0 && git push origin relay-protocol-v0.1.0
+# 2. protocol 先发（确认 packages/relay-protocol/package.json 的 version）
+git tag relay-protocol-v<X.Y.Z> && git push origin relay-protocol-v<X.Y.Z>
 
 # 3. protocol 发布完成后，再发 hub 和连接器
-git tag relay-v0.1.0          && git push origin relay-v0.1.0
-git tag channel-relay-v0.1.0  && git push origin channel-relay-v0.1.0
+git tag relay-v<X.Y.Z>          && git push origin relay-v<X.Y.Z>
+git tag channel-relay-v<X.Y.Z>  && git push origin channel-relay-v<X.Y.Z>
 ```
 
 每个 workflow 会校验 tag 必须精确等于 `<pkg>-v<package.json 的 version>`，对不上直接失败。
@@ -141,7 +147,7 @@ xacpx-relay start
 
 连接器侧：
 ```bash
-npm i -g @ganglion/xacpx@0.17.0-beta.6  # 或更高
+npm i -g @ganglion/xacpx@latest  # 不低于 channel-relay 的 minXacpxVersion
 xacpx channel add relay --url <host> --token <access-token>
 ```
 
@@ -152,6 +158,7 @@ xacpx channel add relay --url <host> --token <access-token>
 | `@ganglion/xacpx` | `v<X.Y.Z>` | publish-xacpx.yml |
 | `@ganglion/xacpx-channel-feishu` | `channel-feishu-v<X.Y.Z>` | publish-channel-feishu.yml |
 | `@ganglion/xacpx-channel-yuanbao` | `channel-yuanbao-v<X.Y.Z>` | publish-channel-yuanbao.yml |
+| `@ganglion/xacpx-channel-discord` | `channel-discord-v<X.Y.Z>` | publish-channel-discord.yml |
 | `@ganglion/xacpx-relay-protocol` | `relay-protocol-v<X.Y.Z>` | publish-relay-protocol.yml |
 | `@ganglion/xacpx-relay` | `relay-v<X.Y.Z>` | publish-relay.yml |
 | `@ganglion/xacpx-channel-relay` | `channel-relay-v<X.Y.Z>` | publish-channel-relay.yml |
@@ -159,4 +166,4 @@ xacpx channel add relay --url <host> --token <access-token>
 预发布走 npm `next` dist-tag；CI workflow 按 tag 里的 `-beta`/`-rc` 等后缀自动选 dist-tag。
 
 > tag 前缀互不冲突：`relay-v*` 不匹配 `relay-protocol-v*`（后者以 `relay-p` 开头），
-> `channel-relay-v*` 也独立于 `channel-feishu-v*` / `channel-yuanbao-v*`。
+> `channel-relay-v*` 也独立于 `channel-feishu-v*` / `channel-yuanbao-v*` / `channel-discord-v*`。

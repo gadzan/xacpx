@@ -48,8 +48,8 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `DashboardView` 把每条 `WebServerEvent` 扇出给四个 store：`instancesStore.applyEvent`
   （实例上下线/会话变更）、`chatStore.applyEvent`（control-event：turn 输出分片、turn 终态等）、
   `tasksStore.applyEvent`（`scheduled-changed`/`orchestration-changed` 信号触发重拉）、
-  `noticesStore.applyEvent`（`instance.notice` toast）；并把 `connectEvents` 的 `onStatus`
-  回调接到 `connectionStore.setOnline`，驱动连接徽标。
+  `noticesStore.applyEvent`（`instance.notice` toast）；`onStatus(online, everOpened)` 接到
+  `connectionStore.setStatus`（`setOnline` 是单参数兼容入口，仅 DashboardView 在用），驱动连接徽标。
 - **实例订阅（`control-event` 扇出收敛）**：`DashboardView` 通过 `sendSubscribe(instanceIds)`
   告诉 hub 本账号拥有的实例集合，hub 据此只把这些实例的 `control-event` 发给它
   （`instance-status`/`notice` 仍账号全量）。触发点：连接/重连成功（`onStatus(true)` 每次都重发，
@@ -79,8 +79,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 - `stores/notices.ts` + `components/NoticeToast.vue`：把 `instance.notice` web 事件渲染成
   右下角可关闭 toast——newest-first，最多保留 20 条、同屏展示最多 4 条。
-- `stores/connection.ts` + `components/ConnectionBadge.vue`：`connectEvents` 的 `onStatus`
-  报告 `/ws` open/close，离线期间显示 “Reconnecting…” 徽标。
+- `stores/connection.ts` + `components/ConnectionBadge.vue`：`connectEvents` 的 `onStatus(online, everOpened)`
+  报告 `/ws` open/close，离线期间显示 “Reconnecting…” 徽标；`everOpened` latch 住"本页生命周期内连上过"，
+  供首屏未连接时渲染中性 connecting 态而非报错。
 - `views/SettingsView.vue`（路由 `/settings`）：实例接入 token 生成器（回显
   `xacpx channel add relay --url ... --token ...` 命令）、主题切换、登出、
   只读历史保留摘要（来自 `GET /api/config`，保留策略服务端配置、v1 不可在 Web 改）。
@@ -515,7 +516,7 @@ Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）
 启用状态。同名成员靠 bot id 区分。无法解析、重名、停用或已移除的手工 `@` 会提示，并清掉由 mention
 建立的目标，不沿用上一个目标。Direct 页的导航只打开另一个 Bot 的 Direct，或打开已包含当前 Bot 的 Group。
 
-`group_send` 的公开交接在 `GroupTranscript` 里显示关系、任务、期望、已有结果和一句可操作提示。Run 卡片列出实际执行的成员。`shared-single-writer` 的排队语义只在话题的「文件系统隔离」对话框里说明，不在每次执行的浮层里重复。
+`group_send` 的公开交接在 `ConversationTimeline` 里显示关系、任务、期望、已有结果和一句可操作提示。Run 详情列出实际执行的成员。`shared-single-writer` 的排队语义只在话题的「文件系统隔离」对话框里说明，不在每次执行的浮层里重复。
 
 话题行 ⋯ 菜单对有 executionTarget 的 Group 话题多一项「文件系统隔离」，打开单选对话框列出三种策略并标出当前值；选择即走 `control.group.topics.set-isolation`。只有「每名成员独立 Git 工作树」会让同一轮派发并行执行（每名成员一个已验证的工作树，物理准入仍要求 cwd 互不相同），其余两种对无法证明只读的工作保持串行。切换只影响之后的派发：话题里还有未结束 Run 时服务端返回 `conversation_not_settled`，对话框保持打开并显示原因。失败不关闭、成功才关闭，与删除/清空一致；移动端返回键先关对话框。Direct 页没有 executionTarget，不渲染这一项。
 公布 `group.topics.fork.v1` 的实例在话题行 `⋯` 菜单多一项「分叉」，已结算 Run 的执行浮层头部多一颗「分叉」按钮：前者走 `latest_stable`，后者显式带上该 Run。两个入口打开同一个 `ForkTopicDialog`，默认标题为 `<源标题> fork`，并在确认区写明实际分叉点；打开时一次性生成 `targetTopicId` 与 `requestId`，失败重试复用同一对，成功才关闭并切到新话题。`ConversationTimeline` 在滚动容器之外渲染分叉横幅：来源标题、已复制条数、被截断的更早条数；源话题仍存在时可点跳回，删除后只保留说明。横幅不是 timeline entry，不参与分页或滚动锚点。旧 core 不公布该能力时不渲染任何分叉入口。协议与错误码见 [relay-module](relay-module.md)。
@@ -714,9 +715,9 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 - **条目从哪来**：`useMobileBack({ pane, full })`（会话 / Bot / 群组 pane 1 条，全屏层 = 中栏
   文件/diff/终端/实例桌面标签 + 右文件/任务抽屉）+ `pushModal()`（遮罩层：MobileSheet、对话框、
   ImageLightbox、Mermaid、SubagentTrace、ConfirmDialog、CommandPalette，`DropdownPanel`
-  在 `<lg` 也渲染成 MobileSheet，因此自动覆盖）。群组进程详情 `GroupRunDetailSheet` 也由 MobileSheet
+  在 `<lg` 也渲染成 MobileSheet，因此自动覆盖）。群组进程详情的移动端分支（`TraceOverlay` → `MobileSheet`）
   登记一条遮罩历史，自定义头部的 × 与遮罩、Esc 共用 `navigateBack()`；安全初始焦点和滚动恢复保持不变。
-  桌面 `GroupRunDetailPopover` 不登记历史。同类叠同类（sheet→sheet、sheet→dialog、全屏→全屏）
+  桌面分支 `TraceOverlayDrawer` 不登记历史。同类叠同类（sheet→sheet、sheet→dialog、全屏→全屏）
   走 `router.replace`，所以「返回」永远先回到首页。桌面小下拉 / ContextMenu / tooltip / 话题切换 /
   首页 tab 切换**不建条目**。新建会话流程：FAB → 实例 sheet（push）→ 新建对话框（replace）→
   创建成功 → pane（replace 成 `pane`），一次返回即回首页。
@@ -886,39 +887,48 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
 
 - **实现**：`vite-plugin-pwa`（`generateSW` + Workbox），选项集中在 `packages/relay-web/src/pwa-options.ts`（vite.config 与漂移测试共用同一对象）：
   - `registerType: "autoUpdate"`——新版本由 SW 后台拉取，下次导航/刷新静默生效，无更新弹窗；
-  - `navigateFallback: "/index.html"` 配 `navigateFallbackDenylist: [/^\/api/, /^\/ws/]`——SPA 路由走缓存 index，但**绝不影响 hub 的 `/api`、`/ws`**；
+  - `navigateFallback: "/index.html"` 配 `navigateFallbackDenylist: [/^\/api/, /^\/ws/, /^\/desktop\/(observe|instance)/]`——SPA 路由走缓存 index，但**绝不影响 hub 的 `/api`、`/ws`**，也不能把 HTML 塞给 desktop 二进制升级（那会破坏 noVNC 握手）；
   - SW 在 `src/main.ts` 通过 `virtual:pwa-register` 的 `registerSW({ immediate: true })` 显式注册（`injectRegister: false`）；`devOptions.enabled: false`，`vite dev` 不起 SW（避免开发期缓存困扰）。
-- **图标**：两个源文件——`assets/pwa-source.svg`（暗底满铺 + 品牌蓝绿 X，与 `BrandLogo.vue` 同步，用于 any/apple/favicon），`assets/pwa-maskable-source.svg`（同款但 X 内收进 maskable 安全区，专供 maskable）。生成的 PNG 提交在 `public/`（`pwa-64/192/512`、`maskable-icon-512x512`、`apple-touch-icon-180x180`、`favicon.ico`）。重新生成：`bun run --cwd packages/relay-web generate-pwa-icons`（`scripts/generate-pwa-icons.mjs` 调 `bunx @vite-pwa/assets-generator`，故 CI 构建不依赖 sharp）。
+- **图标**：只有一个源文件 `assets/pwa-source.svg`（暗底满铺 + 品牌蓝绿 X，与 `BrandLogo.vue` 同步），manifest **只发 any 图标、没有 maskable**——maskable 会让 iOS 把瓦片当 adaptive 处理、缩进安全区并留一圈白边（图标本身是不透明满铺，任何 launcher 都边缘到边缘渲染，与 HAPI PWA 一致）。生成的 PNG 提交在 `public/`（`pwa-64x64` / `pwa-192x192` / `pwa-512x512`，另有 `apple-touch-icon-180x180` 与 `favicon.ico`）。重新生成：`bun run --cwd packages/relay-web generate-pwa-icons`（`scripts/generate-pwa-icons.mjs`，故 CI 构建不依赖 sharp）。
 - **打包链路**：`vite build` 把 `sw.js`/`workbox-*.js`/`manifest.webmanifest`/图标都输出到 `dist/`，再由 `bundle:relay-web` 整体拷进 `relay/dist/relay-web`；hub 的 hono `serveStatic` 在根作用域服务（`manifest.webmanifest` 命中 hono mime → `application/manifest+json`，`sw.js` 默认作用域 `/`）。
 - **部署前提（关键）**：Service Worker / 安装能力要求 **安全上下文**——`https://` 或 `localhost`。自托管 hub 走纯 `http://`（局域网 IP）时 SW 不会注册、也不可安装；需在反向代理上挂 TLS。详见 [relay-deployment.md](relay-deployment.md)。
-- **漂移守护**：`src/__tests__/pwa.test.ts` 校验 manifest 引用的每个图标都在 `public/` 存在、`autoUpdate` 与 `/api`·`/ws` denylist 未被删。
+- **漂移守护**：`src/__tests__/pwa.test.ts` 校验 manifest 引用的每个图标都在 `public/` 存在、`autoUpdate` 未被删、denylist 覆盖 `/api`·`/ws`·`/desktop/(observe|instance)`，且**不存在 maskable 图标**。
 
 ## 阶段六：Turn 状态展示（turn-status display）
 
 ### `LiveTurn` 模型与 store getters（packages/relay-web/src/stores/chat.ts）
 
 ```ts
+export type TurnStatus = "working" | "streaming" | "done" | "cancelled" | "error";
+export type TurnPart = TurnPartDto;   // { type: "text", text } | { type: "reasoning", text } | { type: "tool", step }
+
 export interface LiveTurn {
-  text: string;          // 累积的流式输出（turn-output chunk）
-  toolSteps: ToolStepDto[];  // 已规整的工具步骤列表（tool-event upsert）
-  reasoning: string;     // reasoning 文本（turn-thought chunk）
+  parts: TurnPart[];        // 保序的混合流：text / reasoning / tool 交错，不拆三个平行字段
   status: "working" | "streaming";  // working=刚启动，streaming=已收到首个 output chunk
-  startedAt: number;     // Date.now() 时间戳，供 HUD 计算 elapsed
+  startedAt: number;        // Date.now() 时间戳，供 HUD 计算 elapsed
+  slotAfterIndex?: number;  // turn-started 时（含）最后一条 transcript 消息的下标；-1=列表开头；省略=渲染在末尾
+  slotAfterId?: number;     // 同一行的 Hub messages.id（0=空 transcript），history apply 后重算 slotAfterIndex
+  peerTriggerMessageId?: string;  // 接纳本回合的 peer 消息 id（晚于 slotAfterId 落盘，但是回合的"因"）
 }
 ```
+
+模块内聚合助手（不导出，`applyEvent` 因此保持精简）：`appendText` / `appendReasoning` /
+`upsertTool` 连续同类型 chunk 合并进最后一个 part；`appendReasoning` 不在空白 chunk 上开新推理块
+（部分模型发空 thought delta，否则渲染出空「推理」面板）。派生读取：`textOf` / `toolStepsOf` /
+`reasoningOf` 从 `parts` 过滤得出，历史与实时共用同一套读取。
 
 关键 computed getters（`useChatStore`）：
 
 - `liveTurn` — 当前选中会话的 `LiveTurn | null`（按 NUL 键 `${instanceId}\0${alias}` 索引）。
 - `busy` — `liveTurn !== null`，控制输入框禁用与 HUD 可见性。
-- `streaming` — `liveTurn?.text ?? ""`，传给 `MessageList` 做流式渲染。
+- `streaming` — 由 `textOf(liveTurn.parts)` 得出，传给 `MessageList` 做流式渲染。
 
 ### `applyEvent` 处理逻辑
 
-- `turn-started` → `ensureTurn(key)` 创建或重置 accumulator（`{ text:"", toolSteps:[], reasoning:"", status:"working", startedAt:Date.now() }`）。
-- `turn-output` → `t.text += chunk; t.status = "streaming"`。
-- `tool-event` → 按 `toolCallId` upsert `t.toolSteps`（找到则替换，否则追加）。
-- `turn-thought` → `t.reasoning += chunk`。
+- `turn-started` → `ensureTurn(key)` 创建或重置 accumulator（`{ parts: [], status: "working", startedAt: Date.now() }`，并记录 `slotAfterIndex`/`slotAfterId`/`peerTriggerMessageId`）。
+- `turn-output` → `appendText(parts, chunk)`；首个 chunk 起 `status = "streaming"`。
+- `tool-event` → `upsertTool(parts, step)`（按 `toolCallId` 找到则替换，否则追加）。
+- `turn-thought` → `appendReasoning(parts, chunk)`。
 - `turn-finished` → 删除 `liveTurns[key]`，计算终态 `status`（`cancelled ? "cancelled" : ok ? "done" : "error"`）；若当前选中会话有内容则 push 一条 `ChatMessage`（含 `structured: { toolSteps, reasoning? }`）进 `messages`；`ok=false && !cancelled` 时设置 `error` ref。
 - 实例离线（`instance-status online=false`）→ 按前缀批量删除该实例的所有 liveTurns。
 
@@ -954,21 +964,25 @@ export interface LiveTurn {
 
 **思考气泡 `ThinkingDots`**（`packages/relay-web/src/components/ThinkingDots.vue`）
 
-会话 transcript 与 Direct Bot transcript 共用的唯一 liveness 信号：一个灰色圆角气泡里三颗
+会话 transcript、Conversation/Direct Bot 时间线共用的唯一 liveness 信号：一个灰色圆角气泡里三颗
 错峰起伏的圆点（透明度呼吸 + `translateY` 波浪，`prefers-reduced-motion` 下静止）。
 
 - 没有文案、计时、停止按钮——执行中的一切中间信息由流式内容本身承担；停止动作留在 composer
   （`PromptInput` / `ConversationPromptInput` 的 cancel）。
 - 会话侧由 `MessageList` 在实时回合行正文渲染（`data-test="live-working"`）：parts 到来即被
   `TurnParts` 替换；无实时回合时不渲染。
-- Direct Bot 侧由 `ConversationMessageList` 在实时回合正文渲染（`data-test="run-empty-slot"`）；
-  `waiting-human` 时被抑制（等待用户不是"思考"），改由静止的 warn 圆点承担。
+- Conversation/Direct Bot 侧由 `TimelineRow` / `LiveTurnAvatar` / `ChatPane` 复用同一组件；
+  `waiting-human` 时被抑制（等待用户不是"思考"），改由 `ConversationStatusBar` 的静止 warn 圆点承担。
 
-**运行状态胶囊 `RunStatusChip`**（`packages/relay-web/src/components/RunStatusChip.vue`）
+**会话运行态状态条 `ConversationStatusBar`**（`packages/relay-web/src/components/ConversationStatusBar.vue`）
 
-仅剩 `waiting-human` 一个调用方（Direct Bot 实时回合）：`state="waiting"` 静止 `bg-warn` 圆点 +
-状态文字。`running` / `queued` 呼吸点分支与停止按钮保留在组件内但 transcript 不再使用；胶囊
-永远不携带停止动作。
+替代了早期的 `RunStatusChip` 胶囊：props `{ run?, memberTurns?, round?, activeSpeakerName?, stopping? }`，
+emit `stopAll` 与 `openDetail`（发言者段打开同一个 run 详情抽屉）。
+
+- 状态取自 `run.state`：发言者名（`conversation.status.speaking`）、`queued`、`waiting-human`（静止
+  `bg-warn` 圆点 + `conversation.status.waiting`）、其余 `working`；无 run 时整条不渲染。
+- 多人回合内嵌 `RoundStrip`（轮次/已发言/通过/活跃计数），点击与发言者按钮都走 `openDetail`。
+- 状态条**永不携带停止动作的主体**——stop-all 由 emit 交给上层 composer/面板执行。
 
 **`PromptInput` busy-guard**（`packages/relay-web/src/components/PromptInput.vue`）
 
@@ -1164,7 +1178,9 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   本身，避免 backdrop-filter 祖先困住 TopicSwitcher 的弹层）+ 名称 + 角色 + 话题切换；返回与 ⋯ 靠边。
   桌面顶栏保持原布局。
 - **话题栏**：当前话题显示在一个按钮里。桌面端打开下拉列表，窄屏打开底部列表面板。列表可以搜索，并提供重命名、收起、恢复。额外话题可以删除。默认话题只提供清空，并要求确认。删除和清空会先预览外部绑定与 worktree。有绑定且未确认时不能提交。有未结束的 worktree 时不能提交。切换话题时按 `conversationId + topicId` 隔离历史与实时 Run。已删除话题的迟到列表或 `conversation-topic-changed` 不会把它加回缓存。清空默认话题提升 generation 后，当前历史缓存会被丢掉并重新加载；
-- **消息列表（`ConversationMessageList.vue`）**：
+- **消息流（`ConversationTimeline.vue` + `useConversationTimelineFeed`）**：
+  - 数据来自 hub 的 `conversation.timeline` RPC；缺 `conversations.timeline.v1` capability 的旧 daemon
+    显示升级提示，不回退到本地拼装（`ConversationMessageList.vue` 等早期组件已删除）。
   - 历史消息严格按 `seq` 排序并按 message `id` 去重；
   - 支持向上拉取更早消息，保持当前滚动位置不跳动；
   - 实时 Run 复用 `TurnParts.vue` 呈现思考过程（reasoning）、工具调用（tool cards）、计划（plan）与流式文本输出；
@@ -1173,7 +1189,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   - 失败横幅不再打印裸 token 形式的内核原因码（`execution-failed`、`prompt_failed` 等），成句的提供方错误仍在横幅里原样显示，避免用户无处可查。
   - 实时回合不再渲染状态胶囊/停止按钮：无 parts 时由共享的 `ThinkingDots` 思考气泡承担全部
     运行指示（`data-test="run-empty-slot"`），parts 到来即被 `TurnParts` 替换；`waiting-human`
-    由静止 warn 圆点的 `RunStatusChip` 表达。停止动作只存在于输入框。
+    由 `ConversationStatusBar` 的静止 warn 圆点表达。停止动作只存在于输入框。
   - 移动端（<lg）消息行不渲染头像与发言人名（`TranscriptRow hideIdentityOnMobile`），身份由顶栏
     置顶头像承担；群聊 transcript 不受影响。
 - **输入框（`ConversationPromptInput.vue`）**：
@@ -1213,20 +1229,28 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - **成员名单**：群组自己的 `botIds` 决定成员与顺序（Lead 在前，其余按群组顺序），Bot 目录只提供名称、角色、头像与 `enabled`。每行给出名称、角色、Lead 标记和状态；行高 48px（紧凑列表档），行内按钮/可点区域不小于 44px。
 - **禁用成员仍在名单里**：禁用只是不接新工作，成员身份不变，所以它照常列出（只有头像拼合会排除它），并写明原因（`group.panel.disabledReason`）。已移除的 Bot（`retired`）与目录尚未确认的成员是另外两种状态，不会被误报成「禁用」：前者显示「已移除」，后者不宣称任何状态。
 - **无障碍名称**带成员总数与禁用数（`group.panel.label` + `group.panel.disabledSuffix`），禁用数量不靠颜色传达。
-- **「谁在干活」状态行**（`GroupWorkingRow.vue`）：位于群聊顶栏下方、消息流之上，只在有人正在执行时出现，空态完全不渲染。判定取自 store 的实时状态：活动 Run 的 MemberTurn 为 `running`，或该成员仍持有 live turn 条目（重连后仍能显示）；`queued` / `dispatched` 还没开始执行，终止态的 turn 已结束。
+- **「谁在干活」状态行**（`ConversationStatusBar.vue`，`data-test="conversation-status-bar"`）：位于群聊顶栏下方、消息流之上，只在有活跃 Run 时出现，空态完全不渲染。判定取自 store 的实时状态：活动 Run 的 MemberTurn 为 `running`，或该成员仍持有 live turn 条目（重连后仍能显示）；`queued` / `dispatched` 还没开始执行，终止态的 turn 已结束。发言者段点击打开同一个 run 详情抽屉。
 - **数据来源**：`stores/groups.ts` 未新增任何字段——成员取 `currentGroup.botIds` 拼 Bot 目录，在线状态取 `memberTurns` 与 `liveTurnsByMember`。
 
 自动协作每轮按已有结果选择下一步行动和合适成员，支持分析、执行、验证、修正和结束；无需用户描述人员安排。简单问答可以直接完成，产出类任务需要验证最新结果。已有结果后的路由不确定或无进展会显示 waiting-human；预算耗尽仍是失败。公开指派卡的任务展示当前行动，后续行动沿用同一 Run，不要求所有成员都发言。详见[通用协作策略](conversation-runtime.md#bundled-adaptive-collaboration)。
 
-### Group Agent 思考气泡（PR #447）
+### Group Agent 思考气泡（PR #447，现由 ConversationTimeline 承载）
 
 多 Agent 群组话题不再渲染底部的 Collaboration Run 卡片。每个真实 MemberTurn 在
-`GroupTranscript.vue` 里是一条普通 Bot 行（`GroupAgentTurnRow.vue`）：配置的 32px 头像、
-Bot 名称、名称下方的思考气泡（`AgentThinkingBubble.vue`）和下方的规范公开回复。同一个 Bot 被
+`ConversationTimeline.vue` 里是一条普通 Bot 行（`TimelineRow.vue`，`kind: "message"`）：配置的 32px 头像、
+Bot 名称、名称下方的思考气泡（`ThinkingDots.vue`）和下方的规范公开回复。同一个 Bot 被
 多次分配时，每次分配各有自己的气泡和过程。零成员的自动 Run 仍由中性的路由行承载，
 不虚构 Agent 身份。路由行的气泡状态取 Run 自身状态（排队中 / 选择成员中 / 等待 / 已完成 /
 失败 / 已取消 / 结果待确认），终态不再继续显示「选择成员中」；行内不再另起一段标题，
 气泡本身已经写着状态。
+
+时间线数据来自 hub 的 `conversation.timeline` RPC（`ConversationTimelineDto.entries`），
+`buildTimelineRows()` 把 entries 与未持久化的 live overlay 合成行（`message` / `activity` /
+`handoffs` / `stopped` / `notice` 五种 kind）；缺 `conversations.timeline.v1` capability 的旧
+daemon 显示升级提示而不是回退渲染。早期按组件自建 transcript 的模块（`GroupTranscript.vue`、
+`GroupAgentTurnRow.vue`、`GroupWorkingRow.vue`、`ConversationMessageList.vue`、
+`GroupDispatchLeaderStop.vue`）已整体删除，`src/__tests__/group-components.test.ts` 断言它们
+不可再被 import。
 
 新功能不改既有调度：气泡只读地投影已有的 durable MemberTurn 与 Run，不写 activeRun、
 不给 composer 换目标，也不触发服务端调度。
@@ -1245,20 +1269,22 @@ Bot 名称、名称下方的思考气泡（`AgentThinkingBubble.vue`）和下方
 执行中的行始终贴着本轮末尾，已完成回复按 `seq` 追加在它上面。Run 的最后一条消息不在当前
 窗口时退回列表末尾，并照旧标注 `missing-request` / `request-mismatch` 原因。
 
-详情按 `useIsMobile()` 的 1024px 断点分流：移动端 `GroupRunDetailSheet.vue` 经 Teleport
-打开模态底部面板（24px 顶部圆角、最高 86dvh、底部安全区留白），背板点击、关闭按钮或
-Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌面继续用
-`GroupRunDetailPopover.vue` 锚定气泡，保留外部点击与锚点滚出关闭，圆角统一为 16px。
+详情按 `useIsMobile()` 的 1024px 断点分流，两端都走 `TraceOverlay.vue`（执行过程浮层的唯一入口，
+自行按视口分支并转发共享详情）：移动端经 Teleport 打开 `MobileSheet` 模态底部面板（24px 顶部圆角、
+最高 86dvh、底部安全区留白），背板点击、关闭按钮或 Escape 关闭并回焦触发按钮；桌面用
+`TraceOverlayDrawer.vue` 右侧抽屉，保留外部点击与锚点滚出关闭，圆角统一为 16px。
 两端共用 `GroupRunDetailHeader.vue`：状态、话题标题、成员/时间/时长、尝试选择与停止按钮；
 派发指令（任务、期望输出）折叠在滚动正文的「派发指令」里，默认只显示折叠标签，
 展开后完整可读，避免长任务挤掉关闭操作。切换断点保留当前成员和已选尝试。
 移动详情打开时显式聚焦关闭按钮，不将初始焦点落到 Stop；运行中的面板直接显示停止全部参与
 成员的范围说明，触屏无需悬停。其他 MobileSheet 未声明初始焦点时仍采用原默认规则。
+（早期的 `GroupRunDetailSheet.vue` / `GroupRunDetailPopover.vue` 两个分立组件已删除，
+由 `TraceOverlay` 统一分流。）
 
-`GroupRunDetailContent.vue` 的过程区统一使用 `GroupTraceTimeline.vue`，复用唯一
-`deriveTurnPresentation` 保持 Markdown、思考、工具与子代理身份。全量列表最新在上、最旧在底；
-相邻工具以状态圆圈与虚线连接，叙述打断连线。打开抽屉会自动读完整个可保留窗口（最多
-1000 条），不再有手动的“加载更多 / 加载更早”；超过上限时只提示保留最近 1000 条。
+`ConversationRunDetailContent.vue`（内嵌 `GroupRunDetailContent.vue`）的过程区统一使用
+`GroupTraceTimeline.vue`，复用唯一 `deriveTurnPresentation` 保持 Markdown、思考、工具与子代理身份。
+全量列表最新在上、最旧在底；相邻工具以状态圆圈与虚线连接，叙述打断连线。打开抽屉会自动读完整个
+可保留窗口（最多 1000 条），不再有手动的“加载更多 / 加载更早”；超过上限时只提示保留最近 1000 条。
 工具展开体由 `ToolStepDetail.vue` 与消息流的 `ToolStepCard.vue` 共享。
 子代理时间线圆圈与展开卡片共用 `resolveSubagentStatus`：任一子步骤失败则失败，仍有子步骤
 运行则继续显示运行中，避免父级 success 遮盖子步骤的实际状态。
@@ -1281,108 +1307,28 @@ Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌�
 底部跟随监听投影条目的完整 key。临时活动行被规范回复替换时，即使条目数量不变，
 停留在底部的读者仍会跟随；已向上滚动的读者保持当前位置。加载较早历史期间仍由原锚点恢复逻辑负责定位。
 
-### Group 派发聚合行与展开卡片（PR #469）
+### Group 派发（handoff）行与停止面（PR #469 的后续演进）
 
-项管（leader）同一轮发出的派发不再各占一行，而是在 `GroupTranscript.vue` 里聚合成一行
-`GroupDispatchRow.vue`：叠放的 Bot 头像、派发数量和该轮的聚合状态。聚合由纯函数
-`lib/group-dispatch-presentation.ts` 的 `presentGroupDispatch()` 计算，只读地投影已有的
-durable MemberTurn 与消息，不写 activeRun、不触发服务端调度。项管自己被停止时，聚合状态
-仍按各成员已证明的结果计算，另输出 `leaderStopped` 供上层显示停止说明。
+项管（leader）的每次派发在 `ConversationTimeline.vue` 里是一条紧凑的 handoff 行
+（`TimelineRow.vue` 的 `kind: "handoffs"`，`data-test="timeline-handoffs"`）：连续的派发共享一行，
+每项是一对 20px 头像（from → to，带与行背景同色的 2px 描边，重叠 -1.5 间距）+ 截断的任务文本
+（`→ {name} · {task}`，`max-w-[min(60vw,24rem)]`），点击整项打开同一个 run 详情抽屉
+（`emit('openDetail', handoff.detail)`）。被派发成员的公开回复就是时间线上的普通 Bot 消息行，
+没有独立的“派发卡片”形态——早期的 `GroupDispatchRow.vue` 聚合行、`lib/group-dispatch-presentation.ts`
+与展开卡片已随旧 transcript 一起删除。
 
-折叠行左侧的叠放头像是实心圆盘（`bg-surface-2`），每个圆盘加 `ring-2`，描边颜色取所在行
-的背景色（`ring-surface`）：叠放处因此出现一圈与行背景同色的描边，头像之间不会连成一片。
-相邻头像重叠 6px（`-ml-1.5`，第一个不偏移）。行 hover 时背景从 `bg-surface` 变为
-`bg-surface-2`，所以圆盘与描边同步互换（`group-hover/dispatch:bg-surface` +
-`group-hover/dispatch:ring-surface-2`）：描边始终等于行背景色，圆盘始终与行背景可区分，
-亮色与暗色主题都成立。hover 组是具名的（`group/dispatch`）：派发行嵌在带无名 `group`
-的消息行里，用无名 `group-hover` 会在鼠标停在该行别处时也互换，描边就不再等于行背景色。
+停止面（当前实现）：
 
-最多显示 4 个头像（`GROUP_DISPATCH_AVATAR_LIMIT`），超出部分折叠成一个同尺寸圆形徽标
-「+N」，N 是被折叠的成员数（`data-test="group-dispatch-overflow"`）。
-
-一轮只有一个成员时同样走聚合行，不再有单独的单条派发条目：折叠行标题按成员数分两种
-措辞，多个成员写「派发给 N 个 Bot」/`Sent to N bots`，单个成员直接点名
-「派发给 {name}」/`Sent to {name}`（`group.dispatch.sentToOne`）。状态计数与 ■ 停止按钮
-和多条时完全一致，展开卡片里也只有那一个成员行。
-
-聚合状态的中文措辞按摘要区分：进行中把 queued 读作「排队中」；整轮全部完成才写
-「✓ N 个已完成」；只有部分完成（还有取消、失败或结果未知）时写紧凑的「✓ N 已完成」，
-避免和全完成标题混读。全部取消时只显示「⊘ 已取消」。
-
-点击该行（或聚焦后按 Enter / Space）展开行下方的卡片。卡片为 `bg-surface`、16px 圆角、
-`max-w-[560px]`：先是一段默认收起的「派发内容」（`group.dispatch.instructions`），正文取该轮
-第一条 handoff 的 task，展开后完整可读；移动端底部弹层使用同一个折叠块，不再整段平铺。
-标题整轮只出现一次。卡片标题与折叠箭头旋转由 `aria-expanded` 和 `aria-controls` 暴露。
-
-随后每个被派发的 Bot 一行：头像、名字、状态（复用 `group.dispatch.states.*` 的既有措辞）、
-以及一行回复预览。没有回复的成员不显示预览行。
-
-行的身份是 MemberTurn，不是 Bot：同一个 Bot 在一轮里被派发两次时是两个成员行，两行
-都以自己的 `memberTurnId` 作 `:key`（成员行、叠放头像、移动端底部弹层行都是），跳转
-也按 `memberTurnId` 查找。按 `botId` 作 key 会让两行互相覆盖或产生重复 key。
-
-回复预览与跳转都只认精确证据：成员回复必须与该成员 MemberTurn 的 `promptRequestId`
-一致、同 Conversation / Topic / Run、同 Bot，且是 handoff 之后的唯一候选；存在歧义、
-缺证据或回复不在已加载历史中时，该成员不显示预览，其行 disabled、不可点击。
-
-点击有回复的成员行跳转到该回复，复用 `GroupTranscript.vue` 既有的 `jumpToMessage()`：
-给目标消息设置 `tabindex="-1"` 并转移焦点，再定位视口。卡片只是桌面展开形态；
-确认框和移动端底部弹层是后续步骤。
-
-可停止的成员（`canStop`：`supportsCancelMember` 为真且成员仍 running / queued）在其行右侧
-显示一个 24px 的 ■ 停止按钮（`data-test="group-dispatch-stop-member"`），hover 用 danger 色。
-点击时 `@click.stop` 只发出 `stopMember` 事件（携带该成员的 durable `runId` 与
-`memberTurnId`），不触发展开/收起，也不触发跳转。`GroupTranscript.vue` 接收该事件后调用
-`groupsStore.cancelMember(instanceId, runId, memberTurnId)`，走
-`control.runs.cancelMember` 只取消这一个成员 turn：leader 与同轮其他成员继续运行。
-core 不支持单成员取消（`supportsCancelMember` 为假）或成员已结束时，该按钮不渲染。
-
-`supportsCancelMember` 不再是写死的假值：`GroupTranscript.vue` 用
-`supportsRunsCancelMember(instancesStore.byId(instanceId))` 读实例自身广告的能力
-`runs.cancel-member.v1`。该能力由 connector 在 core 暴露 `cancelMemberTurn` 时才上报，
-因此老 core 上逐行 ■ 不渲染，页面改为只提供整轮的「全部停止」。
-
-派发行下方还有一个项管停止胶囊（`data-test="group-dispatch-stop-leader"`，`bg-surface`、
-`text-fg-muted`、圆角胶囊、小字号）。它出现的条件是「项管可停」：项管自己这一轮还没结束
-（项管自己的 MemberTurn 仍 queued / dispatched / running），或者项管自己还没被停止、且它
-的唤醒回合（followup）还没到终态。项管派完活后自己那一轮会立刻结束，真正的活在唤醒回合上；
-唤醒回合还没插入（派发尚未结算完）时也算没到终态，所以这个窗口里胶囊依然在。四个挂载点
-（人消息、Bot 消息、handoff、bubble 锚定的回复）都渲染它。
-
-- core 支持单成员取消时，胶囊文案是「停止{name}」/`Stop {name}`（`group.dispatch.stopLeader`，
-  name 为项管名；中文不插空格），点击不弹确认框，直接按 `control.runs.cancelMember` 取消一个 durable
-  MemberTurn：已派发的成员继续跑，项管也不会再被唤醒做汇总。取消目标是「停止对象」：
-  唤醒回合还在 queued / running 时停唤醒回合的 MemberTurn，否则停项管自己的 MemberTurn。
-- core 不支持单成员取消时，胶囊文案改为「全部停止」/`Stop all`，点击走与展开卡
-  「全部停止」完全相同的确认框流程，确认后取消整轮 run。
-
-老 core 上只有一条派发时，展开卡片里不再渲染「全部停止」：那一行的胶囊已经写着同样的
-「全部停止」，卡片里再放一个就是同一个动作出现两次。此时胶囊是唯一入口；多条派发时
-卡片里仍然保留「全部停止」——它和它停掉的成员列在一起，而胶囊在新 core 上只停项管。
-手机端底部弹层不受这条约束：弹层打开时胶囊被弹层的模态遮罩挡住，点不到，所以弹层
-自己保留「全部停止」。
-
-整轮「全部停止」的确认框（`group.dispatch.stopAllConfirm.*`）以项管命名，而不是群名：
-文案是「{项管名}和已派发的 N 个任务都会停止」/`{name} and the N dispatched tasks will stop`。
-
-「已停止」说明来自 durable 证据：项管自己的 MemberTurn 或它的唤醒回合任一带
-`cancellationReason: "human-cancelled"` 就显示。core 对已结束的项管写停止意图时状态仍是
-`completed`，所以只读状态是不够的，必须读这个字段。
-
-停止只在项管的状态位说一次：`AgentThinkingBubble` 收到 `stopped` 后读「⊘ 已停止」/
-`⊘ Stopped`（`group.bubble.status.stopped`），语气与取消一致、脉冲关闭。项管被停止后，
-它气泡上原本的「已取消」状态词由「已停止」取代，不再另起一行说明。项管完全没有自己的行时
-（历史没加载出来等），停止就没有状态位可写，全页也就没有第二处说明。成员的
-状态标签不受影响——成员 bot 被停止时的显示照旧。派发行的「⊘ 已取消」不变：它说的是
-整轮的结果，项管状态位说的是项管被停这件事，两者是不同的主语。
-
-聚合行里出现 `indeterminate`（结果未知）的成员时，折叠行和手机摘要都单独显示结果未知的数量：
-结果未知既不是已完成也不是失败，混进任何一边都是编造结论。这个计数排在所有计数之后
-（它是「还不知道」的空缺，不是这一轮的又一个结论），用中性灰 `text-fg-muted`，前面带一个
-lucide 问号图标（`CircleHelp`），不用红色也不用警示色。桌面折叠行的文案是
-「N 个结果未知」/`N unknown`（`group.dispatch.indeterminate`）；手机端折叠胶囊放不下长文案，
-用短格式「N 未知」/`N unknown`（`group.dispatch.indeterminateShort`），
-例如「4 个 Bot · 2 执行中 · 1 未知」。
+- **整轮停止**：`ConversationStatusBar` 的 `stopAll` emit → `GroupPane` / `DirectBotPane` 的
+  `handleStopAll` → `groupsStore.stopCurrentAndQueued()` / `directBotsStore.stopCurrentAndQueued()`
+  （对该话题排队中的 Run 逐个 `control.runs.cancel`，再停当前 Run）。
+  详情抽屉头部（`GroupRunDetailHeader.vue`）另有「停止全部成员」，并用
+  `group.detail.stopAllMembers` 明示作用域是整轮。
+- **单成员停止**：`GroupPane` 的 `stopMember` → `groupsStore.cancelMember(instanceId, runId, memberTurnId)`
+  （`control.runs.cancelMember`），只取消该 durable MemberTurn，leader 与同轮其他成员继续；
+  `ConversationRunDetailContent.vue` 内也有同一能力的入口。两者都以实例广告的
+  `runs.cancel-member.v1`（`supportsRunsCancelMember`）为开关，老 core 上不渲染，页面只提供整轮停止。
+- 行身份仍是 MemberTurn：同一 Bot 一轮被派发两次是两个成员行，各以自己的 `memberTurnId` 为 key。
 
 ## 阶段范围边界
 
@@ -1395,7 +1341,7 @@ Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行
   重连定时器清理、聊天错误横幅 + 回合失败浮现 + 失败消息样式 + 切换会话清错 + 乐观失败标记、
   取消在途回合（`control.prompt.cancel`）、左栏实例树会话创建/删除 UI。
 - **阶段七**消息附件：`PromptInput` 附件入口 + `MessageAttachments` 渲染 + 客户端 512px 降采样持久 preview（见上节）。
-- **PR5** Direct Bot 会话：Relay Web direct Bot vertical slice，包含 `stores/direct-bots.ts`、`BotDialog.vue`、`DirectBotPane.vue`、`ConversationMessageList.vue`、`ConversationPromptInput.vue`、实例树模式切换与完整回归套件。
+- **PR5** Direct Bot 会话：Relay Web direct Bot vertical slice，包含 `stores/direct-bots.ts`、`BotDialog.vue`、`DirectBotPane.vue`、`ConversationPromptInput.vue`、实例树模式切换与完整回归套件（当时的 `ConversationMessageList.vue` 消息列表是后来 `ConversationTimeline` 的前身，已删除）。
 - 历史保留策略为服务端配置（`--history-retention-days`），v1 在 Web 端只读、不可编辑（见 docs/relay-module.md）。
 
 ## Direct Bot composer completions (Issue #399)

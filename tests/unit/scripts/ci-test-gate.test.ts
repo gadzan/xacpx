@@ -99,7 +99,12 @@ const REPO_ROOT = join(import.meta.dir, "../../..");
 // about arguments, not speed.
 const SPAWN_TIMEOUT = 30_000;
 
-test("queries the commit that was checked out, not the ref the dispatch started from", () => {
+// runGate plants a fake `gh` as a shebang bash script; Windows cannot exec an
+// extensionless script, so every case that goes through the real spawn is
+// POSIX-only. The pure-decision cases above still run everywhere.
+const spawnGateTest = process.platform === "win32" ? test.skip : test;
+
+spawnGateTest("queries the commit that was checked out, not the ref the dispatch started from", () => {
   // A manual dispatch with `inputs.tag` checks out that tag while GITHUB_SHA
   // stays on main's HEAD. Reading GITHUB_SHA would let the gate vouch for a
   // commit other than the one being published.
@@ -117,7 +122,7 @@ test("queries the commit that was checked out, not the ref the dispatch started 
   expect(calls[1]).toContain("/actions/runs/7/jobs");
 }, SPAWN_TIMEOUT);
 
-test("only a push run on main can vouch for a commit", () => {
+spawnGateTest("only a push run on main can vouch for a commit", () => {
   // A pull_request run tests the synthetic merge commit, so it proves nothing
   // about the branch head being published. The constraint has to be in the
   // query: a `find()` after `--limit 1` has nothing to choose from.
@@ -127,7 +132,7 @@ test("only a push run on main can vouch for a commit", () => {
   expect(skip).toBe("skip=false");
 }, SPAWN_TIMEOUT);
 
-test("an unresolvable commit runs the suite instead of loading the API", () => {
+spawnGateTest("an unresolvable commit runs the suite instead of loading the API", () => {
   const { skip, calls } = runGate({ cwd: mkdtempSync(join(tmpdir(), "ci-test-gate-")), runs: greenRun, jobs: greenJob });
   expect(skip).toBe("skip=false");
   expect(calls).toEqual([]);

@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CommandRouter } from "../../../src/commands/command-router";
 import { listAgentTemplates } from "../../../src/config/agent-templates";
-import { normalizeWorkspacePath } from "../../../src/commands/workspace-path";
 import { setLocale, t } from "../../../src/i18n";
 import type { ControlEvent } from "../../../src/control/control-event-bus";
 import {
@@ -468,7 +467,7 @@ test("creates a workspace via command and lists it immediately", async () => {
 
   expect(createReply.text).toBe(t().workspace.saved("frontend"));
   expect(listReply.text).toBe(
-    ["已注册的工作区：", "- backend: /tmp/backend", `- frontend: ${normalizeWorkspacePath(dir)}`].join("\n"),
+    ["已注册的工作区：", "- backend: /tmp/backend", `- frontend: ${dir}`].join("\n"),
   );
 
   await rm(dir, { recursive: true, force: true });
@@ -484,7 +483,7 @@ test("creates a workspace via the short alias and cwd flag", async () => {
   const reply = await router.handle("wx:user", `/ws new frontend -d "${dir}"`);
 
   expect(reply.text).toBe(t().workspace.saved("frontend"));
-  expect(config.workspaces.frontend).toEqual({ cwd: normalizeWorkspacePath(dir) });
+  expect(config.workspaces.frontend).toEqual({ cwd: dir });
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -515,7 +514,7 @@ test("/ws new sanitizes a name with spaces and reports the rewrite", async () =>
     expect(reply.text).toBe(
       t().workspace.nameSanitized("My Repo", "My-Repo") + "\n" + t().workspace.saved("My-Repo"),
     );
-    expect(config.workspaces["My-Repo"]).toEqual({ cwd: normalizeWorkspacePath(dir) });
+    expect(config.workspaces["My-Repo"]).toEqual({ cwd: dir });
     expect(config.workspaces["My Repo"]).toBeUndefined();
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -551,7 +550,7 @@ test("/ws new --raw keeps a name with spaces", async () => {
     const reply = await router.handle("wx:user", `/ws new "My Repo" -d "${dir}" --raw`);
 
     expect(reply.text).toBe(t().workspace.saved("My Repo"));
-    expect(config.workspaces["My Repo"]).toEqual({ cwd: normalizeWorkspacePath(dir) });
+    expect(config.workspaces["My Repo"]).toEqual({ cwd: dir });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

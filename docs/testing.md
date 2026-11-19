@@ -173,7 +173,7 @@ If you need to add a new test type in the future, prefer adding a subdirectory u
 
 Reproduction:
 1. Delete `node_modules/opencode-windows-x64` under the opencode install directory.
-2. In WeChat, run `/ss opencode --ws weacpx`.
+2. In WeChat, run `/ss opencode --ws demo`.
 3. Expected message sequence:
    - 🚀 Starting `opencode`…
    - 📦 Detected missing dependency `opencode-windows-x64`, auto-installing…
@@ -188,7 +188,7 @@ Two kinds of failure:
 
 - **npm installation failure** (no network, permissions, etc.): all N installations — automatically attempting the precise ones (once per candidate parent-package path, covering Bun/npm/pnpm/yarn global and local node_modules) and the global one — exit non-zero. The final message title is `❌ Auto-install failed`, listing the stderr summary of each attempt (precise steps annotate the specific path), the manual command `npm install -g <pkg>`, and the log path.
 - **Installation succeeds but verification still fails** (the precise install landed in the wrong dependency tree, the resource has already been cached by acpx): the install exits 0 but re-running ensureSession still throws a missing dependency. The final message title is `⚠️ Auto-install was performed but failed to fix the session startup problem`, where each step shows "install performed but verification failed (precise / <path> | global)", and likewise attaches the manual command and the log path.
-- **Cross-package-manager discovery**: before auto-installing, weacpx enumerates the candidate parent-package directories — the seed reported by the Bridge, the local node_modules visible to `require.resolve`, `$BUN_INSTALL`/`~/.bun/install/global/node_modules`, and `npm root -g` / `pnpm root -g` / `yarn global dir`. Directories that contain a `package.json` are used in turn as "precise" install steps.
+- **Cross-package-manager discovery**: before auto-installing, xacpx enumerates the candidate parent-package directories — the seed reported by the Bridge, the local node_modules visible to `require.resolve`, `$BUN_INSTALL`/`~/.bun/install/global/node_modules`, and `npm root -g` / `pnpm root -g` / `yarn global dir`. Directories that contain a `package.json` are used in turn as "precise" install steps.
 
 ### Progress Feedback Only
 

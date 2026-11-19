@@ -27,8 +27,6 @@ interface StackProps {
   name: string;
   totalCount: number;
   disabledCount: number;
-  leadBotId?: string;
-  activityBotIds?: string[];
   decorative?: boolean;
   instanceId?: string;
 }
@@ -73,60 +71,64 @@ describe("GroupAvatarStack", () => {
     expect(markerText(wrapper)).toBe("");
   });
 
-  it("draws two members diagonally at 31% and 69%", () => {
+  it("draws two members diagonally, overlapping at the corner", () => {
     const wrapper = mountStack({ bots: members(2), size: 36, totalCount: 2 });
     const rendered = items(wrapper);
 
     expect(rendered).toHaveLength(2);
-    expect(styleOf(rendered[0]!)).toContain("left: 31%");
-    expect(styleOf(rendered[0]!)).toContain("top: 31%");
-    expect(styleOf(rendered[1]!)).toContain("left: 69%");
-    expect(styleOf(rendered[1]!)).toContain("top: 69%");
-    // 59% of a 36px container.
-    expect(styleOf(rendered[0]!)).toContain("width: 21px");
+    expect(styleOf(rendered[0]!)).toContain("left: 34%");
+    expect(styleOf(rendered[0]!)).toContain("top: 34%");
+    expect(styleOf(rendered[1]!)).toContain("left: 66%");
+    expect(styleOf(rendered[1]!)).toContain("top: 66%");
+    // 60% of a 36px container, and the two anchors are 11.52px apart per axis,
+    // so the bodies press into each other instead of sitting in their corners.
+    expect(styleOf(rendered[0]!)).toContain("width: 22px");
   });
 
-  it("draws three members as two on top and one below", () => {
+  it("draws three members as two on top and one below, all overlapping", () => {
     const wrapper = mountStack({ bots: members(3), size: 36, totalCount: 3 });
     const rendered = items(wrapper);
 
     expect(rendered).toHaveLength(3);
-    expect(styleOf(rendered[0]!)).toContain("left: 29%");
-    expect(styleOf(rendered[0]!)).toContain("top: 29%");
-    expect(styleOf(rendered[1]!)).toContain("left: 71%");
-    expect(styleOf(rendered[1]!)).toContain("top: 29%");
+    expect(styleOf(rendered[0]!)).toContain("left: 30%");
+    expect(styleOf(rendered[0]!)).toContain("top: 30%");
+    expect(styleOf(rendered[1]!)).toContain("left: 70%");
+    expect(styleOf(rendered[1]!)).toContain("top: 30%");
     expect(styleOf(rendered[2]!)).toContain("left: 50%");
-    expect(styleOf(rendered[2]!)).toContain("top: 71%");
+    expect(styleOf(rendered[2]!)).toContain("top: 70%");
     expect(markerText(wrapper)).toBe("");
   });
 
-  it("draws four members in a 2x2 grid at 36px and 44px", () => {
-    for (const size of [36, 44]) {
+  it("draws four members as an overlapping 2x2 at every container size", () => {
+    for (const size of [32, 36, 40, 44]) {
       const wrapper = mountStack({ bots: members(4), size, totalCount: 4 });
       const rendered = items(wrapper);
 
       expect(rendered).toHaveLength(4);
-      expect(styleOf(rendered[0]!)).toContain("left: 29%");
-      expect(styleOf(rendered[0]!)).toContain("top: 29%");
-      expect(styleOf(rendered[1]!)).toContain("left: 71%");
-      expect(styleOf(rendered[1]!)).toContain("top: 29%");
-      expect(styleOf(rendered[2]!)).toContain("left: 29%");
-      expect(styleOf(rendered[2]!)).toContain("top: 71%");
-      expect(styleOf(rendered[3]!)).toContain("left: 71%");
-      expect(styleOf(rendered[3]!)).toContain("top: 71%");
+      expect(styleOf(rendered[0]!)).toContain("left: 31%");
+      expect(styleOf(rendered[0]!)).toContain("top: 31%");
+      expect(styleOf(rendered[1]!)).toContain("left: 69%");
+      expect(styleOf(rendered[1]!)).toContain("top: 31%");
+      expect(styleOf(rendered[2]!)).toContain("left: 31%");
+      expect(styleOf(rendered[2]!)).toContain("top: 69%");
+      expect(styleOf(rendered[3]!)).toContain("left: 69%");
+      expect(styleOf(rendered[3]!)).toContain("top: 69%");
+      // Each cell is wider than the 38% gap between anchors, so neighbours
+      // overlap instead of tiling.
+      const cell = Number(/width: (\d+)px/.exec(styleOf(rendered[0]!))![1]);
+      expect(cell).toBeGreaterThan(size * 0.38);
       expect(markerText(wrapper)).toBe("");
     }
   });
 
-  it("draws four members at 32px as three avatars plus +1", () => {
+  it("draws four members at 32px as four cells, matching the sidebar", () => {
     const wrapper = mountStack({ bots: members(4), size: 32, totalCount: 4 });
-    const rendered = items(wrapper);
 
-    expect(rendered).toHaveLength(3);
-    expect(markerText(wrapper)).toBe("+1");
-    // 59% of 32px.
-    expect(styleOf(rendered[0]!)).toContain("width: 19px");
-    expect(styleOf(rendered[0]!)).not.toContain("box-shadow");
+    expect(items(wrapper)).toHaveLength(4);
+    expect(markerText(wrapper)).toBe("");
+    // 60% of 32px.
+    expect(styleOf(items(wrapper)[0]!)).toContain("width: 19px");
+    expect(styleOf(items(wrapper)[0]!)).not.toContain("box-shadow");
   });
 
   it("outlines every cell along its own shape, not a circle", () => {
@@ -166,8 +168,8 @@ describe("GroupAvatarStack", () => {
     expect(rendered).toHaveLength(3);
     expect(markerText(wrapper)).toBe("+2");
     // The third member moves to the bottom left so +N owns the bottom-right quadrant.
-    expect(styleOf(rendered[2]!)).toContain("left: 29%");
-    expect(styleOf(rendered[2]!)).toContain("top: 71%");
+    expect(styleOf(rendered[2]!)).toContain("left: 31%");
+    expect(styleOf(rendered[2]!)).toContain("top: 69%");
     expect(styleOf(wrapper.find('[data-test="group-avatar-more"]'))).toContain("left: 79.5%");
     expect(styleOf(wrapper.find('[data-test="group-avatar-more"]'))).toContain("top: 72%");
     expect(styleOf(wrapper.find('[data-test="group-avatar-more"]'))).toContain("font-size: 14px");
@@ -237,27 +239,14 @@ describe("GroupAvatarStack", () => {
     expect(wrapper.find('[data-test="bot-avatar"]').attributes("data-avatar-kind")).toBe("text");
   });
 
-  it("puts the lead first, then the members by most recent activity", () => {
+  it("keeps the caller's order and dedupes by id", () => {
     const wrapper = mountStack({
-      bots: [bot("bot_a", "Alpha"), bot("bot_b", "Bravo"), bot("bot_c", "Charlie")],
+      bots: [bot("bot_a", "Alpha"), bot("bot_b", "Bravo"), bot("bot_a", "Alpha again"), bot("bot_c", "Charlie")],
       size: 36,
-      totalCount: 3,
-      leadBotId: "bot_c",
-      activityBotIds: ["bot_b", "bot_a"],
+      totalCount: 4,
     });
 
-    expect(items(wrapper).map((item) => item.attributes("data-bot-id"))).toEqual(["bot_c", "bot_b", "bot_a"]);
-  });
-
-  it("falls back to the given order when nobody has spoken", () => {
-    const wrapper = mountStack({
-      bots: [bot("bot_a", "Alpha"), bot("bot_b", "Bravo"), bot("bot_c", "Charlie")],
-      size: 36,
-      totalCount: 3,
-      leadBotId: "bot_b",
-    });
-
-    expect(items(wrapper).map((item) => item.attributes("data-bot-id"))).toEqual(["bot_b", "bot_a", "bot_c"]);
+    expect(items(wrapper).map((item) => item.attributes("data-bot-id"))).toEqual(["bot_a", "bot_b", "bot_c"]);
   });
 
   it("stays silent in a row that already states the name and the count", () => {

@@ -55,7 +55,7 @@ export async function writePrivateFileAtomic(path: string, content: string): Pro
 
 async function writePrivateFileAtomicUnlocked(path: string, content: string): Promise<void> {
   try {
-    await retryTransientWriteErrors(
+    await retryTransientFileErrors(
       async () =>
         writeFileAtomic(path, content, {
           mode: PRIVATE_FILE_MODE,
@@ -132,10 +132,10 @@ interface RetryTransientWriteOptions {
   delay?: (ms: number) => Promise<void>;
 }
 
-export async function retryTransientWriteErrors(
-  run: () => Promise<void>,
+export async function retryTransientFileErrors<T>(
+  run: () => Promise<T>,
   options: RetryTransientWriteOptions = {},
-): Promise<void> {
+): Promise<T> {
   const platform = options.platform ?? process.platform;
   const maxAttempts = options.maxAttempts ?? WRITE_RETRY_MAX_ATTEMPTS;
   const baseDelayMs = options.baseDelayMs ?? WRITE_RETRY_BASE_DELAY_MS;
@@ -144,8 +144,7 @@ export async function retryTransientWriteErrors(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await run();
-      return;
+      return await run();
     } catch (error) {
       if (!isTransientWriteError(error, platform) || attempt === maxAttempts) {
         throw error;
@@ -153,6 +152,8 @@ export async function retryTransientWriteErrors(
       await wait(Math.min(baseDelayMs * attempt, maxDelayMs));
     }
   }
+  // Unreachable.
+  throw new Error("retryTransientFileErrors exhausted without result");
 }
 
 function isTransientWriteError(error: unknown, platform: NodeJS.Platform): boolean {
@@ -168,5 +169,5 @@ async function defaultDelay(ms: number): Promise<void> {
 }
 
 export const __privateFileForTests = {
-  retryTransientWriteErrors,
+  retryTransientFileErrors,
 };

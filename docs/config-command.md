@@ -61,10 +61,13 @@ Fixed fields:
 
 Note: the performance debug log `logging.perf.*` does not support dynamic toggling via `/config set` in chat. You need to manually edit `logging.perf` in `~/.xacpx/config.json` and then restart the daemon; this tracer is bound at startup.
 
+Note: `/config set transport.type` and `/config set transport.command` are written to `~/.xacpx/config.json` but do **not** hot-apply — the live transport keeps its current type/command until the daemon restarts (`config.topology_pending_restart` is logged). Every other path above hot-applies. Restart with `xacpx restart`.
+
 Backward-compatible fields:
 
 - `channel.type` (old single-channel configuration; for multi-channel, use `xacpx channel ...`)
 - `channels[]` (multi-channel runtime configuration; recommended to manage with `xacpx channel ...`)
+- `wechat.replyMode` (deprecated alias; writes are mapped to `channel.replyMode`, accepted values `stream` / `final` / `verbose`)
 
 Feishu credentials and multi-channel configuration should preferably be managed with the channel CLI in your computer's terminal, e.g. `xacpx channel add feishu`. See full instructions in [`docs/channel-management.md`](./channel-management.md).
 

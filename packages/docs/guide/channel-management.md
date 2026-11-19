@@ -14,12 +14,13 @@ xacpx can run multiple chat channels simultaneously. Each channel receives incom
 
 - `feishu` — Provided by `@ganglion/xacpx-channel-feishu`. Configured with a Feishu self-built application's App ID and App Secret. See [Feishu Channel](/plugins/feishu).
 - `yuanbao` — Provided by `@ganglion/xacpx-channel-yuanbao`. Configured with `appKey` and `appSecret`; includes built-in Yuanbao request signing and WebSocket gateway. See [Yuanbao Channel](/plugins/yuanbao).
+- `discord` — Provided by `@ganglion/xacpx-channel-discord`. Configured with a Discord **Bot Token** and the Gateway; the bot is installed into a server rather than QR-paired. See [Discord Channel](/plugins/discord).
 
 Third-party channels can be distributed as external npm plugin packages.
 
 ## Channel identities
 
-xacpx currently allows one instance per channel type. The channel `id` must equal the `type` — for example `weixin`, `feishu`, or `yuanbao`. Configuring two instances of the same type (e.g. `{ "id": "feishu-review", "type": "feishu" }`) is rejected at startup.
+xacpx currently allows one instance per channel type. The channel `id` must equal the `type` — for example `weixin`, `feishu`, `yuanbao`, or `discord`. Configuring two instances of the same type (e.g. `{ "id": "feishu-review", "type": "feishu" }`) is rejected at startup.
 
 To run multiple bots within a single channel type, use the multi-account (`--account`) feature described in the sections below.
 
@@ -109,6 +110,18 @@ If a `type: "yuanbao"` entry is in config but the plugin is not installed, the d
 ```text
 Channel yuanbao requires a plugin: xacpx plugin add @ganglion/xacpx-channel-yuanbao
 ```
+
+### Discord
+
+Discord is provided by the plugin package `@ganglion/xacpx-channel-discord`. Unlike WeChat (QR login) or Feishu/Yuanbao (platform credentials), Discord has **no login/pairing flow**: create a bot in the Discord Developer Portal, put its **Bot Token** into xacpx, and install the bot into a server. The plugin keeps one Gateway connection per token.
+
+```bash
+xacpx plugin add @ganglion/xacpx-channel-discord
+xacpx channel add discord        # the token is read from a secret prompt
+xacpx restart
+```
+
+Two things people miss: **Message Content Intent** must be enabled in the Portal (otherwise Discord closes the Gateway with `4014`), and access control compares **snowflake IDs**, so enable Developer Mode and copy your User ID before setting `--dm-policy` / `--guild-policy`. Do not grant the bot Administrator. The full behavior reference is the package README (`packages/channel-discord/README.md`), and the end-to-end walkthrough is `docs/channel-management.md` in the repository.
 
 ## List channels
 

@@ -13,6 +13,7 @@ import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
 import { RuntimeWorkerClient } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
 import { buildXacpxMcpServerSpec } from "../../../../../src/transport/acpx-queue-owner-launcher";
+import { quoteIfNeeded } from "../../../../../src/util/text";
 import { OrchestrationServer } from "../../../../../src/orchestration/orchestration-server";
 import { resolveOrchestrationEndpoint } from "../../../../../src/orchestration/orchestration-ipc";
 
@@ -455,10 +456,10 @@ test("PR8 Production Topology E2E: RuntimeEngine -> Runtime Worker (child proces
       mcpServerScript,
       `
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createXacpxMcpServer } from "${join(process.cwd(), "src/mcp/xacpx-mcp-server.ts")}";
-import { createOrchestrationTransport } from "${join(process.cwd(), "src/mcp/xacpx-mcp-transport.ts")}";
-import { OrchestrationClient } from "${join(process.cwd(), "src/orchestration/orchestration-client.ts")}";
-import { resolveDefaultOrchestrationEndpoint } from "${join(process.cwd(), "src/mcp/resolve-endpoint.ts")}";
+import { createXacpxMcpServer } from ${JSON.stringify(join(process.cwd(), "src/mcp/xacpx-mcp-server.ts"))};
+import { createOrchestrationTransport } from ${JSON.stringify(join(process.cwd(), "src/mcp/xacpx-mcp-transport.ts"))};
+import { OrchestrationClient } from ${JSON.stringify(join(process.cwd(), "src/orchestration/orchestration-client.ts"))};
+import { resolveDefaultOrchestrationEndpoint } from ${JSON.stringify(join(process.cwd(), "src/mcp/resolve-endpoint.ts"))};
 
 function parseArg(flag) {
   const idx = process.argv.indexOf(flag);
@@ -492,7 +493,7 @@ import { createInterface } from "node:readline";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import { buildXacpxMcpServerSpec } from "${join(process.cwd(), "src/transport/acpx-queue-owner-launcher.ts")}";
+import { buildXacpxMcpServerSpec } from ${JSON.stringify(join(process.cwd(), "src/transport/acpx-queue-owner-launcher.ts"))};
 
 let state = {
   ensureParams: null,
@@ -508,7 +509,7 @@ rl.on("line", async (line) => {
     if (msg.params.mcpCoordinatorSession) {
       state.mcpServers = [
         buildXacpxMcpServerSpec({
-          xacpxCommand: "${process.execPath} ${mcpServerScript}",
+          xacpxCommand: ${JSON.stringify(`${quoteIfNeeded(process.execPath)} ${quoteIfNeeded(mcpServerScript)}`)},
           coordinatorSession: msg.params.mcpCoordinatorSession,
           ...(msg.params.mcpSourceHandle ? { sourceHandle: msg.params.mcpSourceHandle } : {}),
         }),
@@ -527,7 +528,7 @@ rl.on("line", async (line) => {
       const transport = new StdioClientTransport({
         command: serverSpec.command,
         args: serverSpec.args,
-        env: { ...process.env, XACPX_ORCHESTRATION_SOCKET: "${endpoint.path}" },
+        env: { ...process.env, XACPX_ORCHESTRATION_SOCKET: ${JSON.stringify(endpoint.path)} },
       });
       const mcpClient = new Client({ name: "worker-mcp-client", version: "1.0.0" });
       await mcpClient.connect(transport);
@@ -731,10 +732,10 @@ test("PR8 Production Topology E2E: RuntimeWorkerClient direct child process -> m
       mcpServerScript,
       `
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createXacpxMcpServer } from "${join(process.cwd(), "src/mcp/xacpx-mcp-server.ts")}";
-import { createOrchestrationTransport } from "${join(process.cwd(), "src/mcp/xacpx-mcp-transport.ts")}";
-import { OrchestrationClient } from "${join(process.cwd(), "src/orchestration/orchestration-client.ts")}";
-import { resolveDefaultOrchestrationEndpoint } from "${join(process.cwd(), "src/mcp/resolve-endpoint.ts")}";
+import { createXacpxMcpServer } from ${JSON.stringify(join(process.cwd(), "src/mcp/xacpx-mcp-server.ts"))};
+import { createOrchestrationTransport } from ${JSON.stringify(join(process.cwd(), "src/mcp/xacpx-mcp-transport.ts"))};
+import { OrchestrationClient } from ${JSON.stringify(join(process.cwd(), "src/orchestration/orchestration-client.ts"))};
+import { resolveDefaultOrchestrationEndpoint } from ${JSON.stringify(join(process.cwd(), "src/mcp/resolve-endpoint.ts"))};
 
 function parseArg(flag) {
   const idx = process.argv.indexOf(flag);
@@ -764,7 +765,7 @@ import { createInterface } from "node:readline";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import { buildXacpxMcpServerSpec } from "${join(process.cwd(), "src/transport/acpx-queue-owner-launcher.ts")}";
+import { buildXacpxMcpServerSpec } from ${JSON.stringify(join(process.cwd(), "src/transport/acpx-queue-owner-launcher.ts"))};
 
 let state = {
   ensureParams: null,
@@ -779,7 +780,7 @@ rl.on("line", async (line) => {
     state.ensureParams = msg.params;
     state.mcpServers = [
       buildXacpxMcpServerSpec({
-        xacpxCommand: "${process.execPath} ${mcpServerScript}",
+        xacpxCommand: ${JSON.stringify(`${quoteIfNeeded(process.execPath)} ${quoteIfNeeded(mcpServerScript)}`)},
         coordinatorSession: msg.params.mcpCoordinatorSession,
       }),
     ];
@@ -794,7 +795,7 @@ rl.on("line", async (line) => {
       const transport = new StdioClientTransport({
         command: serverSpec.command,
         args: serverSpec.args,
-        env: { ...process.env, XACPX_ORCHESTRATION_SOCKET: "${endpoint.path}" },
+        env: { ...process.env, XACPX_ORCHESTRATION_SOCKET: ${JSON.stringify(endpoint.path)} },
       });
       const mcpClient = new Client({ name: "client-e2e", version: "1.0.0" });
       await mcpClient.connect(transport);

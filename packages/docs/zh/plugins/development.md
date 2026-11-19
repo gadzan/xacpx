@@ -14,7 +14,7 @@ xacpx 将消息频道封装为 npm 插件。频道插件是一个 npm 包，导�
 
 ```
 my-channel/
-├── package.json           # name, peerDependencies: { xacpx: ">=0.3.x" }
+├── package.json           # name, peerDependencies: { xacpx: ">=0.24.10-beta.18" }
 ├── tsconfig.json
 ├── README.md
 ├── src/
@@ -40,7 +40,7 @@ my-channel/
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
   },
   "files": ["dist", "README.md"],
-  "peerDependencies": { "xacpx": ">=0.3.3" },
+  "peerDependencies": { "xacpx": ">=0.24.10-beta.18" },
   "peerDependenciesMeta": { "xacpx": { "optional": true } }
 }
 ```
@@ -61,7 +61,7 @@ import {
 // New name (preferred):
 const plugin: XacpxPlugin = {
   apiVersion: WEACPX_PLUGIN_API_VERSION,       // currently fixed at 1
-  minXacpxVersion: WEACPX_PLUGIN_MIN_CORE_VERSION, // e.g. "0.3.3"
+  minXacpxVersion: WEACPX_PLUGIN_MIN_CORE_VERSION, // e.g. "0.5.0"
   channels: [/* ... */],
 };
 
@@ -72,7 +72,7 @@ export default plugin;
 | --- | --- | --- |
 | `apiVersion` | 是 | 必须为字面量 `1`。xacpx 会在未来的破坏性变更中递增此值。`WEACPX_PLUGIN_API_SUPPORTED_VERSIONS` 列出当前 xacpx 所接受的版本号。 |
 | `name` | 否 | 若设置，必须与 npm 包名完全一致（含 scope）；否则启动校验会拒绝该插件。 |
-| `minXacpxVersion` | 推荐 | 插件所需的最低 xacpx 核心版本（如 `"0.3.3"`）。若已安装的 xacpx 版本较旧，加载会失败并提示 `upgrade xacpx`。官方插件必须设置；强烈建议第三方插件也设置。 |
+| `minXacpxVersion` | 推荐 | 插件所需的最低 xacpx 核心版本（如 `"0.5.0"`）。若已安装的 xacpx 版本较旧，加载会失败并提示 `upgrade xacpx`。官方插件必须设置；强烈建议第三方插件也设置。 |
 | `compatibleXacpxVersions` | 否 | 显式版本范围（`x.y.z` / `>=x.y.z` / `^x.y.z`）。与 `minXacpxVersion` 同时声明时，两个约束须同时满足。 |
 | `channels` | 否 | 频道定义列表，可为空（保留给未来的非频道扩展点）。 |
 
@@ -152,14 +152,18 @@ class MyChannel implements MessageChannelRuntime {
 ### `MessageChannelRuntime`
 
 ```ts
+export type ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout";
+
 export interface MessageChannelRuntime {
   id: string;
 
   isLoggedIn(): boolean;
   login(): Promise<string>;
-  logout(): void;
+  logout(): void | Promise<void>;
 
   start(input: ChannelStartInput): Promise<void>;
+
+  stop?(reason?: ChannelStopReason): void | Promise<void>;
 
   createConsumerLock?(options?: ConsumerLockOptions): ConsumerLock;
   configureOrchestration?(callbacks: OrchestrationDeliveryCallbacks): void;
@@ -167,6 +171,9 @@ export interface MessageChannelRuntime {
   notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void>;
   notifyTaskProgress(task: OrchestrationTaskRecord, text: string): Promise<void>;
   sendCoordinatorMessage(input: CoordinatorMessageInput): Promise<void>;
+  sendScheduledMessage?(input: ScheduledChannelMessageInput): Promise<void>;
+  requestPermission?(request: ChannelPermissionRequest): Promise<ChannelPermissionDecision>;
+  requestElicitation?(request: ChannelElicitationRequest): Promise<ChannelElicitationDecision>;
 }
 ```
 
@@ -185,9 +192,11 @@ async login(): Promise<string> {
 
 交互式频道（微信二维码扫描）会阻塞直到登录完成。若频道不需要交互式登录，将 `cliProvider.supportsLogin` 设为 `false`。
 
-**`logout()`** — 释放凭据、断开持久连接、清理内存中的会话。必须**幂等**——在守护进程关闭和重新登录时均会调用。
+**`logout()`** — **破坏性凭据移除。** 仅通过显式的 `xacpx logout` CLI 路径触发——绝不会作为正常关闭或重新登录的一部分被调用。签名为 `logout(): void | Promise<void>`。由于它会清除已存储的凭据，用户必须重新执行 `login()` / `xacpx channel add <type>` 才能重新连接，因此切勿在自己的清理路径中调用它。
 
 **`start(input)`** — 频道开始接收消息的入口点。详见下方[入站消息](#入站消息)。
+
+**`stop?(reason?)`** — 可选。**非破坏性**关闭钩子：释放运行时资源（关闭连接、取消定时器、清理内存会话），不触碰已存储的凭据。守护进程的 `stopAll` 优先调用 `stop()`，仅对 `stop()` 出现之前发布的频道回退到 `logout()`（那些插件的 `logout()` 只是无害的客户端停止）。`reason` 取值：`"shutdown"`（信号或启动失败清理）、`"disabled"` / `"removed"`（CLI 变更）、`"logout"`（显式登出命令）。新频道应实现它，不要依赖 `logout()` 回退。
 
 **`createConsumerLock?(options?)`** — 可选。若频道需要**进程级互斥**（例如同一个微信账号同时只能由一个 xacpx 进程连接），则实现此方法。详见下方 `ConsumerLock`。
 
@@ -211,6 +220,12 @@ export interface CoordinatorMessageInput {
 
 编排服务调用此方法，向协调者会话所在频道发送文本消息。`replyContextToken` 是回复上下文句柄（Feishu/Yuanbao 用于引用父消息），可忽略。
 
+**`sendScheduledMessage?(input)`** — 可选。投递定时/后台回合的输出。仅当频道需要以不同于普通入站回复的方式路由定时回合结果时才实现，否则省略。
+
+**`requestPermission?(request)`** — 可选。交互式权限 UI（计划审批）。未实现表示该频道不支持交互式权限，broker 会 fail-closed。实现方必须校验响应者等于 `request.requester.senderId`，且必须只结算一次（首个终态决定生效）。
+
+**`requestElicitation?(request)`** — 可选。交互式 ACP 表单 Elicitation UI。未实现表示该频道不支持 Elicitation，broker 会 fail-closed。仅为 `request.requester.senderId` 渲染，并返回平台认证过的响应者 id（绝不使用自报 id）；展示 `request.agent.name`，绝不用 agent 可控的 `message`/`title`/`description` 文本替代身份标识；呈现 `request.message`；提供互相独立的 Decline 与 Cancel 控件；允许用户在 Accept 前审阅并修改响应；待处理表单状态只保存在服务端内存中（绝不把答案值编码进 control id/URL，绝不持久化答案）；只结算一次——`ChannelElicitationDecision` 的每个成员都是用户动作，都需要经过认证的 `responderId`，不存在无响应者变体。外部取消（超时、回合销毁、agent `$/cancel_request`、关闭）不是用户决定：立即撤回 UI、停止收集输入，并 reject/抛出（或永不结算）——该终态取消由核心持有并自行以 `cancel` 结算。
+
 ## 入站消息
 
 ### `ChannelStartInput`
@@ -218,9 +233,19 @@ export interface CoordinatorMessageInput {
 ```ts
 export interface ChannelStartInput {
   agent: ChatAgent;
+  routeConversation?: (request: ChatRequest) => ConversationChannelAgent | undefined;
   abortSignal: AbortSignal;
   quota: OutboundQuota;
   logger: AppLogger;
+  perfTracer?: PerfTracer;
+  sessions?: SessionService;
+  activeTurns?: ActiveTurnRegistry;
+  control?: PublicControlService;
+  trustedConversationPrompt?: (
+    input: ConversationPromptRequestDto,
+    ingress: HumanIngressContext,
+  ) => Promise<ConversationPromptResponseDto>;
+  sessionResources?: SessionResourceCatalog;
   // 可选字段（核心按需注入）：
   commandHints?: CommandHint[];   // 内置命令目录，供输入框命令提示用
   coreVersion?: string;           // xacpx 核心版本字符串
@@ -230,15 +255,40 @@ export interface ChannelStartInput {
 
 | 字段 | 用途 |
 | --- | --- |
-| `agent` | xacpx 路由入口。收到文本消息时，调用 `agent.handle(chatKey, text)` 将其路由至命令系统。 |
+| `agent` | xacpx 路由入口（`ChatAgent`）。收到文本消息时，以 `ChatRequest` 调用 `await agent.chat(request)`，返回 `ChatResponse`。不存在 `handle` 方法。 |
+| `routeConversation?` | 在平台准入之后、当前 Session 查询、活跃度跟踪或 Session 通道选择之前调用。返回的 Agent 将在独立的 Conversation 通道上接管本次入站回合（无 Session 别名、无前台/后台结果钩子）；返回 `undefined` 则保持普通 Session 分发。须提供精确的 channel/account/chatKey/平台消息身份；完整的 chat 请求必须携带 authenticated-human 元数据。 |
 | `abortSignal` | 守护进程关闭信号。监听 `aborted` 事件，停止所有长连接和定时器。 |
 | `quota` | 出站速率/数量配额。详见[回复与媒体](#回复与媒体)。 |
 | `logger` | 结构化日志记录器。详见 [AppLogger](#applogger)。 |
+| `perfTracer?` | 性能追踪。把它颁发的 `PerfSpan` 挂到该回合的 `ChatRequest.perfSpan` 上，下游层即可直接标记事件，无需额外传递。 |
+| `sessions?` | 逻辑会话服务。会话感知型频道从它读取分发时的会话绑定（当前别名），并持久化后台回合结果。 |
+| `activeTurns?` | 共享的在途回合注册表，用于分发时的前台跟踪。`sessions` + `activeTurns` 正是下方“分发时绑定 / 每会话通道”语义的实现。 |
+| `control?` | 公开的结构化控制门面（sessions / prompt / scheduler / orchestration / Bot / Conversation）。受信任的 Conversation 执行是核心私有能力，不在此对象上。可选：纯文本频道可忽略。 |
+| `trustedConversationPrompt?` | 经 hub 认证的 Direct Conversation 接受入口。入站上下文必须已由认证方频道覆写；公开的 `control.promptConversation` 永不接受该上下文，插件也不得伪造它。 |
+| `sessionResources?` | 逻辑会话资源的通用目录：不可变逻辑会话 ID、内部/显示别名、权威工作区 `cwd`、归档标记，以及生命周期事件订阅。可选：纯文本频道可忽略。 |
 | `commandHints?` | 内置命令目录，供支持输入框命令提示的频道使用。 |
 | `coreVersion?` | xacpx 核心版本字符串，供需要它的频道（如命令同步元数据）使用。 |
 | `locale?` | 当前运行时语言（`"en"` \| `"zh"`，类型 `Locale`），由 `config.language` 解析得来。用它本地化你的频道输出。详见[国际化](#国际化i18n)。 |
 
-`start()` 返回后，保持对 `agent`、`quota` 和 `logger` 的引用直到 `logout()` 被调用或 `abortSignal` 触发——`start()` 返回后不会再次传入它们。
+调用 agent：
+
+```ts
+const response = await input.agent.chat({
+  accountId,                       // 本频道的账号 id
+  conversationId: chatKey,         // 你为本次入站消息构造的 `<type>:<...>` chatKey
+  text,
+  ...(replyContextToken ? { replyContextToken } : {}),
+  ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+  metadata: { channel: "<type>", chatType: "group", origin: "human" as const },
+  reply: async (segment) => { await this.sendText(chatKey, segment); },  // 流式分段
+});
+
+if (response.text) await this.sendText(chatKey, response.text);          // 最终回复
+```
+
+`ChatRequest` / `ChatResponse` 从 `xacpx/plugin-api` 导出。`reply` 用于流式推送回合中的分段；一旦使用了它，`response.text` 就是最终消息。完整的 `ChatRequest` 还携带 `media`、`humanStopSignal`、`onToolEvent` / `onThought` / `onPlan` / `onUsage` / `onCommands` 旁路通道、`perfSpan`，以及路由元数据（`channelMessageId`、`authenticatedHuman`、`senderId`、`isOwner`、`boundSessionAlias` 等）。完整的入站请求示例见 `src/weixin/messaging/handle-weixin-message-turn.ts`。
+
+`start()` 返回后，保持对 `agent`、`quota` 和 `logger` 的引用直到 `stop?()` / `logout()` 被调用或 `abortSignal` 触发——`start()` 返回后不会再次传入它们。
 
 `start()` 通常是一个长期运行的 Promise，在回调注册完成后返回。消息循环可在后台异步持续运行。
 
@@ -470,12 +520,12 @@ export interface ChannelCliIo {
 ```
 
 示例：
-- 微信：`weixin:wxid_abc123`
-- 飞书：`feishu:oc_xxxx`
-- 元宝：`yuanbao:<account>:<conv>`
+- 微信：`weixin:<accountId>:<userId>`（群聊：`weixin:<accountId>:group:<groupId>`）
+- 飞书：`feishu:<accountId>:<chatId>`（话题：`feishu:<accountId>:<chatId>:thread:<threadId>`）
+- 元宝：`yuanbao:<accountId>:<chatType>:<target>`（`chatType` 为 `direct` 或 `group`）
 
 频道必须：
-1. 为入站消息构造 `<type>:<...>` 格式的 chatKey，并传入 `agent.handle(chatKey, text)`。
+1. 为入站消息构造 `<type>:<...>` 格式的 chatKey，并作为 `conversationId` 传入 `agent.chat(request)` 对象。
 2. 在将 chatKey 转换回内部 ID 用于出站消息时，去掉 `<type>:` 前缀。
 3. 在 `notifyTaskCompletion` 等回调中，先检查 `task.chatKey` 是否以 `<type>:` 开头再处理——否则立即返回（守护进程会向所有频道广播）。
 
@@ -485,10 +535,10 @@ export interface ChannelCliIo {
 
 1. **单元层**（无 xacpx 依赖）：配置解析/验证函数、消息编解码、签名算法、chatKey 的构造与解析。
 2. **CLI 提供者单元测试**：向 `parseAddArgs` 传入各种参数组合并断言结果 `ChannelCliInput`；向 `validateConfig` 传入故意残缺的配置并断言问题列表。
-3. **频道契约测试**：实例化 `MyChannel(options)`，注入假的 `ChannelStartInput`（模拟 `OutboundQuota` 和 `AppLogger`），断言一条入站消息能到达假的 `agent.handle`。
+3. **频道契约测试**：实例化 `MyChannel(options)`，注入假的 `ChannelStartInput`（模拟 `OutboundQuota` 和 `AppLogger`），断言一条入站消息能到达假的 `agent.chat`。
 4. **集成层**（可选）：在测试中运行 `runCli(["channel", "add", "<type>", ...])`，断言 `~/.xacpx/config.json` 被正确写入。
 
-示例参见 `packages/channel-yuanbao/src/access/__tests__` 和 `tests/unit/channels/*`。
+示例参见 `tests/unit/packages/channel-feishu/feishu-start-wiring.test.ts` 和 `tests/unit/channels/channel-plugin.test.ts`。
 
 ### 启动时的验证规则
 
@@ -533,8 +583,10 @@ CLI 不会自动禁用验证失败的插件。用户须手动运行 `xacpx plugi
 ```text
 - feishu   @ganglion/xacpx-channel-feishu   Feishu channel
 - yuanbao  @ganglion/xacpx-channel-yuanbao  Tencent Yuanbao channel
+- discord  @ganglion/xacpx-channel-discord  Discord channel
+- relay    @ganglion/xacpx-channel-relay    Relay hub connector (drive this instance from a self-hosted relay hub)
 
-Install:
+安装：
   xacpx plugin add <package>
 ```
 

@@ -40,7 +40,11 @@ test("the settings file is written atomically at mode 0600", async () => {
   const { dir, store: settings, path } = store();
   try {
     await settings.update({ apiKey: "sk-1234567890abcd" });
-    expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
+    // Windows cannot clear the read bits (chmod only toggles the write bit), so
+    // the mode check is POSIX-only; the write itself is atomic everywhere.
+    if (process.platform !== "win32") {
+      expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
+    }
     const onDisk = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     expect(onDisk.apiKey).toBe("sk-1234567890abcd");
   } finally {

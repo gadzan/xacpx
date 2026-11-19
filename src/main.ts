@@ -716,6 +716,10 @@ export async function buildApp(
       // Fail startup LOUD: persisted Runtime bindings can no longer legally
       // run under this config, and silently starting degraded would brick
       // every bound session with RUNTIME_ENGINE_UNSUPPORTED.
+      // Close the fork store first: it holds an open SQLite handle inside the
+      // state directory, and leaking it keeps the whole directory locked on
+      // Windows (a later `rm -rf` of the state root fails with EBUSY).
+      sessionForks?.close();
       throw new Error(
         `state has persisted runtime bindings but the current transport permission config is invalid (${error instanceof Error ? error.message : String(error)}); refusing startup (migrate bindings to cli or restore an eligible policy)`,
       );
@@ -941,6 +945,9 @@ export async function buildApp(
   // silently run persisted Runtime affinity (the Runtime fence cannot
   // protect against a CLI queue owner).
   if (config.transport.type !== "acpx-bridge" && sessions.hasPersistedRuntimeBindings()) {
+    // Same resource discipline as the permission refusal above: release the
+    // fork store's SQLite handle so the state directory is not left locked.
+    sessionForks?.close();
     throw new Error(
       'state has persisted runtime bindings but transport.type is not "acpx-bridge"; refusing startup (migrate bindings to cli or switch transport.type to acpx-bridge)',
     );

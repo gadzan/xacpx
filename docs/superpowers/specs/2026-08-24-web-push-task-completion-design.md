@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 ### 3.2 VAPID 配置
 
 - 新增依赖：`web-push`（packages/relay dependencies）。
-- CLI 子命令 `xacpx-relay push-keys generate`：调用 `web-push.generateVAPIDKeys()` 打印 `{subject, publicKey, privateKey}`。用户自行写入 config.json 的 `webPush` 段（`{subject, publicKey, privateKey}`）或对应环境变量。
+- CLI 子命令 `xacpx-relay push-keys generate`：调用 `web-push.generateVAPIDKeys()` 打印 `{subject, publicKey, privateKey}`。密钥经环境变量 `XACPX_RELAY_VAPID_SUBJECT` / `XACPX_RELAY_VAPID_PUBLIC_KEY` / `XACPX_RELAY_VAPID_PRIVATE_KEY` 或 `start` 的 `--vapid-*` 参数注入（`packages/relay/src/push.ts` 只读 env/flag，不读 config.json 段）。
 - **不自动生成**：私钥是敏感配置；重启换钥会让全部订阅失效（endpoint 绑定 applicationServerKey）。未配置时推送功能静默禁用 + 启动 log warn，WS 通道完全不受影响。
 - config schema 文档同步：docs/config-reference.md 增加 `webPush` 段说明。
 
