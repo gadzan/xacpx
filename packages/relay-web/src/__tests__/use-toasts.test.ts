@@ -29,4 +29,12 @@ describe("use-toasts", () => {
     expect(items[0].params?.i).toBe(5); // newest kept
     expect(items[3].params?.i).toBe(2); // oldest visible
   });
+
+  it("keeps a loading toast until it is dismissed", () => {
+    const id = pushToast("loading", "instance.forkPending", {}, 0);
+    vi.advanceTimersByTime(60_000);
+    expect(useToasts().value).toHaveLength(1);
+    dismissToast(id);
+    expect(useToasts().value).toHaveLength(0);
+  });
 });

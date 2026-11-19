@@ -44,17 +44,25 @@ describe("InstanceTree session management", () => {
   it("opens a popup confirm and deletes only after confirming", async () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
-    const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
+    const removed = Promise.withResolvers<void>();
+    const remove = vi.spyOn(store, "removeSession").mockReturnValue(removed.promise);
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     // Open the overflow menu, then click Delete: opens the global confirm but does NOT delete yet.
     await w.find('[data-test="session-menu"]').trigger("click");
     await w.find('[data-test="delete-session"]').trigger("click");
     expect(remove).not.toHaveBeenCalled();
     expect(useConfirmState().value?.title).toBe("Delete session?");
-    // Confirming resolves the dialog → delete fires.
+    // Confirming resolves the dialog → delete fires and the row/toast show progress.
     settleConfirm(true);
     await flushPromises();
     expect(remove).toHaveBeenCalledWith("i1", "backend");
+    expect(useToasts().value.some((toast) => toast.tone === "loading" && toast.key === "instance.deletePending")).toBe(true);
+    expect(w.find('[data-test="session-action-pending"]').exists()).toBe(true);
+    removed.resolve();
+    await flushPromises();
+    expect(useToasts().value.some((toast) => toast.tone === "loading")).toBe(false);
+    expect(useToasts().value.some((toast) => toast.tone === "success" && toast.key === "instance.sessionDeleted")).toBe(true);
+    expect(w.find('[data-test="session-action-pending"]').exists()).toBe(false);
   });
 
   it("does not delete when the confirm is cancelled", async () => {

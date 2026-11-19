@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { AlertCircle, CheckCircle2, Info } from "lucide-vue-next";
+import { AlertCircle, CheckCircle2, Info, Loader2 } from "lucide-vue-next";
 import { useToasts, dismissToast } from "../lib/use-toasts";
 import { useIsMobile } from "../lib/use-dropdown";
 
@@ -77,7 +77,8 @@ onBeforeUnmount(() => window.removeEventListener("resize", reposition));
         data-test="toast"
         class="pointer-events-auto flex h-9 items-center gap-2 rounded-lg bg-glass-strong px-3.5 text-ui font-medium text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
       >
-        <component :is="toneIcon(t.tone)" :size="16" class="shrink-0" :class="toneClass(t.tone)" aria-hidden="true" />
+        <Loader2 v-if="t.tone === 'loading'" :size="16" class="shrink-0 animate-spin motion-reduce:animate-none" :class="toneClass(t.tone)" aria-hidden="true" />
+        <component v-else :is="toneIcon(t.tone)" :size="16" class="shrink-0" :class="toneClass(t.tone)" aria-hidden="true" />
         <span class="min-w-0 flex-1 truncate">{{ $t(t.key, t.params ?? {}) }}</span>
         <button data-test="toast-dismiss" class="shrink-0 text-fg-muted hover:text-fg" :aria-label="$t('common.dismiss')" @click="dismissToast(t.id)">×</button>
       </div>
