@@ -63,14 +63,34 @@ const showSearch = computed(() => props.searchable || totalRows.value > 7);
 
 watch(() => query.value, (q) => emit("update:query", q));
 
-/** Middle-ellipsis: keep the head and the tail (a workspace path differs at
- *  the tail), cutting the middle. The budget is ~40 mono chars at 12px — what a
- *  390px row fits beside the icon and the trailing check. Short values pass
- *  through untouched. */
+/** Middle-ellipsis: keep the head and the tail, cutting the middle. The budget is
+ *  ~40 mono chars at 12px — what a 390px row fits beside the icon and the trailing
+ *  check. Short values pass through untouched. */
 function ellipsizeMiddle(s: string, head = 20, tail = 18): string {
   if (s.length <= head + tail + 1) return s;
   return `${s.slice(0, head)}…${s.slice(-tail)}`;
 }
+/** Display form of each `sub`, keyed by the full value. Inside a group, the shared
+ *  directory prefix is dropped so rows that differ only mid-path stay
+ *  distinguishable after the ellipsis; the full value is still the row's title. */
+const subLabels = computed(() => {
+  const labels = new Map<string, string>();
+  for (const group of filtered.value) {
+    const subs = group.rows.flatMap((r) => (r.sub ? [r.sub] : []));
+    if (subs.length < 2) continue;
+    let shared = subs[0]!;
+    for (const s of subs) {
+      let i = 0;
+      while (i < shared.length && i < s.length && shared[i] === s[i]) i++;
+      shared = shared.slice(0, i);
+    }
+    // Only to a directory boundary: half a segment reads as noise.
+    const cut = shared.lastIndexOf("/") + 1;
+    if (cut === 0) continue;
+    for (const s of subs) labels.set(s, s.slice(cut));
+  }
+  return labels;
+});
 
 function navIndexOf(row: DropdownRow): number {
   return navRows.value.indexOf(row);
@@ -186,10 +206,10 @@ const listRole = computed(() => props.role ?? "listbox");
         <component :is="row.icon" v-if="row.icon" :size="16" class="shrink-0 text-fg-muted-overlay" />
         <span class="min-w-0 flex-1" :class="row.sub ? 'py-1.5' : 'truncate'">
           <span class="block truncate" :class="row.mono ? 'font-mono text-ui' : ''">{{ row.label }}</span>
-          <!-- Second line keeps the head AND the tail of a long path: that is
-               where two similar workspaces differ. `title` carries the full value
-               for a hover read; the visible text never depends on hover. -->
-          <span v-if="row.sub" class="block truncate font-mono text-xs text-fg-muted-overlay">{{ ellipsizeMiddle(row.sub) }}</span>
+          <!-- Second line: the group's shared directory prefix is dropped, then the
+               rest is middle-ellipsized, so rows that differ mid-path stay apart.
+               `title` carries the full value for a hover read. -->
+          <span v-if="row.sub" class="block truncate font-mono text-xs text-fg-muted-overlay">{{ ellipsizeMiddle(subLabels.get(row.sub) ?? row.sub) }}</span>
         </span>
         <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted-overlay">{{ row.hint }}</span>
         <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent-text" />
@@ -231,7 +251,7 @@ const listRole = computed(() => props.role ?? "listbox");
           <component :is="row.icon" v-if="row.icon" :size="14" class="shrink-0 text-fg-muted-overlay" />
           <span class="min-w-0 flex-1" :class="row.sub ? '' : 'truncate'">
             <span class="block truncate" :class="row.mono ? 'font-mono' : ''">{{ row.label }}</span>
-            <span v-if="row.sub" class="block truncate font-mono text-xs text-fg-muted-overlay">{{ ellipsizeMiddle(row.sub) }}</span>
+            <span v-if="row.sub" class="block truncate font-mono text-xs text-fg-muted-overlay">{{ ellipsizeMiddle(subLabels.get(row.sub) ?? row.sub) }}</span>
           </span>
           <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted-overlay">{{ row.hint }}</span>
           <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent-text" />
