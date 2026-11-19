@@ -451,6 +451,31 @@ export function supportsSessionForkMessage(
 }
 
 /**
+ * True when this instance can fork an ordinary session onto a different
+ * configured agent: the core accepts the target through the base fork RPC
+ * (`forkSession` exists), exposes the agent probe, AND this connector's
+ * validator accepts `targetAgent`. Additive to `session.fork.handoff.v1`: the
+ * head fork keeps working without it, and an older connector would reject the
+ * shape, so the Web hides the switch entry on both sides.
+ */
+export function supportsSessionForkAgent(
+  control: unknown,
+  parse: typeof parseControlPayload = parseControlPayload,
+): boolean {
+  if (!supportsSessionForkHandoff(control)) return false;
+  if (typeof control !== "object" || control === null) return false;
+  if (!("supportsSessionForkAgent" in control)) return false;
+  const probe = control.supportsSessionForkAgent;
+  if (typeof probe !== "function" || probe.call(control) !== true) return false;
+  return parse(MSG.sessionsFork, {
+    chatKey: "probe",
+    sourceAlias: "probe",
+    targetAlias: "probe",
+    requestId: "probe",
+    targetAgent: "probe",
+  }) !== null;
+}
+/**
  * True when this instance can accept a roundtable target and return the
  * corresponding history fields: the core exposes the probe AND this
  * connector's validator accepts both wire halves.
@@ -654,6 +679,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsSessionForkMessage(control)) {
       capabilities.push(RELAY_CAPABILITIES.sessionForkMessageV1);
+    }
+    if (supportsSessionForkAgent(control)) {
+      capabilities.push(RELAY_CAPABILITIES.sessionForkAgentV1);
     }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);

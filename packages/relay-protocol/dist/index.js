@@ -284,6 +284,7 @@ var RELAY_CAPABILITIES = {
   directTopicForkMessageV1: "direct.topics.fork.message.v1",
   sessionForkHandoffV1: "session.fork.handoff.v1",
   sessionForkMessageV1: "session.fork.message.v1",
+  sessionForkAgentV1: "session.fork.agent.v1",
   roundtableV1: "conversations.roundtable.v1",
   conversationTimelineV1: "conversations.timeline.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1",
@@ -1493,6 +1494,8 @@ var validateSessionsFork = (p) => {
   if (point !== undefined && !(isObj(point) && (point.type === "latest_stable" || point.type === "node" && isStr(point.nodeId)))) {
     return null;
   }
+  if (o.targetAgent !== undefined && !isStr(o.targetAgent))
+    return null;
   return o;
 };
 var validateWorkspacesCreate = (p) => {

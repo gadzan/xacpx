@@ -276,14 +276,20 @@ export function supportsSessionForkMessage(instance: { capabilities?: string[] |
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.sessionForkMessageV1);
 }
 
-/** The next free `<alias>-fork[-N]` among the rows the sidebar has loaded. The
+/**
+ * True when the instance accepts a `targetAgent` on an ordinary-session fork:
+ * "continue with another configured agent". Additive to the head capability;
+ * an older core/connector rejects the shape, so the session menu hides the
+ * agent group while the head fork keeps working.
+ */
+export function supportsSessionForkAgent(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.sessionForkAgentV1);
+}
+
+/** The next free `<base>[-N]` among the rows the sidebar has loaded. The
  *  daemon still rejects a collision with a sleeping row or another client. */
-export function nextSessionForkAlias(
-  sessions: ReadonlyArray<{ alias: string }>,
-  sourceAlias: string,
-): string {
+function nextFreeAlias(sessions: ReadonlyArray<{ alias: string }>, base: string): string {
   const taken = new Set(sessions.map((session) => session.alias));
-  const base = `${sourceAlias}-fork`;
   if (!taken.has(base)) return base;
   for (let index = 2; ; index += 1) {
     const candidate = `${base}-${index}`;
@@ -291,9 +297,46 @@ export function nextSessionForkAlias(
   }
 }
 
+/** The next free `<alias>-fork[-N]` among the rows the sidebar has loaded. The
+ *  daemon still rejects a collision with a sleeping row or another client. */
+export function nextSessionForkAlias(
+  sessions: ReadonlyArray<{ alias: string }>,
+  sourceAlias: string,
+): string {
+  return nextFreeAlias(sessions, `${sourceAlias}-fork`);
+}
+
+/**
+ * The next free target alias for a switch to `targetAgent`: the agent name
+ * makes the new branch readable in the sidebar. Non-alias characters collapse
+ * to `-`; an agent name with no usable segment falls back to the plain fork
+ * alias. The daemon still rejects a collision the sidebar cannot see.
+ */
+export function nextSessionForkAgentAlias(
+  sessions: ReadonlyArray<{ alias: string }>,
+  sourceAlias: string,
+  targetAgent: string,
+): string {
+  const segment = targetAgent
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "");
+  return nextFreeAlias(
+    sessions,
+    segment ? `${sourceAlias}-${segment}-fork` : `${sourceAlias}-fork`,
+  );
+}
+
 /** Request id + target pinned per node while an attempt is unresolved. */
 const nodeForkRequests = new Map<string, { requestId: string; targetAlias: string }>();
 const nodeForkInFlight = new Set<string>();
+
+/** Request id + target pinned per source + target agent while an agent-switch
+ *  attempt is unresolved: a retry after an ambiguous failure replays the same
+ *  fork instead of minting a second session. */
+const agentForkRequests = new Map<string, { requestId: string; targetAlias: string }>();
+const agentForkInFlight = new Set<string>();
 
 /** True when the instance accepts the roundtable target and history fields.
  *  It gates both the future "discuss" entry and the history compat flag. */
@@ -1105,20 +1148,73 @@ export const useInstancesStore = defineStore("instances", () => {
     return { pending: false };
   }
 
-  /** Fork a stable ordinary session; the new row's first prompt carries history. */
+  /**
+   * Fork a stable ordinary session; the new row's first prompt carries history.
+   * `targetAgent` continues the session as a branch under another configured
+   * agent in the same workspace (only sent when the instance advertises the
+   * capability, so an old connector never receives the shape).
+   */
   async function forkSession(
     instanceId: string,
     sourceAlias: string,
     targetAlias: string,
     requestId: string,
+    targetAgent?: string,
   ): Promise<SessionDto> {
     const result = unwrap(await api.rpc<SessionDto>(instanceId, "control.sessions.fork", {
       sourceAlias,
       targetAlias,
       requestId,
+      ...(targetAgent ? { targetAgent } : {}),
     }));
     await loadSessions(instanceId);
     return result;
+  }
+
+  /**
+   * Continue a stable ordinary session as a branch under another configured
+   * agent. The request id and target alias are pinned per (instance, source,
+   * target agent) while an attempt is unresolved: a retry after an ambiguous
+   * failure replays the same fork instead of minting a second session. A taken
+   * target is the one failure that resets both — the stored request names that
+   * target, so replaying it could never succeed.
+   */
+  async function forkSessionAtAgent(
+    instanceId: string,
+    sourceAlias: string,
+    targetAgent: string,
+  ): Promise<SessionDto> {
+    const key = `${instanceId}\0${sourceAlias}\0${targetAgent}`;
+    if (agentForkInFlight.has(key)) throw new Error("session-fork-in-flight");
+    agentForkInFlight.add(key);
+    try {
+      const inst = byId(instanceId);
+      const pinned = agentForkRequests.get(key);
+      const targetAlias = pinned?.targetAlias
+        ?? nextSessionForkAgentAlias(inst?.sessions ?? [], sourceAlias, targetAgent);
+      const requestId = pinned?.requestId ?? `session-fork-${crypto.randomUUID()}`;
+      agentForkRequests.set(key, { targetAlias, requestId });
+      try {
+        const result = unwrap(await api.rpc<SessionDto>(instanceId, "control.sessions.fork", {
+          sourceAlias,
+          targetAlias,
+          requestId,
+          targetAgent,
+        }));
+        agentForkRequests.delete(key);
+        await loadSessions(instanceId);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("session-fork-target-exists") || message.includes("already exists")) {
+          agentForkRequests.delete(key);
+          await loadSessions(instanceId).catch(() => undefined);
+        }
+        throw error;
+      }
+    } finally {
+      agentForkInFlight.delete(key);
+    }
   }
 
   /**
@@ -1843,7 +1939,7 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, capabilityEpochFor, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, forkSession, forkSessionAtNode, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, capabilityEpochFor, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, forkSession, forkSessionAtNode, forkSessionAtAgent, renameInstance, applyEvent, byId, findSessionRow };
 });
 
 /** The instances store's public shape, named for consumers (tests, helpers). */

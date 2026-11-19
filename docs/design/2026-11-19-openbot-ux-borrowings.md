@@ -141,9 +141,35 @@ provider descriptor, the host-side runtime, and the browser.
 
 ## UX3: switch agent on a logical session
 
-Add a "Continue with another agent" action. The source session history is rendered by the existing portable fork handoff. The target keeps the logical session identity and workspace, and the source stays as a branch. The target's first prompt consumes the handoff once. Replays use the stored request and source anchor.
+Add a "Continue with another agent" action to the session ⋯ menu. A switch
+creates a new logical session branch in the same workspace: the source keeps
+its own logical session id, alias, and history, and stays addressable exactly
+as before. The branch gets its own logical session id, transport session, and
+alias. The two sessions are siblings, not renames of one another.
 
-This action requires the provider readiness from UX2a (and sign-in state from UX2b) so the dashboard can show whether the target agent is set up and has models.
+The branch reuses the existing portable fork handoff. The source history is
+rendered once by the same renderer a same-agent fork uses, and the new
+session's first effective prompt carries that bounded block once and consumes
+it; later prompts are plain. Replays reuse the stored request, source anchor,
+and target agent rather than re-rendering from a moved source.
+
+The only new input is an optional `targetAgent`:
+
+- absent, or equal to the source agent, keeps today's same-agent fork, which
+  also inherits the source model and effort;
+- different creates the branch under that agent in the same workspace, with no
+  inherited model and no copied effort, because provider settings do not carry
+  across agents.
+
+Only agents already configured on the instance are offered, and the source
+agent is excluded from the list. There is no driver create or install in this
+PR. The entry is hidden unless the connector advertises the additive
+capability `session.fork.agent.v1`, so an older connector never receives the
+new payload shape.
+
+This action builds on the provider readiness from UX2a (and sign-in state from
+UX2b) so the dashboard can show whether a target agent is set up and has
+models; the switch itself still only offers configured agents.
 
 ## UX4: context policy
 

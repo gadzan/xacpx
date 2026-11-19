@@ -45,6 +45,11 @@ export interface SessionForkRecord {
   /** Digest of the rendered prefix at resolve time, so a replay cannot hand off
    *  history the source record no longer holds. Node forks only. */
   sourceAnchor?: string;
+  /** Effective agent that runs the target session: the source agent for a
+   *  same-agent fork, or the requested `targetAgent` for a switch. Absent on
+   *  rows written before the switch column existed; replay treats those as
+   *  same-agent (see control-service). */
+  targetAgent?: string;
   strategy: SessionForkStrategy;
   resolution?: SessionForkResolution;
   status: SessionForkStatus;
@@ -84,7 +89,8 @@ export class SessionForkError extends Error {
       | "session-fork-native-unavailable"
       | "session-fork-node-unavailable"
       | "session-fork-node-ambiguous"
-      | "session-fork-source-changed",
+      | "session-fork-source-changed"
+      | "session-fork-agent-unavailable",
     message: string,
   ) {
     super(message);
@@ -101,6 +107,7 @@ interface ForkRow {
   chat_key: string | null;
   source_point: string;
   source_anchor: string | null;
+  target_agent: string | null;
   strategy: SessionForkStrategy;
   resolution: string | null;
   status: SessionForkStatus;
@@ -138,6 +145,7 @@ CREATE TABLE IF NOT EXISTS session_forks (
   chat_key TEXT,
   source_point TEXT NOT NULL,
   source_anchor TEXT,
+  target_agent TEXT,
   strategy TEXT NOT NULL,
   resolution TEXT,
   status TEXT NOT NULL,
@@ -206,6 +214,7 @@ function toRecord(row: ForkRow): SessionForkRecord {
     chatKey: row.chat_key ?? "",
     sourcePoint: parseSourcePoint(row.source_point),
     ...(row.source_anchor ? { sourceAnchor: row.source_anchor } : {}),
+    ...(row.target_agent ? { targetAgent: row.target_agent } : {}),
     strategy: row.strategy,
     ...(row.resolution ? { resolution: parseResolution(row.resolution) } : {}),
     status: row.status,
@@ -249,6 +258,11 @@ export class SessionForkStore {
     if (!names.has("source_anchor")) {
       this.sql.run("ALTER TABLE session_forks ADD COLUMN source_anchor TEXT");
     }
+    // UX3 agent-switch records carry the effective target agent; older
+    // databases gain the column with NULLs (legacy rows replay as same-agent).
+    if (!names.has("target_agent")) {
+      this.sql.run("ALTER TABLE session_forks ADD COLUMN target_agent TEXT");
+    }
   }
 
   static async open(path: string): Promise<SessionForkStore> {
@@ -269,6 +283,7 @@ export class SessionForkStore {
     createdAt: string;
     sourcePoint?: SessionForkSourcePoint;
     sourceAnchor?: string;
+    targetAgent: string;
   }): SessionForkRecord {
     const record: SessionForkRecord = {
       id: `fork_${randomUUID()}`,
@@ -280,14 +295,15 @@ export class SessionForkStore {
       targetAlias: input.targetAlias,
       sourcePoint: input.sourcePoint ?? { type: "latest_stable" },
       ...(input.sourceAnchor ? { sourceAnchor: input.sourceAnchor } : {}),
+      targetAgent: input.targetAgent,
       strategy: "pending",
       status: "pending",
       createdAt: input.createdAt,
     };
     this.sql.run(
       `INSERT INTO session_forks
-        (id, request_id, chat_key, source_session_id, target_session_id, source_alias, target_alias, source_point, source_anchor, strategy, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, request_id, chat_key, source_session_id, target_session_id, source_alias, target_alias, source_point, source_anchor, target_agent, strategy, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.requestId,
@@ -298,6 +314,7 @@ export class SessionForkStore {
         record.targetAlias,
         JSON.stringify(record.sourcePoint),
         record.sourceAnchor ?? null,
+        record.targetAgent ?? null,
         record.strategy,
         record.status,
         record.createdAt,

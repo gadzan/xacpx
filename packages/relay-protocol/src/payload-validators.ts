@@ -236,6 +236,7 @@ const validateSessionsFork: Validator<SessionsForkPayload> = (p) => {
   ) {
     return null;
   }
+  if (o.targetAgent !== undefined && !isStr(o.targetAgent)) return null;
   return o as unknown as SessionsForkPayload;
 };
 const validateWorkspacesCreate: Validator<WorkspacesCreatePayload> = (p) => {

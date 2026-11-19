@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, GitFork, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
-import { useInstancesStore, groupArchivedKey, nextSessionForkAlias, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop, supportsSessionForkHandoff } from "../stores/instances";
+import { useInstancesStore, groupArchivedKey, nextSessionForkAlias, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop, supportsSessionForkAgent, supportsSessionForkHandoff } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
@@ -510,9 +510,15 @@ function toggleFilterFor(instanceId: string, el: HTMLElement): void {
   filterFor.value = instanceId;
   filterDd.openMenu();
 }
-/** The ⋯ menu rows for a session (role=menu: rename, fork, sleep/wake, delete). */
-function menuGroups(inst: InstanceView, s: { alias: string; archived?: boolean }): DropdownGroup[] {
-  return [
+
+const SWITCH_AGENT_PREFIX = "switch-agent:";
+
+/** The ⋯ menu rows for a session (role=menu: rename, fork, switch agent, sleep/wake, delete). */
+function menuGroups(
+  inst: InstanceView,
+  s: { alias: string; archived?: boolean; agent?: string; driver?: string },
+): DropdownGroup[] {
+  const groups: DropdownGroup[] = [
     {
       rows: [
         { value: "rename", label: t("instance.renameSession"), icon: Pencil, testId: "action-rename" },
@@ -526,6 +532,36 @@ function menuGroups(inst: InstanceView, s: { alias: string; archived?: boolean }
       ],
     },
   ];
+  // Only configured agents are offered, and only when the instance accepts the
+  // payload shape: an old connector rejects `targetAgent`, so the group stays
+  // hidden there. The source agent is excluded because continuing under it is
+  // the ordinary fork above; it renders as a disabled row so the exclusion is
+  // visible instead of a silently shorter list.
+  const candidates = s.archived ? [] : inst.agents.filter((agent) => agent.name !== s.agent);
+  if (supportsSessionForkAgent(inst) && candidates.length > 0) {
+    groups.push({
+      label: t("instance.switchAgentGroup"),
+      rows: [
+        ...candidates.map((agent) => ({
+          value: `${SWITCH_AGENT_PREFIX}${agent.name}`,
+          label: agent.name,
+          icon: Bot,
+          hint: agent.driver,
+          testId: `action-switch-agent-${agent.name}`,
+        })),
+        ...(s.agent
+          ? [{
+              value: "switch-agent-source",
+              label: t("instance.switchAgentCurrent", { agent: s.agent }),
+              hint: s.driver ?? driverForAgentName(inst, s.agent),
+              disabled: true,
+              testId: "action-switch-agent-source",
+            }]
+          : []),
+      ],
+    });
+  }
+  return groups;
 }
 
 // One fork RPC at a time per row: a double click would otherwise mint two
@@ -560,10 +596,50 @@ async function onFork(inst: InstanceView, sourceAlias: string): Promise<void> {
   }
 }
 
-/** ⋯ menu activation: rename / fork / sleep / wake / delete for the row it serves. */
-function onMenuSelect(inst: InstanceView, s: { alias: string; archived?: boolean; displayName?: string }, value: string): void {
+// One agent switch at a time: a double click must not mint two request ids or
+// two sessions. The store pins the id per (source, agent) and coalesces a
+// concurrent second call, but the UI must not ask twice in the first place.
+const switchingAgentFor = ref<string | null>(null);
+
+/**
+ * Continue the session as a new branch under another configured agent. The
+ * source session stays addressable; the created session is selected and its
+ * first prompt carries the existing bounded handoff. No driver is created or
+ * installed here — only configured agents are offered.
+ */
+async function onSwitchAgent(
+  inst: InstanceView,
+  sourceAlias: string,
+  targetAgent: string,
+): Promise<void> {
+  menuDd.closeMenu();
+  if (switchingAgentFor.value !== null) return;
+  switchingAgentFor.value = `${inst.id}:${sourceAlias}:${targetAgent}`;
+  try {
+    const created = await store.forkSessionAtAgent(inst.id, sourceAlias, targetAgent);
+    pushToast("success", "instance.switchAgentCreated", { alias: created.alias, agent: targetAgent });
+    emit("select", inst.id, created.alias);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A taken target means this row's list is stale (another client switched,
+    // or the row was deleted elsewhere). Refresh so the next attempt proposes
+    // a free alias instead of the same taken one.
+    if (message.includes("session-fork-target-exists") || message.includes("already exists")) {
+      await store.loadSessions(inst.id).catch(() => undefined);
+    }
+    pushToast("error", "instance.switchAgentFailed", { msg: message });
+  } finally {
+    switchingAgentFor.value = null;
+  }
+}
+
+/** ⋯ menu activation: rename / fork / switch agent / sleep / wake / delete for the row it serves. */
+function onMenuSelect(inst: InstanceView, s: { alias: string; archived?: boolean; displayName?: string; agent?: string }, value: string): void {
   if (value === "rename") startRename(inst.id, s);
   else if (value === "fork") void onFork(inst, s.alias);
+  else if (value.startsWith(SWITCH_AGENT_PREFIX)) {
+    void onSwitchAgent(inst, s.alias, value.slice(SWITCH_AGENT_PREFIX.length));
+  }
   else if (value === "archive") void onArchive(inst.id, s.alias);
   else if (value === "unarchive") void onUnarchive(inst.id, s.alias);
   else if (value === "delete") void askDelete(inst.id, s.alias);
