@@ -1760,6 +1760,16 @@ export class ControlService {
   }
 
   /**
+   * Feature probe for connectors: this core can fork an ordinary session onto
+   * a different configured agent in the same workspace, handing off the same
+   * bounded history. The store that holds the fork records is the gate,
+   * exactly like the head probe.
+   */
+  supportsSessionForkAgent(): boolean {
+    return this.deps.sessionForks !== undefined;
+  }
+
+  /**
    * Fork a stable ordinary session into an independent logical + transport
    * session. The source's recorded history is rendered once into a bounded
    * handoff; the first effective prompt of the target injects it and consumes
@@ -1771,11 +1781,17 @@ export class ControlService {
    * when that turn ran, never by position, and a reset/clear/rewrite fails
    * closed instead of handing off a different prefix.
    *
-   * The target inherits the source's model and effort so it runs under the
-   * same provider settings. `modeId` and `replyMode` are explicit PR1 limits
+   * `targetAgent` names the configured agent that runs the new session branch.
+   * Absent (or equal to the source agent) keeps the source agent, model, and
+   * effort. A switch creates the target with the requested agent in the same
+   * workspace, inherits no model, and copies no effort: provider settings do
+   * not transfer across agents. The source session stays addressable; the
+   * target is a new logical session branch, not a continuation of the same id.
+   *
+   * `modeId` and `replyMode` are explicit PR1 limits
    * (the fork starts with defaults; `createSessionWithTransport` has no mode
    * or reply-mode parameter). `settingsPolicy` needs no inheritance: it is
-   * resolved live from the agent config, and the fork keeps the source agent.
+   * resolved live from the agent config, and a same-agent fork keeps the source agent.
    */
   async forkSession(input: {
     chatKey: string;
@@ -1785,6 +1801,8 @@ export class ControlService {
     /** Head fork when absent. A `node` point cuts at one recorded prompt turn
      *  and never includes later source turns. */
     sourcePoint?: SessionForkSourcePoint;
+    /** Switch target: a configured agent name. Absent keeps the source agent. */
+    targetAgent?: string;
   }): Promise<ControlSessionInfo> {
     // Overlapping same-id forks serialize here (keyed by chat scope + request
     // id) so the second waits and then hits the replay path. The store's
@@ -1817,6 +1835,7 @@ export class ControlService {
     targetAlias: string;
     requestId: string;
     sourcePoint?: SessionForkSourcePoint;
+    targetAgent?: string;
   }): Promise<ControlSessionInfo> {
     const store = this.deps.sessionForks;
     if (!store) {
@@ -1834,6 +1853,7 @@ export class ControlService {
       );
     }
     const requestedPoint = normalizeSessionForkSourcePoint(input.sourcePoint);
+    const requestedTargetAgent = input.targetAgent?.trim() ? input.targetAgent.trim() : undefined;
 
     this.assertOrdinaryAddressedAlias(input.chatKey, input.sourceAlias);
     const channelId = getChannelIdFromChatKey(input.chatKey);
@@ -1863,6 +1883,18 @@ export class ControlService {
         "this fork request id was already used with a different scope, source, or target",
       );
     }
+    // An explicit switch target that contradicts the stored record is a client
+    // bug, not a retry: fail here without needing the source.
+    if (
+      replay?.targetAgent
+      && requestedTargetAgent
+      && replay.targetAgent !== requestedTargetAgent
+    ) {
+      throw new SessionForkError(
+        "session-fork-request-mismatch",
+        "this fork request id was already used with a different target agent",
+      );
+    }
     // The source is resolved best-effort here so a replay survives source
     // deletion: when the source is gone but the record's target still exists,
     // the same request id returns that target instead of failing.
@@ -1880,6 +1912,16 @@ export class ControlService {
           "this fork request id was already used for a different source session",
         );
       }
+      // The stored effective agent must match the requested one: a head replay
+      // of a switch record (or a switch replay of a same-agent record) is a
+      // different request. Legacy rows carry no agent and count as same-agent
+      // here, so an explicit switch against them mismatches.
+      if (replay && !this.forkReplayTargetMatches(replay, requestedTargetAgent, source.agent)) {
+        throw new SessionForkError(
+          "session-fork-request-mismatch",
+          "this fork request id was already used with a different target agent",
+        );
+      }
     }
     // A pending replay renders the STORED source point and verifies the anchor
     // recorded with it; it must never fall back to the requested head.
@@ -1895,7 +1937,9 @@ export class ControlService {
         replayAnchor = replay.sourceAnchor;
         await this.clearPendingForkReplay(store, replay);
       } else {
-        return this.toControlSessionInfo(await this.resolveForkReplayTarget(replay));
+        return this.toControlSessionInfo(
+          await this.resolveForkReplayTarget(replay, requestedTargetAgent, source?.agent),
+        );
       }
     }
     if (!source) {
@@ -1997,11 +2041,28 @@ export class ControlService {
       );
     }
 
+    const switchingAgent = requestedTargetAgent !== undefined && requestedTargetAgent !== source.agent;
+    let effectiveTargetAgent = source.agent;
+    let inheritedModel: string | undefined = source.model;
+    if (switchingAgent) {
+      const configured = this.deps.agents.list().some((agent) => agent.name === requestedTargetAgent);
+      if (!configured) {
+        throw new SessionForkError(
+          "session-fork-agent-unavailable",
+          `agent "${requestedTargetAgent}" is not configured on this instance; configure it before switching`,
+        );
+      }
+      effectiveTargetAgent = requestedTargetAgent;
+      // Provider settings do not transfer across agents: the switch target
+      // starts with no inherited model and no copied effort.
+      inheritedModel = undefined;
+    }
+
     const created = await this.deps.createSessionWithTransport(
       targetInternal,
-      source.agent,
+      effectiveTargetAgent,
       source.workspace,
-      source.model,
+      inheritedModel,
     );
     const targetSessionId = created.logicalSessionId;
     if (!targetSessionId) {
@@ -2014,7 +2075,7 @@ export class ControlService {
     const createdAt = new Date().toISOString();
     let pendingId: string | undefined;
     try {
-      if (source.effort) {
+      if (!switchingAgent && source.effort) {
         await this.deps.sessions.setSessionEffort(created.alias, source.effort);
       }
       let pending: SessionForkRecord;
@@ -2029,6 +2090,7 @@ export class ControlService {
           createdAt,
           sourcePoint,
           ...(sourceAnchor !== undefined ? { sourceAnchor } : {}),
+          targetAgent: effectiveTargetAgent,
         });
       } catch (error) {
         if (!isSqliteUniqueViolation(error)) throw error;
@@ -2042,6 +2104,9 @@ export class ControlService {
             sourceAlias: requestedSourceAlias,
             targetAlias,
             sourcePoint,
+            targetAgent: effectiveTargetAgent,
+            sourceAgent: source.agent,
+            requestedTargetAgent,
             createdAlias: created.alias,
           }),
         );
@@ -2094,8 +2159,40 @@ export class ControlService {
     return sameSessionForkSourcePoint(replay.sourcePoint, requestedSourcePoint);
   }
 
-  /** The live target of a completed fork record, or a retry-with-new-id error. */
-  private async resolveForkReplayTarget(replay: SessionForkRecord): Promise<ResolvedSession> {
+  /**
+   * Whether a stored fork record may answer this request's agent: the replay
+   * must name the same effective agent. Absent `targetAgent` means the source
+   * agent, so replaying a switch record without it (or replaying a same-agent
+   * record as a switch) is a different request.
+   *
+   * Legacy rows predate the column and were always same-agent forks. With a
+   * live source they replay only for the source agent; without one the caller
+   * cannot compare, so `resolveForkReplayTarget` falls back to the resolved
+   * target's own agent.
+   */
+  private forkReplayTargetMatches(
+    replay: SessionForkRecord,
+    requestedTargetAgent: string | undefined,
+    sourceAgent: string | undefined,
+  ): boolean {
+    const expected = requestedTargetAgent ?? sourceAgent;
+    const stored = replay.targetAgent ?? sourceAgent;
+    if (expected === undefined || stored === undefined) return true;
+    return stored === expected;
+  }
+
+  /**
+   * The live target of a completed fork record, or a retry-with-new-id error.
+   * The target must run the agent the request names. A legacy row has no
+   * stored agent, so with no live source the live target's own agent is the
+   * comparison; a target that no longer runs the recorded agent never answers
+   * as a replay.
+   */
+  private async resolveForkReplayTarget(
+    replay: SessionForkRecord,
+    requestedTargetAgent?: string,
+    sourceAgent?: string,
+  ): Promise<ResolvedSession> {
     const alias = this.deps.sessions
       .listAllResolvedSessions()
       .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
@@ -2104,6 +2201,16 @@ export class ControlService {
       throw new SessionForkError(
         "session-fork-target-exists",
         "this fork request already created a session that no longer exists; retry with a new request id",
+      );
+    }
+    const expected = requestedTargetAgent ?? sourceAgent;
+    if (
+      (expected !== undefined && (replay.targetAgent ?? resolved.agent) !== expected)
+      || (replay.targetAgent !== undefined && resolved.agent !== replay.targetAgent)
+    ) {
+      throw new SessionForkError(
+        "session-fork-request-mismatch",
+        "this fork request id created a session that runs a different agent",
       );
     }
     return resolved;
@@ -2140,6 +2247,9 @@ export class ControlService {
       sourceAlias: string;
       targetAlias: string;
       sourcePoint: SessionForkSourcePoint;
+      targetAgent: string;
+      sourceAgent: string;
+      requestedTargetAgent?: string;
       createdAlias: string;
     },
   ): Promise<ResolvedSession> {
@@ -2166,7 +2276,13 @@ export class ControlService {
         "this fork request id was already used with a different scope, source, or target",
       );
     }
-    return this.resolveForkReplayTarget(winner);
+    if ((winner.targetAgent ?? input.sourceAgent) !== input.targetAgent) {
+      throw new SessionForkError(
+        "session-fork-request-mismatch",
+        "this fork request id was already used with a different target agent",
+      );
+    }
+    return this.resolveForkReplayTarget(winner, input.requestedTargetAgent, input.sourceAgent);
   }
 
   private toControlSessionInfo(session: ResolvedSession): ControlSessionInfo {

@@ -49,6 +49,7 @@ function pending(store: SessionForkStore, target: string, requestId = `req-${tar
     sourceAlias: "src-alias",
     targetAlias: `${target}-alias`,
     createdAt: "2026-11-16T00:00:00.000Z",
+    targetAgent: "codex",
   });
 }
 
@@ -209,6 +210,7 @@ test("a pre-node database gains source_anchor and keeps existing latest_stable r
     createdAt: "2026-11-16T00:00:00.000Z",
     sourcePoint: { type: "node", nodeId: "node-1" },
     sourceAnchor: "anchor-digest",
+    targetAgent: "codex",
   });
   expect(node.sourcePoint).toEqual({ type: "node", nodeId: "node-1" });
   expect(node.sourceAnchor).toBe("anchor-digest");
@@ -243,5 +245,48 @@ test("turn nodes get ordered sequences per session and stay scoped to it", async
   expect(store.listTurnNodes("logical-a").map((node) => node.nodeId)).toEqual(["node-a", "node-b"]);
   expect(store.getTurnNode("logical-a", "node-b")?.promptDigest).toBe("digest-b");
   expect(store.getTurnNode("logical-b", "node-b")).toBeUndefined();
+  store.close();
+});
+
+test("a pre-agent database gains target_agent and keeps legacy rows agentless", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "session-forks-agent-")), "forks.sqlite");
+  const legacy = await createSqlDriver(path);
+  legacy.exec(`
+    CREATE TABLE session_forks (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,
+      source_session_id TEXT NOT NULL,
+      target_session_id TEXT NOT NULL UNIQUE,
+      source_alias TEXT,
+      target_alias TEXT,
+      chat_key TEXT,
+      source_point TEXT NOT NULL,
+      source_anchor TEXT,
+      strategy TEXT NOT NULL,
+      resolution TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      consumed_at TEXT
+    );
+    INSERT INTO session_forks
+      (id, request_id, source_session_id, target_session_id, source_alias, target_alias, chat_key, source_point, strategy, status, created_at)
+    VALUES ('fork_pre_agent', 'req-pre-agent', 'src', 'target', 'src-alias', 'target-alias', 'relay:acct', '{"type":"latest_stable"}', 'portable', 'ready', 'x');
+  `);
+  legacy.close();
+
+  const store = await SessionForkStore.open(path);
+  expect(store.getByRequestId("req-pre-agent")?.targetAgent).toBeUndefined();
+  const switched = store.createPending({
+    requestId: "req-switch",
+    chatKey: "relay:acct",
+    sourceSessionId: "src",
+    targetSessionId: "target-switch",
+    sourceAlias: "src-alias",
+    targetAlias: "target-switch-alias",
+    createdAt: "2026-11-19T00:00:00.000Z",
+    targetAgent: "claude",
+  });
+  expect(switched.targetAgent).toBe("claude");
+  expect(store.getByRequestId("req-switch")?.targetAgent).toBe("claude");
   store.close();
 });

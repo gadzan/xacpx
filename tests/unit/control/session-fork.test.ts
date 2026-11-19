@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { ControlService } from "../../../src/control/control-service";
+import { createSqlDriver } from "../../../src/conversations/sql-driver";
+
 import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { SessionTurnRunner } from "../../../src/control/session-turn-runner";
@@ -30,13 +35,27 @@ const OTHER = {
   transportSession: "acpx-other",
 };
 
+/** One session this fake created: the transport receives agent + workspace + model. */
+interface CreatedSession {
+  alias: string;
+  agent: string;
+  workspace: string;
+  model?: string;
+  logicalSessionId: string;
+}
+
 interface ForkTestInput {
   store: SessionForkStore;
   created: string[];
+  createdRecords: CreatedSession[];
   createdModels: Array<string | undefined>;
   effortApplied: Array<[string, string | undefined]>;
   removed: string[];
   sources?: typeof SOURCE[];
+  /** Configured agents the switch may resolve. */
+  configuredAgents?: Array<{ name: string; driver: string }>;
+  /** Rows the fake resolves as pre-existing target sessions (legacy replay). */
+  seedCreated?: CreatedSession[];
   suffixCreated?: boolean;
   throwOnTaken?: boolean;
   history: Array<{ role: "user" | "agent"; text: string }>;
@@ -49,6 +68,7 @@ function forkInput(
   return {
     store,
     created: [],
+    createdRecords: [],
     createdModels: [],
     effortApplied: [],
     removed: [],
@@ -58,31 +78,34 @@ function forkInput(
 
 function controlDeps(input: ForkTestInput) {
   const events = createControlEventBus();
+  const allCreated = () => [...(input.seedCreated ?? []), ...input.createdRecords];
+
+  const asResolved = (record: CreatedSession) => ({
+    ...SOURCE,
+    alias: record.alias,
+    agent: record.agent,
+    workspace: record.workspace,
+    ...(record.model ? { model: record.model } : {}),
+    transportSession: "acpx-fork",
+    logicalSessionId: record.logicalSessionId,
+  });
   return {
     agent: { chat: async () => ({ text: "" }) },
     sessions: {
       listAllResolvedSessions: () => [
         ...(input.sources ?? [SOURCE]),
-        ...input.created.map((alias) => ({
-          ...SOURCE,
-          alias,
-          logicalSessionId: "logical-target",
-          transportSession: "acpx-fork",
-        })),
+        ...allCreated()
+          .filter((record) => !input.removed.includes(record.alias))
+          .map(asResolved),
       ],
       getSession: async (alias: string) => {
         const source = (input.sources ?? [SOURCE]).find(
           (candidate) => candidate.alias === alias,
         );
         if (source) return source;
-        const created = input.created.find((entry) => entry === alias);
-        return created && !input.removed.includes(created)
-          ? {
-              ...SOURCE,
-              alias,
-              logicalSessionId: "logical-target",
-              transportSession: "acpx-fork",
-            }
+        const created = allCreated().find((entry) => entry.alias === alias);
+        return created && !input.removed.includes(created.alias)
+          ? asResolved(created)
           : null;
       },
       resolveAliasForChat: async (_chatKey: string, alias: string) =>
@@ -102,22 +125,25 @@ function controlDeps(input: ForkTestInput) {
     },
     createSessionWithTransport: async (
       alias: string,
-      _agent: string,
-      _workspace: string,
+      agent: string,
+      workspace: string,
       model?: string,
     ) => {
       if (input.throwOnTaken && input.created.includes(alias)) {
         throw new Error(`session "${alias}" already exists and could not derive a free alias`);
       }
       const actual = input.suffixCreated || input.created.includes(alias) ? `${alias}-2` : alias;
-      input.created.push(actual);
-      input.createdModels.push(model);
-      return {
-        ...SOURCE,
+      const created: CreatedSession = {
         alias: actual,
-        transportSession: "acpx-fork",
+        agent,
+        workspace,
+        ...(model ? { model } : {}),
         logicalSessionId: "logical-target",
       };
+      input.created.push(actual);
+      input.createdModels.push(model);
+      input.createdRecords.push(created);
+      return asResolved(created);
     },
     removeSessionWithTransport: async (alias: string) => {
       input.removed.push(alias);
@@ -145,7 +171,7 @@ function controlDeps(input: ForkTestInput) {
     },
     events,
     agents: {
-      list: () => [],
+      list: () => input.configuredAgents ?? [],
       catalog: () => [],
       create: async () => {
         throw new Error("unused");
@@ -431,6 +457,7 @@ function readyHandoff(store: SessionForkStore, requestId: string): void {
     sourceAlias: "backend",
     targetAlias: "backend-fork",
     createdAt: "2026-11-16T00:00:00.000Z",
+    targetAgent: "codex",
   });
   store.resolvePortable({
     forkId: fork.id,
@@ -650,6 +677,7 @@ test("a pending node replay uses the stored source point and anchor", async () =
     createdAt: "2026-11-16T00:00:00.000Z",
     sourcePoint: { type: "node", nodeId: "node-1" },
     sourceAnchor: sessionForkPrefixAnchor(TURN_HISTORY.slice(0, 4)),
+    targetAgent: "codex",
   });
   input.history.push(
     { role: "user", text: "fourth question" },
@@ -686,6 +714,7 @@ test("a rewritten source prefix fails a node fork closed with a typed error", as
     createdAt: "2026-11-16T00:00:00.000Z",
     sourcePoint: { type: "node", nodeId: "node-1" },
     sourceAnchor: sessionForkPrefixAnchor(TURN_HISTORY.slice(0, 4)),
+    targetAgent: "codex",
   });
   input.history[2] = { role: "user", text: "rewritten second question" };
 
@@ -759,5 +788,258 @@ test("a node fork request id cannot be replayed at a different node", async () =
       sourcePoint: { type: "node", nodeId: "node-2" },
     }),
   ).rejects.toMatchObject({ code: "session-fork-request-mismatch" });
+  store.close();
+});
+
+const CONFIGURED_AGENTS = [
+  { name: "codex", driver: "codex" },
+  { name: "claude", driver: "claude" },
+];
+
+test("a switch creates the branch under the target agent in the same workspace", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  input.configuredAgents = CONFIGURED_AGENTS;
+  const control = new ControlService(controlDeps(input) as never);
+
+  expect(control.supportsSessionForkAgent()).toBe(true);
+  const result = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-claude-fork",
+    requestId: "req-switch",
+    targetAgent: "claude",
+  });
+  expect(result.alias).toBe("backend-claude-fork");
+  expect(result.agent).toBe("claude");
+  expect(input.createdRecords).toMatchObject([
+    { alias: "relay:backend-claude-fork", agent: "claude", workspace: "backend" },
+  ]);
+  // The source stays addressable: nothing renamed or removed it.
+  expect(input.removed).toEqual([]);
+  const record = store.getByTargetSessionId("logical-target")!;
+  expect(record.targetAgent).toBe("claude");
+  // The same bounded handoff a same-agent fork renders, consumed once by the
+  // target's first prompt (covered by the SessionTurnRunner tests above).
+  expect(store.getHandoff(record.id)!.text).toContain("past question");
+  store.close();
+});
+
+test("a switch inherits neither the source model nor its effort", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  input.configuredAgents = CONFIGURED_AGENTS;
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-claude-fork",
+    requestId: "req-switch-settings",
+    targetAgent: "claude",
+  });
+  expect(input.createdModels).toEqual([undefined]);
+  expect(input.effortApplied).toEqual([]);
+  store.close();
+});
+
+test("a same-agent fork keeps the model, effort, and source agent", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  input.configuredAgents = CONFIGURED_AGENTS;
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-same-agent",
+    targetAgent: "codex",
+  });
+  expect(input.createdModels).toEqual(["gpt-5.2[high]"]);
+  expect(input.effortApplied).toEqual([["relay:backend-fork", "high"]]);
+  expect(store.getByTargetSessionId("logical-target")?.targetAgent).toBe("codex");
+  store.close();
+});
+
+test("an unconfigured target agent is refused before any session is created", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  input.configuredAgents = [{ name: "codex", driver: "codex" }];
+  const control = new ControlService(controlDeps(input) as never);
+
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-gemini-fork",
+      requestId: "req-unconfigured",
+      targetAgent: "gemini",
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-agent-unavailable" });
+  expect(input.created).toEqual([]);
+  expect(store.getByRequestId("req-unconfigured")).toBeUndefined();
+  store.close();
+});
+
+test("a switch replay with the same target agent returns the existing branch", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  input.configuredAgents = CONFIGURED_AGENTS;
+  const control = new ControlService(controlDeps(input) as never);
+
+  const first = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-claude-fork",
+    requestId: "req-switch-replay",
+    targetAgent: "claude",
+  });
+  const replayed = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-claude-fork",
+    requestId: "req-switch-replay",
+    targetAgent: "claude",
+  });
+  expect(replayed.alias).toBe(first.alias);
+  expect(input.created).toEqual(["relay:backend-claude-fork"]);
+  store.close();
+});
+
+test("a switch replay naming a different target agent is a request mismatch", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  input.configuredAgents = CONFIGURED_AGENTS;
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-claude-fork",
+    requestId: "req-switch-agent-mismatch",
+    targetAgent: "claude",
+  });
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-claude-fork",
+      requestId: "req-switch-agent-mismatch",
+      targetAgent: "gemini",
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-request-mismatch" });
+  // A same-agent replay must not claim the switch record's target either.
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-claude-fork",
+      requestId: "req-switch-agent-mismatch",
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-request-mismatch" });
+  expect(input.created).toEqual(["relay:backend-claude-fork"]);
+  store.close();
+});
+
+/**
+ * Open a database written before the agent column existed, holding one ready
+ * fork row, so the migration path and the legacy replay rule run end to end.
+ */
+async function legacyAgentForkStore(): Promise<SessionForkStore> {
+  const path = join(mkdtempSync(join(tmpdir(), "session-fork-agent-")), "forks.sqlite");
+  const legacy = await createSqlDriver(path);
+  legacy.exec(`
+    CREATE TABLE session_forks (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,
+      source_session_id TEXT NOT NULL,
+      target_session_id TEXT NOT NULL UNIQUE,
+      source_alias TEXT,
+      target_alias TEXT,
+      chat_key TEXT,
+      source_point TEXT NOT NULL,
+      source_anchor TEXT,
+      strategy TEXT NOT NULL,
+      resolution TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      consumed_at TEXT
+    );
+    INSERT INTO session_forks
+      (id, request_id, source_session_id, target_session_id, source_alias, target_alias, chat_key, source_point, strategy, status, created_at)
+    VALUES ('fork_legacy', 'req-legacy-agent', 'logical-src', 'logical-target', 'backend', 'backend-fork', 'relay:acct', '{"type":"latest_stable"}', 'portable', 'ready', 'x');
+  `);
+  legacy.close();
+  return await SessionForkStore.open(path);
+}
+
+function legacyReplayInput(store: SessionForkStore): ForkTestInput {
+  const input = forkInput(store, HISTORY);
+  input.configuredAgents = CONFIGURED_AGENTS;
+  input.seedCreated = [{
+    alias: "relay:backend-fork",
+    agent: "codex",
+    workspace: "backend",
+    logicalSessionId: "logical-target",
+  }];
+  return input;
+}
+
+test("a legacy record without an agent replays only as a same-agent fork", async () => {
+  const store = await legacyAgentForkStore();
+  const control = new ControlService(controlDeps(legacyReplayInput(store)) as never);
+
+  expect(store.getByRequestId("req-legacy-agent")?.targetAgent).toBeUndefined();
+  const replayed = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-legacy-agent",
+  });
+  expect(replayed.alias).toBe("backend-fork");
+  expect(replayed.agent).toBe("codex");
+  store.close();
+});
+
+test("a legacy record refuses a switch replay from the live source", async () => {
+  const store = await legacyAgentForkStore();
+  const control = new ControlService(controlDeps(legacyReplayInput(store)) as never);
+
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork",
+      requestId: "req-legacy-agent",
+      targetAgent: "claude",
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-request-mismatch" });
+  store.close();
+});
+
+test("with the source deleted a legacy record replays only for its live target's agent", async () => {
+  const store = await legacyAgentForkStore();
+  const input = legacyReplayInput(store);
+  input.sources = [];
+  const control = new ControlService(controlDeps(input) as never);
+
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork",
+      requestId: "req-legacy-agent",
+      targetAgent: "claude",
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-request-mismatch" });
+  const replayed = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-legacy-agent",
+    targetAgent: "codex",
+  });
+  expect(replayed.alias).toBe("backend-fork");
   store.close();
 });

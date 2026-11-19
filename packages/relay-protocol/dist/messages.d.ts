@@ -455,6 +455,11 @@ export interface SessionsForkPayload {
     /** Absent forks the latest stable head. A `node` point is only accepted when
      *  the connector advertises `session.fork.message.v1`. */
     sourcePoint?: SessionForkSourcePointDto;
+    /** Optional switch target: a configured agent name that runs the new session.
+     *  Absent (or equal to the source agent) keeps the source agent. Only sent
+     *  when the connector advertises `session.fork.agent.v1`; older connectors
+     *  reject the shape, so the Web hides the entry without the capability. */
+    targetAgent?: string;
 }
 export type SessionsForkResult = SessionDto;
 export interface AgentsListResult {
@@ -1470,6 +1475,12 @@ export declare const RELAY_CAPABILITIES: {
      *  fork until this is advertised. Additive to `session.fork.handoff.v1`,
      *  whose semantics stay exactly the latest-stable head. */
     readonly sessionForkMessageV1: "session.fork.message.v1";
+    /** `control.sessions.fork` with an optional `targetAgent`: the core creates
+     *  the target session under a different configured agent in the same
+     *  workspace and hands off the same bounded history. Additive to
+     *  `session.fork.handoff.v1`; old connectors reject the shape, so the Web
+     *  hides the switch entry without this capability. */
+    readonly sessionForkAgentV1: "session.fork.agent.v1";
     /** A Group Roundtable target (`mode: "roundtable"`) is accepted end to end:
      *  the connector validator and the core both implement pre-generated
      *  sequential discussion. The Web hides the "discuss" entry when absent. */
