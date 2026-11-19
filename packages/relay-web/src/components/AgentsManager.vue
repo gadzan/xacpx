@@ -6,6 +6,7 @@ import { useInstancesStore } from "../stores/instances";
 import { confirm } from "../lib/use-confirm";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 import UiButton from "./UiButton.vue";
+import AgentReadinessRow from "./AgentReadinessRow.vue";
 
 const props = defineProps<{ instanceId: string }>();
 const store = useInstancesStore();
@@ -56,6 +57,13 @@ async function remove(name: string): Promise<void> {
 function hint(installed: string): string {
   return installed === "builtin" ? t("agents.builtin") : installed === "yes" ? t("agents.installed") : t("agents.cliNotDetected");
 }
+const workspaceNames = computed(() => inst.value?.workspaces.map((w) => w.name) ?? []);
+
+function installedHint(driver: string): string | undefined {
+  const entry = inst.value?.agentCatalog.find((c) => c.driver === driver);
+  if (!entry) return undefined;
+  return hint(entry.installed);
+}
 const driverGroups = computed<SelectGroup[]>(() => [
   {
     options: addableDrivers.value.map((c) => ({
@@ -74,13 +82,17 @@ const driverGroups = computed<SelectGroup[]>(() => [
            class="w-full rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
     <p v-if="!all.length" data-test="am-empty" class="text-sm text-fg-muted">{{ $t("agents.empty") }}</p>
     <ul v-else class="max-h-64 overflow-y-auto rounded-sm">
-      <li v-for="a in list" :key="a.name" class="flex items-center justify-between gap-2 px-3 py-2 text-sm">
-        <span class="min-w-0 truncate" :title="`${a.name} · ${a.driver}`">
-          <span class="font-medium text-fg">{{ a.name }}</span><span class="text-fg-muted"> · {{ a.driver }}</span>
-        </span>
-        <button :data-test="`am-remove-${a.name}`" :title="$t('agents.remove', { name: a.name })" :aria-label="$t('agents.removeAria', { name: a.name })"
-                class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
-                :disabled="busy" @click="remove(a.name)"><Trash2 :size="14" /></button>
+      <li v-for="a in list" :key="a.name" class="px-3 py-2 text-sm">
+        <div class="flex items-center justify-between gap-2">
+          <span class="min-w-0 truncate" :title="`${a.name} · ${a.driver}`">
+            <span class="font-medium text-fg">{{ a.name }}</span><span class="text-fg-muted"> · {{ a.driver }}</span>
+          </span>
+          <button :data-test="`am-remove-${a.name}`" :title="$t('agents.remove', { name: a.name })" :aria-label="$t('agents.removeAria', { name: a.name })"
+                  class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                  :disabled="busy" @click="remove(a.name)"><Trash2 :size="14" /></button>
+        </div>
+        <AgentReadinessRow :instance-id="props.instanceId" :agent-name="a.name" :driver="a.driver"
+                           :installed-hint="installedHint(a.driver)" :workspace-names="workspaceNames" />
       </li>
       <li v-if="!list.length" class="px-3 py-2 text-sm text-fg-muted">{{ $t("common.noMatch") }}</li>
     </ul>

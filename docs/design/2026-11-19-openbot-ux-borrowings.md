@@ -22,7 +22,8 @@ The rest of the OpenBot surface stays out of scope. A desktop Electron shell, an
 | PR | Change | Why this order |
 | --- | --- | --- |
 | UX1 | Cross-instance "Needs you" inbox | Reuses the existing interaction snapshot and removes the worst mobile failure: an agent waits and nobody sees it. |
-| UX2 | Provider status and connection wizard | Biggest first-run failure. It needs the attention and health surfaces from UX1. |
+| UX2a | Provider readiness, read-only | Biggest first-run failure. Reads only existing catalog and capability data; no install, sign-in, or update. |
+| UX2b | Provider install, update, and sign-in | Host-side actions behind a capability and host confirmation; needs a separate security review. |
 | UX3 | Switch agent on a logical session, with history handoff | Builds on the portable fork handoff and provider status. |
 | UX4 | Context policy and compaction actions | Uses the same session handoff and usage events. |
 | UX5 | Queue controls | Mostly Relay Web and existing TurnQueue RPCs. |
@@ -109,17 +110,40 @@ The destination must use the entry's own `instanceId`. Aliases and conversation 
 - The empty state shows no count and no button affordance.
 - Mobile layout keeps the row and the form usable at 390 px wide.
 
-## UX2: provider status and connection wizard
+## UX2a: provider readiness, read-only (this PR)
 
-The dashboard needs a provider page for each configured agent driver. It shows install source, version, sign-in state, model catalog, last error, and update availability. The host runs install, sign-in, and update. The browser starts the action and streams progress.
+The instance Agents area shows provider readiness for each configured agent,
+using only data the dashboard already reads:
 
-The first slice reads and displays state. It does not download binaries. Download support lands behind a capability and a host confirmation. The design follows OpenBot's separation between the provider descriptor, the host-side runtime, and the browser.
+- driver and configured name, with the catalog installed hint (`builtin`,
+  `yes`, `unknown`) when the `control.agents.catalog` entry exists.
+- capability state from `control.agents.capabilities.get`: `ready`,
+  `needs-setup`, `unsupported`, or `error`, with the daemon's short reason.
+- model count when ready, and the auth/setup hint when `needs-setup`.
+- a Check button that re-reads with `probe: true` for the selected agent +
+  workspace, rendered with the workspace it checked.
+- a workspace choice when the instance has several, because capability is per
+  agent + workspace (default: the first workspace).
+
+Reads ride the existing store cache and epoch/fence rules: a late answer for
+a superseded agent/workspace selection never overwrites the newer row, and
+Check stays disabled while the instance has no workspace. Mounting never
+starts a probe. There is no install, download, sign-in, or update action, and
+no new relay protocol, connector, daemon RPC, or installer.
+
+## UX2b: provider install, update, and sign-in (later)
+
+The host runs install, sign-in, and update; the browser starts the action and
+streams progress. Download support lands behind a capability and a host
+confirmation, and needs a separate security review (version pins, hashes, a
+blocklist, and rollback). The design follows OpenBot's separation between the
+provider descriptor, the host-side runtime, and the browser.
 
 ## UX3: switch agent on a logical session
 
 Add a "Continue with another agent" action. The source session history is rendered by the existing portable fork handoff. The target keeps the logical session identity and workspace, and the source stays as a branch. The target's first prompt consumes the handoff once. Replays use the stored request and source anchor.
 
-This action requires the provider status from UX2 so the dashboard can show whether the target agent is signed in and has models.
+This action requires the provider readiness from UX2a (and sign-in state from UX2b) so the dashboard can show whether the target agent is set up and has models.
 
 ## UX4: context policy
 
@@ -161,6 +185,6 @@ Add a diagnostics export with prompt text, tokens, cookies, file contents, and c
 ## Open decisions
 
 - UX1 uses a sidebar sheet, not a new route. A route would lose the chat context and make back navigation ambiguous on mobile.
-- UX2 starts read-only. A download action needs a separate security review.
+- UX2 splits: UX2a reads and shows readiness with the existing catalog and capability RPCs; UX2b adds install, update, and sign-in on the host. A download action needs a separate security review.
 - UX3 reuses the portable fork handoff instead of writing a second history renderer.
 - UX4 does not implement model summarization. The provider or the existing handoff owns it.
