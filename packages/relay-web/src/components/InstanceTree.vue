@@ -11,7 +11,7 @@ import { useGroupsStore } from "../stores/groups";
 import { detachSessionTerminal } from "../lib/session-terminal";
 import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
-import { pushToast } from "../lib/use-toasts";
+import { dismissToast, pushToast } from "../lib/use-toasts";
 import { useSwipeActions } from "../lib/use-swipe-actions";
 import { useDropdown } from "../lib/use-dropdown";
 import type { DropdownGroup } from "../lib/use-dropdown";
@@ -574,6 +574,7 @@ async function onFork(inst: InstanceView, sourceAlias: string): Promise<void> {
   const key = `${inst.id}:${sourceAlias}`;
   if (forkingFor.value === key) return;
   forkingFor.value = key;
+  const pending = pushToast("loading", "instance.forkPending", { alias: sourceAlias }, 0);
   try {
     const created = await store.forkSession(
       inst.id,
@@ -593,6 +594,7 @@ async function onFork(inst: InstanceView, sourceAlias: string): Promise<void> {
     }
     pushToast("error", "instance.forkFailed", { msg: message });
   } finally {
+    dismissToast(pending);
     if (forkingFor.value === key) forkingFor.value = null;
   }
 }
@@ -615,7 +617,9 @@ async function onSwitchAgent(
 ): Promise<void> {
   menuDd.closeMenu();
   if (switchingAgentFor.value !== null) return;
-  switchingAgentFor.value = `${inst.id}:${sourceAlias}:${targetAgent}`;
+  const key = `${inst.id}:${sourceAlias}:${targetAgent}`;
+  switchingAgentFor.value = key;
+  const pending = pushToast("loading", "instance.switchAgentPending", { agent: targetAgent }, 0);
   try {
     const created = await store.forkSessionAtAgent(inst.id, sourceAlias, targetAgent);
     pushToast("success", "instance.switchAgentCreated", { alias: created.alias, agent: targetAgent });
@@ -630,8 +634,20 @@ async function onSwitchAgent(
     }
     pushToast("error", "instance.switchAgentFailed", { msg: message });
   } finally {
-    switchingAgentFor.value = null;
+    dismissToast(pending);
+    if (switchingAgentFor.value === key) switchingAgentFor.value = null;
   }
+}
+
+const deletingFor = ref<string | null>(null);
+
+/** The row whose menu action is in flight: a spinner replaces its attention dot
+ *  until the RPC settles, so the sidebar never looks idle after a menu closes. */
+function sessionActionPending(instanceId: string, alias: string): boolean {
+  const key = `${instanceId}:${alias}`;
+  return forkingFor.value === key
+    || deletingFor.value === key
+    || switchingAgentFor.value?.startsWith(`${key}:`) === true;
 }
 
 /** ⋯ menu activation: rename / fork / switch agent / sleep / wake / delete for the row it serves. */
@@ -772,6 +788,9 @@ async function askDelete(id: string, alias: string) {
   // Deleting the session you're viewing drops the view back to the empty "no session"
   // state rather than leaving a stale, now-broken selection pointed at it.
   const wasActive = isSelected(id, alias);
+  const rowKey = `${id}:${alias}`;
+  deletingFor.value = rowKey;
+  const pending = pushToast("loading", "instance.deletePending", { alias }, 0);
   // RPC FIRST (same rationale as onArchive): a rejected removal must keep the tabs,
   // terminal viewer and selection intact. The tail-cache purge inside the store
   // already only runs on a successful delete.
@@ -780,7 +799,11 @@ async function askDelete(id: string, alias: string) {
   } catch (e) {
     pushToast("error", "instance.sessionDeleteFailed", { alias, msg: e instanceof Error ? e.message : String(e) });
     return;
+  } finally {
+    dismissToast(pending);
+    if (deletingFor.value === rowKey) deletingFor.value = null;
   }
+  pushToast("success", "instance.sessionDeleted", { alias });
   // Drop this session's center tabs so they unmount along with it. Browser detaches only;
   // channel-relay owns resource retirement for deleted sessions.
   const key = sessionKey(id, alias);
@@ -1215,7 +1238,9 @@ const rowSwipes = computed(() => {
                   class="relative flex min-h-[52px] lg:min-h-0 min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
                   @click="onRowTap(inst.id, s.alias)"
                 >
-                  <Loader2 v-if="s.creating" data-test="session-creating" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
+                  <Loader2 v-if="s.creating || sessionActionPending(inst.id, s.alias)"
+                            :data-test="s.creating ? 'session-creating' : 'session-action-pending'"
+                            :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
                   <!-- A blocking question outranks every other signal: the turn is
                        parked until someone answers, and the form itself only renders
                        inside that session's pane, so a dot here is the only thing an

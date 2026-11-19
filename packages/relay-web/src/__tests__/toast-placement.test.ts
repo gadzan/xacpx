@@ -56,4 +56,18 @@ describe("ToastHost placement", () => {
     const icon = toast.querySelector("svg")!;
     expect(icon.getAttribute("class") ?? "").toContain("text-danger-overlay");
   });
+
+  it("renders a loading toast with a spinner and no auto-dismiss", async () => {
+    const w = mount(ToastHost, { attachTo: document.body, global: { plugins: [i18n] } });
+    mounted.push(w);
+    const id = pushToast("loading", "instance.switchAgentPending", { agent: "claude" }, 0);
+    await flushPromises();
+
+    const toast = document.querySelector<HTMLElement>('[data-test="toast"]')!;
+    expect(toast.textContent).toContain("Switching to claude");
+    expect(toast.querySelector("svg")?.getAttribute("class") ?? "").toContain("animate-spin");
+    dismissToast(id);
+    await nextTick();
+    expect(document.querySelector('[data-test="toast"]')).toBeNull();
+  });
 });
