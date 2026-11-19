@@ -30,7 +30,7 @@ API、缓存身份与刷新生命周期。
 | 冷探测     | 用 `acpx/runtime` 的公开 `inspectAgentModels()` 替换 `sessions new → status → show → close → delete record` 命令链   |
 | 启动解析   | 探测必须复用 xacpx 正常会话的 Agent Launch 解析结果；不能自行拼装一套不同的命令                                      |
 | 导入边界   | 只从公开 `acpx/runtime` 导入；新增唯一受控封装，并更新 `scripts/lint-acpx-imports.mjs` allowlist                     |
-| 缓存身份   | fingerprint v2 至少纳入 agent、规范化 cwd、driver、完整有效 launch、settingsPolicy、adapter 版本/registry 和认证修订 |
+| 缓存身份   | fingerprint v2 纳入 agent、driver、完整有效 launch、settingsPolicy、adapter 版本/registry 和认证修订。不纳入 workspace cwd：同一 daemon 上该 agent 的各工作区共用一份目录 |
 | 缓存时效   | 正向模型目录采用 15 分钟 soft TTL；过期数据可展示为 stale，但不能冒充刚验证结果                                      |
 | 刷新       | 同 fingerprint single-flight；generation fencing 防止失效前的旧探测回写                                              |
 | 读取优先级 | Bot 自有活跃 Runtime → 同身份 fresh cache → 同身份新鲜活跃 Session → stale cache → `needs-setup`                     |
@@ -541,7 +541,6 @@ interface CapabilityFingerprintV2 {
   schemaVersion: 2;
   agent: string;
   driver: string;
-  canonicalCwd: string;
   settingsPolicy: string;
   launchDigest: string;
   resolvedAgentCommandDigest: string;
@@ -564,7 +563,6 @@ const key = sha256(stableSerialize(fingerprintV2));
 |------------------------------|----------------------------------------------------------------------|
 | `agent`                      | 区分配置中的 Agent 名称                                              |
 | `driver`                     | 防止同一个 Agent 配置切换 driver 后误用旧目录                        |
-| `canonicalCwd`               | 使用 realpath / 平台规范化后的 workspace 身份                        |
 | `settingsPolicy`             | 区分 Claude provider-only / isolated / full-user                     |
 | `launchDigest`               | 覆盖 agentCommand、acpxAgent、rawCommand、agentArgv 的完整身份       |
 | `resolvedAgentCommandDigest` | 覆盖最终实际执行 argv，防止 overlay / registry / local fallback 漂移 |
@@ -572,6 +570,8 @@ const key = sha256(stableSerialize(fingerprintV2));
 | `adapterRegistryDigest`      | registry 来源变化时换 key                                            |
 | `configRevision`             | 认证外的 Agent 运行配置发生变化时换 key                              |
 | `authRevision`               | 登录状态或认证材料变化时换 key                                       |
+
+实例不进指纹：每个 daemon 只读写自己的 `state.json`。探测仍在请求的 cwd 里启动，但结果按上面的身份共享，不按目录各存一份。拿掉 cwd 后旧的 v2 key 对不上，不做迁移；下一次显式刷新写入新 key。
 
 ### 6.2 凭证处理
 
@@ -597,7 +597,6 @@ const key = sha256(stableSerialize(fingerprintV2));
 ### 6.3 必须覆盖的失效边界
 
 - agent 名称或 driver 变化
-- workspace cwd / realpath 变化
 - `settingsPolicy` 变化
 - command / argv / acpxAgent / rawCommand 变化
 - managed adapter 版本或 preinstalled release 变化

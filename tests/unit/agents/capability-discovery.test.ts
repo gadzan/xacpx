@@ -346,7 +346,6 @@ test("fingerprint v2 rotates the key per identity field", () => {
     schemaVersion: 2 as const,
     agent: "codex",
     driver: "codex",
-    canonicalCwd: "/repo",
     settingsPolicy: "none",
     launchDigest: "launch",
     resolvedAgentCommandDigest: "resolved",
@@ -357,7 +356,6 @@ test("fingerprint v2 rotates the key per identity field", () => {
   expect(key.startsWith("v2:")).toBe(true);
   const rotate = (patch: Partial<typeof base>) => fingerprintV2Key({ ...base, ...patch });
   expect(rotate({ driver: "claude" })).not.toBe(key);
-  expect(rotate({ canonicalCwd: "/other" })).not.toBe(key);
   expect(rotate({ settingsPolicy: "isolated" })).not.toBe(key);
   expect(rotate({ launchDigest: "other" })).not.toBe(key);
   expect(rotate({ resolvedAgentCommandDigest: "other" })).not.toBe(key);
@@ -365,6 +363,33 @@ test("fingerprint v2 rotates the key per identity field", () => {
   expect(rotate({ configRevision: "other" })).not.toBe(key);
   expect(rotate({ adapterVersion: "1.0.0" })).not.toBe(key);
   expect(fingerprintV2Key(base)).toBe(key);
+});
+
+test("a verified list is reused for another workspace of the same agent", async () => {
+  const persisted = new Map<string, CachedCapabilityV2>();
+  let probes = 0;
+  const service = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    resolve: (_agent, workspace) => ({
+      cwd: workspace === "backend" ? "/repo" : "/other",
+      driver: "codex",
+      launch: structuredLaunch(),
+      suggestions: [],
+    }),
+    probe: async () => {
+      probes += 1;
+      return { ok: true, models: [{ modelId: "gpt-shared", name: "GPT Shared" }], efforts: [] };
+    },
+  }), store(persisted));
+  const fetched = await service.get({ agent: "codex", workspace: "backend", probe: true });
+  expect(fetched.status).toBe("ready");
+  const other = await service.get({ agent: "codex", workspace: "frontend" });
+  expect(probes).toBe(1);
+  expect(persisted.size).toBe(1);
+  expect(other.status).toBe("ready");
+  if (other.status !== "ready") return;
+  expect(other.source).toBe("cache");
+  expect(other.models.map((model) => model.modelId)).toEqual(["gpt-shared"]);
 });
 
 test("a persisted list is served after the cache object is replaced", async () => {

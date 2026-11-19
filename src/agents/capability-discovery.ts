@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 
 import {
   emptyCapability,
@@ -71,11 +70,14 @@ export interface CapabilityAdvertisement {
   effortKnown: boolean;
 }
 
+/** Cache identity for one agent's model catalog on this daemon.
+ * Workspace cwd is deliberately absent: every workspace of this agent reuses
+ * one list. Driver, launch, adapter pin, and auth still rotate the key.
+ * The daemon's own state.json is the instance boundary. */
 export interface CapabilityFingerprintV2 {
   schemaVersion: 2;
   agent: string;
   driver: string;
-  canonicalCwd: string;
   settingsPolicy: string;
   launchDigest: string;
   resolvedAgentCommandDigest: string;
@@ -331,7 +333,7 @@ export class AgentCapabilityService {
     return needsSetupCapability(
       {
         code: "discovery-available",
-        message: "no saved model list for this agent, workspace, and adapter",
+        message: "no saved model list for this agent and adapter",
       },
       "Fetch the model list. That starts a short adapter probe and removes it when finished.",
       { ...draftBase, fetchedAt: this.deps.now(), efforts: { status: "unavailable" } },
@@ -867,20 +869,11 @@ function matchesLaunchIdentity(
   return launchFingerprint(actual) === launchFingerprint(expected.launch);
 }
 
-export function canonicalizeCapabilityCwd(cwd: string): string {
-  try {
-    return realpathSync(cwd);
-  } catch {
-    return cwd;
-  }
-}
-
 function fingerprintOf(agent: string, resolved: CapabilityContext, launch: ModelProbeLaunch): CapabilityFingerprintV2 {
   return {
     schemaVersion: CAPABILITY_FINGERPRINT_VERSION,
     agent,
     driver: resolved.driver,
-    canonicalCwd: canonicalizeCapabilityCwd(resolved.cwd),
     settingsPolicy: launch.identity.settingsPolicy,
     launchDigest: launch.identity.launchDigest,
     resolvedAgentCommandDigest: launch.identity.resolvedAgentCommandDigest,
@@ -898,7 +891,6 @@ export function fingerprintV2Key(fingerprint: CapabilityFingerprintV2): string {
     schemaVersion: fingerprint.schemaVersion,
     agent: fingerprint.agent,
     driver: fingerprint.driver,
-    canonicalCwd: fingerprint.canonicalCwd,
     settingsPolicy: fingerprint.settingsPolicy,
     launchDigest: fingerprint.launchDigest,
     resolvedAgentCommandDigest: fingerprint.resolvedAgentCommandDigest,
