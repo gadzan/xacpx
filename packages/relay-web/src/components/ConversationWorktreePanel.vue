@@ -3,6 +3,7 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { MSG, isErrorPayload, isConversationWorktreeStatus, type ConversationWorktreePayload, type ConversationWorktreeStatusDto } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { randomUuid } from "../lib/random-id";
 const props = defineProps<{ instanceId: string; runId: string }>();
 const { t } = useI18n();
 const status = ref<ConversationWorktreeStatusDto>();
@@ -53,7 +54,7 @@ async function operate(action: ConversationWorktreePayload["action"]): Promise<v
   const current = status.value; if (!current) return;
   const input: ConversationWorktreePayload = action === "preview"
     ? { action, runId: props.runId, botIds: current.resources.filter(r => r.kind === "member").map(r => r.botId) }
-    : action === "integrate" ? { action, runId: props.runId, requestId: crypto.randomUUID(), previewId: current.preview!.id, snapshotUncommitted: true }
+    : action === "integrate" ? { action, runId: props.runId, requestId: randomUuid(), previewId: current.preview!.id, snapshotUncommitted: true }
     : { action, runId: props.runId };
   const expected = epoch; busy.value = true; error.value = "";
   // Invalidate polls already in flight: this operation now owns the panel, and

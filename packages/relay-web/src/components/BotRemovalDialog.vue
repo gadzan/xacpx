@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { BotRemovalPreviewDto, LifecycleOperationDto } from "@ganglion/xacpx-relay-protocol";
 import { pushToast } from "../lib/use-toasts";
+import { randomUuid } from "../lib/random-id";
 import DialogShell from "./DialogShell.vue";
 
 const props = defineProps<{
@@ -31,7 +32,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const impact = ref<BotRemovalPreviewDto | null>(null);
 const operation = ref<LifecycleOperationDto | null>(null);
-const requestId = ref<string>(crypto.randomUUID());
+const requestId = ref<string>(randomUuid());
 const clearDirectHistory = ref(false);
 const releaseDirectBindings = ref(false);
 const deleteDedicatedWorkspace = ref(false);

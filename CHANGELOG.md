@@ -6,6 +6,10 @@
 - 会话可改用另一已配置智能体继续（UX3）：会话菜单中的「改用其他智能体继续」在同一工作区创建新的逻辑会话分支，源会话及其 id 保持可寻址；分支复用现有可移植分叉交接，首条生效 prompt 只消费一次交接块；只列出已配置智能体并排除源智能体，不创建或安装驱动（#606）。
 - `control.sessions.fork` 新增可选 `targetAgent`，并广播能力位 `session.fork.agent.v1`（附加在 `session.fork.handoff.v1` 之上）：旧连接器会拒收该载荷，所以 Relay Web 在缺少能力位时隐藏入口。切换目标不继承源模型与 effort，未配置目标以 `session-fork-agent-unavailable` 拒绝。分叉记录持久化生效目标智能体（含迁移），重放不同目标以 `session-fork-request-mismatch` 拒绝；无该列的旧记录只在请求目标为源智能体、或已解析目标实际智能体一致时才重放（#606）。
 
+### Fixed
+
+- 修复非安全上下文（局域网或 Tailscale 的 `http://` 地址）下 `crypto.randomUUID` 不存在时，会话分叉、切换智能体等请求 id 生成直接抛错的问题；改用兼容 `crypto.getRandomValues` 的 UUID v4 生成器。
+
 ## [relay 0.14.12-beta.24] - 2026-11-19
 
 ### Changed

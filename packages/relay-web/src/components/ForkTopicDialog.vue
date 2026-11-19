@@ -5,6 +5,7 @@ import type { ConversationRunDto, TopicSummaryDto } from "@ganglion/xacpx-relay-
 import DialogShell from "./DialogShell.vue";
 import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
+import { randomUuid } from "../lib/random-id";
 
 /** The one fork call both panes share. The dialog owns the ids and the error
  *  mapping; the pane owns which store performs the RPC, so Group and Direct
@@ -45,8 +46,8 @@ const creating = ref(false);
 // one exception is `topic_fork_history_missing`: the core fails closed rather
 // than adopting a damaged target, so the next click must start over with a
 // fresh pair or it would replay the same unrecoverable ids forever.
-const targetTopicId = ref(`topic_${crypto.randomUUID()}`);
-const requestId = ref(crypto.randomUUID());
+const targetTopicId = ref(`topic_${randomUuid()}`);
+const requestId = ref(randomUuid());
 
 const hint = computed(() =>
   props.mode === "handoff" ? t("group.topic.forkHintHandoff") : t("group.topic.forkHint"),
@@ -113,8 +114,8 @@ async function handleFork(): Promise<void> {
       ? (err as { code: string }).code
       : "failed";
     if (code === "topic_fork_history_missing") {
-      targetTopicId.value = `topic_${crypto.randomUUID()}`;
-      requestId.value = crypto.randomUUID();
+      targetTopicId.value = `topic_${randomUuid()}`;
+      requestId.value = randomUuid();
     }
     errorCode.value = code;
   } finally {

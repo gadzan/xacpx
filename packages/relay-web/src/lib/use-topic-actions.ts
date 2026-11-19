@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import { randomUuid } from "./random-id";
 
 export type TopicIsolation = "shared" | "shared-single-writer" | "worktree-per-member";
 
@@ -91,7 +92,7 @@ export function useTopicActions(handlers: TopicActionHandlers) {
   async function openConfirm(kind: "delete" | "clear", topic: TopicSummaryDto): Promise<void> {
     confirmKind.value = kind;
     confirmTopicId.value = topic.id;
-    confirmRequestId.value = crypto.randomUUID();
+    confirmRequestId.value = randomUuid();
     releaseBindings.value = false;
     confirmImpact.value = null;
     actionError.value = null;
