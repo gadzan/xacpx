@@ -267,10 +267,9 @@ export function useIsMobile(): Ref<boolean> {
  *  `aria-activedescendant`, and the menu opens from the typed text rather than
  *  from a trigger click. So this borrows only useDropdown's outside-click half
  *  — a pointerdown outside `root` (the composer card) and outside any surface
- *  marked `data-completion-surface` (the popover, or the mobile sheet that
- *  teleports to <body>) closes the menu without moving focus. Escape and the
- *  row keys stay in the composer, which already routes them through
- *  `completionKey`.
+ *  marked `data-completion-surface` (the popover, or the mobile sheet) closes the
+ *  menu without moving focus. Escape and the row keys stay in the composer, which
+ *  already routes them through `completionKey`.
  */
 export function useCompletionDismiss(
   root: Ref<HTMLElement | null>,

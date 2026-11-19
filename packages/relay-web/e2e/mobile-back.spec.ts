@@ -122,6 +122,10 @@ test.describe("mobile back navigation", () => {
     await page.getByTestId("ns-agent").click();
     await expect(page.locator('[role="dialog"]:visible')).toHaveCount(2);
     expect((await backTag(page))?.depth).toBe(2);
+    // Row labels start at the row's left edge: the two-line row box is full width,
+    // so a button's default centred text would push every label to the middle.
+    expect(await page.locator('[role="dialog"] [role="option"]').first()
+      .evaluate((el) => getComputedStyle(el).textAlign)).toBe("left");
 
     // Back #1 closes only the sheet; the dialog stays.
     await page.goBack();

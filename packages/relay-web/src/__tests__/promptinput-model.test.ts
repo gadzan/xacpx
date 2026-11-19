@@ -225,8 +225,8 @@ it("a phone tap on the model chip keeps the composer open and shows the sheet", 
     });
     const w = mount(PromptInput, {
       props: { instanceId: "i1", sessionAlias: "backend" },
-      // The mobile model sheet teleports in the app; render it in place here so
-      // the wrapper can assert it (teleport is covered by the mobile-sheet suite).
+      // Keep Teleport inline so the wrapper can assert the sheet; the escape path
+      // is covered by the mobile-sheet suite.
       global: { plugins: [pinia], stubs: { teleport: true } },
       attachTo: document.body,
     });

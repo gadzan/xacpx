@@ -49,7 +49,7 @@ async function drag(clientYs: number[]): Promise<void> {
 describe("MobileSheet pull-to-close", () => {
   it("renders a decorative grab handle: a centred 36x5 rounded bar", () => {
     const wrapper = mountSheet();
-    // The sheet teleports to <body>, so assertions read the document.
+    // The wrapper holds the sheet in place here; the escape path is its own case.
     const grabber = grabberEl();
     expect(grabber).not.toBeNull();
     expect(grabber.getAttribute("aria-hidden")).toBe("true");

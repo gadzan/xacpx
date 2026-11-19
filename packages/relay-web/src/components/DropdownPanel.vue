@@ -200,7 +200,7 @@ const listRole = computed(() => props.role ?? "listbox");
               :data-test="row.testId"
               :disabled="row.disabled" :aria-selected="row.selected"
               :title="row.sub ?? undefined"
-              class="flex min-h-11 w-full items-center gap-3 rounded-item px-3 text-ui"
+              class="flex min-h-11 w-full items-center gap-3 rounded-item px-3 text-left text-ui"
               :class="rowClass(row, true)"
               @click="activate(row)">
         <component :is="row.icon" v-if="row.icon" :size="16" class="shrink-0 text-fg-muted-overlay" />
@@ -244,7 +244,7 @@ const listRole = computed(() => props.role ?? "listbox");
                 :data-value="row.value"
                 :data-test="row.testId"
                 :disabled="row.disabled" :aria-selected="row.selected"
-                class="flex w-full items-center gap-2 rounded-item px-2 text-ui"
+                class="flex w-full items-center gap-2 rounded-item px-2 text-left text-ui"
                 :class="[rowClass(row, false), row.sub ? 'min-h-[30px] py-1' : 'h-[30px]']"
                 :title="row.sub ?? undefined"
                 @click="activate(row)" @mouseenter="!row.disabled && (dd.highlight = navIndexOf(row))">
