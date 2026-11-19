@@ -3,12 +3,14 @@ import {
   bootstrapBuiltinChannelFactories,
   hasChannelFactory,
   registerChannelFactory,
+  unregisterChannelFactory,
 } from "./create-channel.js";
 import type { ChannelCliProvider } from "./cli/provider.js";
 import {
   bootstrapBuiltinChannelCliProviders,
   hasChannelCliProvider,
   registerChannelCliProvider,
+  unregisterChannelCliProvider,
 } from "./cli/registry.js";
 import type { ChannelRuntimeConfig } from "../config/types.js";
 
@@ -60,6 +62,17 @@ export function registerChannelPlugin(plugin: ChannelPluginDefinition): void {
 
 export function getChannelRetireHook(type: string): ChannelRetireHook | undefined {
   return retireHooks.get(type);
+}
+
+/**
+ * Only for plugin types; the built-in registrations are process-lifetime and
+ * must not be removed.
+ */
+export function unregisterChannelPlugin(type: string): void {
+  const channelType = type.trim();
+  unregisterChannelFactory(channelType);
+  unregisterChannelCliProvider(channelType);
+  retireHooks.delete(channelType);
 }
 
 /** Dispatch `channel disable|rm` retirement to the loaded plugin for this type. */

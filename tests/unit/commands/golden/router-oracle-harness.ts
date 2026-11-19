@@ -7,6 +7,7 @@ import type { SessionAgentCommandResolver } from "../../../../src/transport/acpx
 import type { OrchestrationRouterOps } from "../../../../src/commands/router-types";
 import type { PerfSpan } from "../../../../src/perf/perf-tracer";
 import { createConfig } from "../command-router-test-support";
+import { resolveAcpOutputGuardEntry } from "../../../../src/adapters/acp-output-guard";
 
 // One ordered log across every collaborator the router touches. Call order = execution
 // order (the router awaits each collaborator call in sequence). Time-varying fields are
@@ -21,13 +22,33 @@ function makeRecorder() {
 // ordered record. createProgressHandler embeds `elapsed`/`\d+s` into progress replies and
 // session records carry ISO timestamps; scrub every possible time/second marker so fixtures
 // are byte-identical across runs (control-service's oracle went flaky by skipping this).
+
+// Windows renders an agent identity by quoting each argv element and DOUBLING every
+// backslash inside it (cmd.exe round-trip semantics), so the runtime path as it appears in
+// a recorded identity is not `process.execPath` verbatim. Scrub both forms.
+const GUARD_ENTRY = resolveAcpOutputGuardEntry();
+const PATH_SCRUBS: ReadonlyArray<readonly [string, string]> = [
+  [process.execPath, "<runtime>"],
+  [process.execPath.replaceAll("\\", "\\\\"), "<runtime>"],
+  [GUARD_ENTRY, "<xacpx>/src/adapters/acp-output-guard-main.ts"],
+  [GUARD_ENTRY.replaceAll("\\", "\\\\"), "<xacpx>/src/adapters/acp-output-guard-main.ts"],
+  [GUARD_ENTRY.replaceAll("\\", "/"), "<xacpx>/src/adapters/acp-output-guard-main.ts"],
+];
 function scrubText(text: string): string {
-  return text
+  let scrubbed = text;
+  for (const [needle, replacement] of PATH_SCRUBS) {
+    scrubbed = scrubbed.replaceAll(needle, replacement);
+  }
+  return scrubbed
+    // A rendered identity quotes each argv element on Windows and joins them
+    // bare on POSIX. Drop the quotes around the scrubbed placeholder tokens so
+    // the fixture stays byte-identical across platforms (the quoting itself is
+    // covered by renderAgentArgvIdentity's own tests).
+    .replaceAll('"<runtime>"', "<runtime>")
+    .replaceAll('"<xacpx>/src/adapters/acp-output-guard-main.ts"', "<xacpx>/src/adapters/acp-output-guard-main.ts")
     // New structured sessions deliberately persist the real guard wrapper in
     // agent identity. Keep this characterization fixture independent of the
     // local Bun/Node and checkout paths used to run the oracle.
-    .replaceAll(process.execPath, "<runtime>")
-    .replaceAll(`${process.cwd()}/src/adapters/acp-output-guard-main.ts`, "<xacpx>/src/adapters/acp-output-guard-main.ts")
     .replace(/xacpx-managed-(?!codex-3cf7475b4e53\b)[A-Za-z0-9_-]+-[a-f0-9]{12}/g, "xacpx-managed-<driver>-<hash>")
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, "<ts>")
     .replace(/\belapsed \d+/g, "elapsed <n>")

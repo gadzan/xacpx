@@ -124,8 +124,11 @@ test("ensureConfigExists normalizes injected default config templates", async ()
       nonInteractivePermissions: "deny",
     });
     // The seed always injects only `home`, ignoring the template's own workspaces;
-    // `~` is expanded to the real home dir on load.
-    expect(parsed.workspaces).toEqual({ home: { cwd: homedir(), description: "home directory" } });
+    // `~` is expanded to the real home dir on load (forward-slashed, the
+    // canonical stored form).
+    expect(parsed.workspaces).toEqual({
+      home: { cwd: homedir().replaceAll("\\", "/"), description: "home directory" },
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

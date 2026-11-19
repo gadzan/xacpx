@@ -14,6 +14,11 @@ export function listKnownChannelIds(): string[] {
   return Array.from(KNOWN_CHANNEL_IDS);
 }
 
+/** Never call this for a built-in id: it would drop it from the known-channel report. */
+export function unregisterKnownChannelId(channelId: string): void {
+  KNOWN_CHANNEL_IDS.delete(channelId.trim());
+}
+
 /**
  * Which channel a chatKey belongs to.
  *

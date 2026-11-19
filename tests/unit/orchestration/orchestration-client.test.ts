@@ -694,7 +694,23 @@ test("client request times out when server does not respond", async () => {
   // Should fail within ~200ms, not hang
   expect(elapsed).toBeLessThan(1000);
 
-  await new Promise<void>((resolve) => netServer.close(() => resolve()));
+  // Bounded close: on Windows a named-pipe server with a client that timed out
+  // (rather than closing cleanly) may never fire the close callback, which
+  // would hang the test until bun's own timeout.
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    netServer.close(() => done());
+    setTimeout(() => {
+      netServer.closeAllConnections?.();
+      done();
+    }, 1_000).unref?.();
+  });
   await rm(dir, { recursive: true });
 });
 

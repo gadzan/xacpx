@@ -857,13 +857,22 @@ export class RuntimeWorkerManager {
       selfDischargeWaitMs: opts?.selfDischargeWaitMs ?? deps?.selfDischargeWaitMs,
       readBack: async () => await fence.read(logicalSessionId),
       markDischarged: async (current, from) => {
-        await this.enqueueFenceWrite(logicalSessionId, () =>
-          fence.compareAndSwap(
+        await this.enqueueFenceWrite(logicalSessionId, async () => {
+          // The owner can retire its OWN fence while we still prove it gone.
+          // The Windows identity probes take seconds, and a worker that stops
+          // inside that window unlinks its generation before this write lands.
+          // Absence is the terminal state discharge exists to reach, so a
+          // vanished record is SUCCESS. Without this the CAS fails with "found
+          // no record" and the next prompt fails. A record that names a
+          // different generation or phase still refuses in the CAS below.
+          const pre = await fence.read(logicalSessionId);
+          if (pre.kind === "absent") return;
+          await fence.compareAndSwap(
             logicalSessionId,
             { generation: current.generation, from },
             { ...current, phase: "discharged" },
-          ),
-        );
+          );
+        });
       },
       spooledResidualsRemaining: deps?.spooledResidualsRemaining ?? (async (generationId) => {
         // Round 32 Blocking 3 default handshake: residuals whose

@@ -4,7 +4,7 @@ import type { AppConfig, ChannelRuntimeConfig } from "../../../src/config/types"
 import { handleChannelCli } from "../../../src/channels/cli/channel-cli";
 import { getChannelCliProvider, hasChannelCliProvider, listChannelCliProviders } from "../../../src/channels/cli/registry";
 import { hasChannelFactory } from "../../../src/channels/create-channel";
-import { registerChannelPlugin } from "../../../src/channels/plugin";
+import { registerChannelPlugin, unregisterChannelPlugin } from "../../../src/channels/plugin";
 import feishuPlugin from "../../../packages/channel-feishu/src/index";
 import { setLocale, t } from "../../../src/i18n";
 // The feishu provider's validateConfig runs outside start(), so it uses the
@@ -12,8 +12,19 @@ import { setLocale, t } from "../../../src/i18n";
 // core's setLocale cannot reach the plugin catalog (bundle isolation).
 import { setChannelLocale } from "../../../packages/channel-feishu/src/i18n";
 
+/**
+ * Plugin types THIS file registered. Bun runs every test file in one process,
+ * so a registration left behind leaks into later files — moved-channel-hints
+ * asserts the "plugin not installed" hints, which only hold on a clean
+ * registry. afterAll puts the process back the way it found it.
+ */
+const registeredHere: string[] = [];
+
 beforeAll(() => { setLocale("zh"); setChannelLocale("zh"); });
-afterAll(() => { setLocale("en"); setChannelLocale("en"); });
+afterAll(() => {
+  setLocale("en"); setChannelLocale("en");
+  for (const type of registeredHere) unregisterChannelPlugin(type);
+});
 
 function ensureFeishuPluginRegisteredForTest(): void {
   const factoryRegistered = hasChannelFactory("feishu");
@@ -21,7 +32,10 @@ function ensureFeishuPluginRegisteredForTest(): void {
   if (factoryRegistered !== cliProviderRegistered) {
     throw new Error("inconsistent feishu test registration state");
   }
-  if (!factoryRegistered) registerChannelPlugin(feishuPlugin.channels![0]!);
+  if (!factoryRegistered) {
+    registerChannelPlugin(feishuPlugin.channels![0]!);
+    registeredHere.push("feishu");
+  }
 }
 
 function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -603,7 +617,7 @@ test("channel list shows empty message when no channels", async () => {
   expect(harness.lines).toEqual([t().channelCli.noChannels]);
 });
 
-import { registerChannelPlugin } from "../../../src/channels/plugin";
+import { registerChannelPlugin, unregisterChannelPlugin } from "../../../src/channels/plugin";
 import { hasChannelFactory } from "../../../src/channels/create-channel";
 import { hasChannelCliProvider } from "../../../src/channels/cli/registry";
 import yuanbaoPlugin from "../../../packages/channel-yuanbao/src/index";
@@ -614,7 +628,10 @@ function registerYuanbaoPluginForTest(): void {
   if (factoryRegistered !== cliProviderRegistered) {
     throw new Error("inconsistent yuanbao test registration state");
   }
-  if (!factoryRegistered) registerChannelPlugin(yuanbaoPlugin.channels![0]!);
+  if (!factoryRegistered) {
+    registerChannelPlugin(yuanbaoPlugin.channels![0]!);
+    registeredHere.push("yuanbao");
+  }
 }
 
 test("channel add yuanbao works after the yuanbao plugin is registered", async () => {

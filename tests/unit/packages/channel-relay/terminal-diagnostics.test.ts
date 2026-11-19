@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
@@ -89,8 +89,13 @@ test("diagnose fails when configured bridgeCommand path is missing", async () =>
 });
 
 test("redactPathForDoctor never echoes HOME prefix", () => {
-  const home = process.env.HOME ?? "/tmp";
-  expect(redactPathForDoctor(join(home, ".xacpx", "relay"))).toBe("~/.xacpx/relay");
+  // homedir(), not $HOME: Windows has no HOME (it uses USERPROFILE), so the
+  // env-based fallback would build a path that is not the home dir at all.
+  const home = homedir();
+  // The replacement keeps the input's own separators, so build the expectation
+  // the same way instead of pinning a POSIX spelling.
+  const suffix = join(home, ".xacpx", "relay").slice(home.length);
+  expect(redactPathForDoctor(join(home, ".xacpx", "relay"))).toBe(`~${suffix}`);
 });
 
 test("relayCliProvider.diagnose is wired and skips by default", async () => {
@@ -115,25 +120,27 @@ function writeProbeScript(content: string): string {
   return path;
 }
 
-test("probeRmuxVersion parses a matching version as healthy", () => {
+// A shebang script is not executable on Windows, so the probe cases that
+// plant one as the fake `rmux` are POSIX-only.
+test.skipIf(process.platform === "win32")("probeRmuxVersion parses a matching version as healthy", () => {
   const probe = probeRmuxVersion(writeProbeScript("#!/bin/sh\necho 'rmux 0.10.0'\n"));
   expect(probe.actualVersion).toBe("0.10.0");
   expect(probe.probeError).toBeNull();
 });
 
-test("probeRmuxVersion detects a stale version", () => {
+test.skipIf(process.platform === "win32")("probeRmuxVersion detects a stale version", () => {
   const probe = probeRmuxVersion(writeProbeScript("#!/bin/sh\necho 'rmux 0.9.0'\n"));
   expect(probe.actualVersion).toBe("0.9.0");
   expect(probe.probeError).toBeNull();
 });
 
-test("probeRmuxVersion treats non-zero exit as a probe failure, not a version", () => {
+test.skipIf(process.platform === "win32")("probeRmuxVersion treats non-zero exit as a probe failure, not a version", () => {
   const probe = probeRmuxVersion(writeProbeScript("#!/bin/sh\necho 'rmux 0.10.0' >&2\nexit 3\n"));
   expect(probe.actualVersion).toBeNull();
   expect(probe.probeError).toContain("exited 3");
 });
 
-test("probeRmuxVersion treats garbage output as a probe failure", () => {
+test.skipIf(process.platform === "win32")("probeRmuxVersion treats garbage output as a probe failure", () => {
   const probe = probeRmuxVersion(writeProbeScript("#!/bin/sh\necho 'not a version'\n"));
   expect(probe.actualVersion).toBeNull();
   expect(probe.probeError).toContain("unexpected rmux -V output");

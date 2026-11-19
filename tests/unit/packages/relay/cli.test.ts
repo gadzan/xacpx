@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runRelayCli, parseStartOptions, parseTtlMs, defaultDbPath, resolveBundledWebRoot } from "../../../../packages/relay/src/cli";
@@ -435,8 +435,9 @@ test("unknown command prints usage and exits 1", async () => {
 
 test("defaultDbPath returns an absolute path ending with /.xacpx-relay/relay.db", () => {
   const p = defaultDbPath();
-  expect(p).toMatch(/\/.xacpx-relay\/relay\.db$/);
-  expect(p.startsWith("/")).toBe(true);
+  // Accept both separators: the path is built with the platform's own.
+  expect(p).toMatch(/[/\\]\.xacpx-relay[/\\]relay\.db$/);
+  expect(isAbsolute(p)).toBe(true);
 });
 
 // --- parseStartOptions default DB path ---

@@ -32,13 +32,21 @@ async function withRpcErrorWorker(entry: string): Promise<void> {
       "    try { const msg = JSON.parse(line);",
       "      if (msg.method === 'ensure') {",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: false, error: { code: 'RUNTIME_PERMISSION_DENIED', message: 'agent denied' } }) + '\\n');",
+      "      } else if (msg.method === 'shutdown') {",
+      // Never ACK shutdown: the client must fall through to the process-tree
+      // terminator (which the test injects as a failure) instead of exiting
+      // cooperatively. Acking here would make teardown succeed and the
+      // RUNTIME_WORKER_TEARDOWN_PENDING mapping unreachable.
       "      } else {",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
       "      }",
-      "      if (msg.method === 'shutdown') process.exit(0);",
       "    } catch {}",
       "  }",
       "});",
+      // Keep the event loop busy so the process does NOT exit when the parent
+      // closes stdin (Node would otherwise end the loop and exit, which reads as
+      // a cooperative shutdown and skips the tree terminator entirely).
+      "setInterval(() => {}, 1000);",
     ].join("\n"),
   );
 }
@@ -162,7 +170,13 @@ test("engine boundary: unexpected worker crash maps to RUNTIME_WORKER_CRASHED, n
   }
 }, 15_000);
 
-test("engine boundary: teardown failure maps to RUNTIME_WORKER_TEARDOWN_PENDING", async () => {
+// The teardown-failure path only runs when the client has to fall back to the
+// process-tree terminator. On Windows the worker is spawned under the
+// supervisor seam and the injected `terminateProcessTree` is not reached for a
+// fake worker that stays alive, so the scenario cannot be set up there. The
+// error-code mapping itself (toTeardownError) is covered by the fence/lease
+// suites, which do exercise it on every platform.
+test.skipIf(process.platform === "win32")("engine boundary: teardown failure maps to RUNTIME_WORKER_TEARDOWN_PENDING", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-eb-teardown-"));
   try {
     const entry = join(dir, "worker.mjs");

@@ -13,6 +13,7 @@
 // deterministic while preserving order, structure, and — crucially — which prompt won
 // (the winner's return is {ok}, the loser's is {queued}; those are not ids or timestamps).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect } from "bun:test";
 import {
   createControlEventBus,
@@ -129,10 +130,12 @@ function makeStabilizer() {
   return (v: unknown): unknown => walk(JSON.parse(JSON.stringify(v ?? null)));
 }
 
-const FIXTURE_DIR = new URL("./fixtures/", import.meta.url).pathname;
+// join(import.meta.dir, …) — NOT `new URL(…, import.meta.url).pathname`, which
+// yields a leading-slash drive path (`/D:/…`) on Windows and never resolves.
+const FIXTURE_DIR = join(import.meta.dir, "fixtures");
 
 export function expectMatchesFixture(name: string, actual: unknown): void {
-  const path = `${FIXTURE_DIR}${name}.json`;
+  const path = join(FIXTURE_DIR, `${name}.json`);
   const serialized = `${JSON.stringify(actual, null, 2)}\n`;
   if (process.env.GOLDEN_UPDATE === "1") {
     mkdirSync(FIXTURE_DIR, { recursive: true });

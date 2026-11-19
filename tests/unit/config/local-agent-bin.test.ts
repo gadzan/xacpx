@@ -26,9 +26,17 @@ test("resolveLocalAgentCommand ignores drivers that aren't unpinned-npx (native 
   expect(resolveLocalAgentCommand("claude", () => true)).toBeUndefined();
 });
 
-test("isExecutableOnPath finds a bin across PATH entries (posix)", () => {
-  const env = { PATH: "/usr/bin:/home/me/.opencode/bin" } as NodeJS.ProcessEnv;
-  const exists = (p: string) => p === "/home/me/.opencode/bin/opencode";
+test("isExecutableOnPath finds a bin across PATH entries", () => {
+  // Separator (`;` vs `:`) and candidate extensions (PATHEXT) are
+  // platform-specific, so the fixture PATH must be shaped for this platform.
+  const windows = process.platform === "win32";
+  const env = windows
+    ? ({ PATH: "C:\\tools;D:\\home\\me\\.opencode\\bin", PATHEXT: ".EXE" } as NodeJS.ProcessEnv)
+    : ({ PATH: "/usr/bin:/home/me/.opencode/bin" } as NodeJS.ProcessEnv);
+  const expected = windows
+    ? "D:\\home\\me\\.opencode\\bin\\opencode.EXE"
+    : "/home/me/.opencode/bin/opencode";
+  const exists = (p: string) => p === expected;
   expect(isExecutableOnPath("opencode", env, exists)).toBe(true);
   expect(isExecutableOnPath("nope", env, exists)).toBe(false);
 });
@@ -47,8 +55,9 @@ test("executableExtensions: PATHEXT on win32, bare name on posix", () => {
 
 test("isExecutableOnPath (real fs): true for an exec file, false for a dir or non-exec file", () => {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-path-"));
-  // An executable regular file is found.
-  const exe = join(dir, "myagent");
+  // An executable regular file is found. Windows only matches via PATHEXT, so
+  // the fixture needs a real extension there.
+  const exe = join(dir, process.platform === "win32" ? "myagent.exe" : "myagent");
   writeFileSync(exe, "#!/bin/sh\necho hi\n");
   chmodSync(exe, 0o755);
   expect(isExecutableOnPath("myagent", { PATH: dir } as NodeJS.ProcessEnv)).toBe(true);

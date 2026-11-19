@@ -19,6 +19,10 @@ export function hasChannelCliProvider(type: string): boolean {
   return cliProviders.has(type);
 }
 
+export function unregisterChannelCliProvider(type: string): void {
+  cliProviders.delete(type.trim());
+}
+
 export function getRegisteredChannelCliProviderTypes(): string[] {
   bootstrapBuiltinChannelCliProviders();
   return Array.from(cliProviders.keys()).sort();

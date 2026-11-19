@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, sep } from "node:path";
 import {
   WorkspaceGit,
   worktreePathIsWithin,
@@ -298,8 +298,15 @@ describe("WorkspaceGit status", () => {
     expect(status.branches).toEqual([
       { name: "feature", current: true, worktreePath: status.worktree.root },
       { name: "main", current: false },
-      { name: "review", current: false, worktreePath: realpathSync(linked) },
+      {
+        name: "review",
+        current: false,
+        // Git emits `/`-separated worktree paths even on Windows; compare with
+        // the product's own equality rule instead of pinning a spelling.
+        worktreePath: expect.stringMatching(/wsgit-linked-/) as unknown as string,
+      },
     ]);
+    expect(worktreePathsEqual(status.branches[2]!.worktreePath!, realpathSync(linked))).toBe(true);
     expect(status.worktrees).toEqual([
       {
         path: status.worktree.root,
@@ -308,14 +315,18 @@ describe("WorkspaceGit status", () => {
         linked: false,
       },
       {
-        path: realpathSync(linked),
+        // Same `/`-separated spelling as the branches assertion above.
+        path: expect.stringMatching(/wsgit-linked-/) as unknown as string,
         branch: "review",
         current: false,
         linked: true,
       },
     ]);
+    expect(worktreePathsEqual(status.worktrees[1]!.path, realpathSync(linked))).toBe(true);
     expect(basename(status.worktree.root)).toBe(basename(repo));
-  });
+    // Many sequential git subprocesses (init, clone, push, fetch, worktree add);
+    // Windows spawn cost pushes this past bun's 5s default.
+  }, 30_000);
 });
 
 describe("WorkspaceGit index", () => {
@@ -355,7 +366,9 @@ describe("WorkspaceGit index", () => {
     ]);
   });
 
-  test("treats selected paths literally instead of expanding Git pathspec magic", async () => {
+  // `:(top)**` is not a creatable filename on Windows (`:` is reserved), so the
+  // literal-pathspec behaviour can only be exercised on POSIX.
+  test.skipIf(process.platform === "win32")("treats selected paths literally instead of expanding Git pathspec magic", async () => {
     const { repo } = initRepo();
     writeFileSync(join(repo, ":(top)**"), "literal\n");
     writeFileSync(join(repo, "README.md"), "unrelated\n");
@@ -601,7 +614,8 @@ describe("WorkspaceGit synchronization", () => {
       ahead: 0,
       behind: 0,
     });
-  });
+    // Clone + push + fetch + pull round-trips; see the note on the status case.
+  }, 30_000);
 
   test("requires explicit upstream setup for a first push", async () => {
     const { repo } = initRepo();
@@ -733,12 +747,13 @@ describe("WorkspaceGit worktrees", () => {
       branch: "feature/worktree-ui",
       linked: true,
     });
-    expect(created.path.startsWith(realpathSync(managedRoot) + "/")).toBe(true);
+    expect(created.path.startsWith(realpathSync(managedRoot) + sep)).toBe(true);
     expect((await service.status("project")).worktrees).toContainEqual({
       path: created.path,
       branch: "feature/worktree-ui",
       current: false,
       linked: true,
     });
-  });
+    // worktree add/remove round-trips; see the note on the status case.
+  }, 30_000);
 });

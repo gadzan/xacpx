@@ -58,6 +58,7 @@
 //     `GOLDEN_UPDATE=1` across the suite accepts every change, including the ones you did
 //     not intend — that is the thing to refuse, not the re-recording itself.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect } from "bun:test";
 import { createConfig } from "../../commands/command-router-test-support";
 import { createEmptyState, type AppState, type SessionTransportEngine } from "../../../../src/state/types";
@@ -342,12 +343,14 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
 // whatever the code now does, leaving every test green while the oracle is gone. Writing
 // a fixture here requires GOLDEN_UPDATE=1, which is visible in shell history and review.
 
-const FIXTURE_DIR = new URL("./fixtures/", import.meta.url).pathname;
+// join(import.meta.dir, …) — NOT `new URL(…, import.meta.url).pathname`, which
+// yields a leading-slash drive path (`/D:/…`) on Windows and never resolves.
+const FIXTURE_DIR = join(import.meta.dir, "fixtures");
 
 /** Deep-equals `actual` against the committed fixture `<name>.json`.
  *  With GOLDEN_UPDATE=1, writes the fixture instead of asserting (Tasks 2-6 only). */
 export function expectMatchesFixture(name: string, actual: unknown): void {
-  const path = `${FIXTURE_DIR}${name}.json`;
+  const path = join(FIXTURE_DIR, `${name}.json`);
   const serialized = `${JSON.stringify(actual, null, 2)}\n`;
 
   if (process.env.GOLDEN_UPDATE === "1") {

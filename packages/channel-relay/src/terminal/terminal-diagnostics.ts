@@ -112,7 +112,10 @@ export function probeRmuxVersion(rmuxCommand: string): {
 
 /** Strip home-dir prefixes so doctor output never echoes full user paths. */
 export function redactPathForDoctor(path: string): string {
-  const home = process.env.HOME ?? "";
+  // HOME first (an operator may point it elsewhere), then the real home dir:
+  // Windows has no HOME, so reading only that variable would leak the full
+  // user path on every Windows doctor report.
+  const home = process.env.HOME || homedir();
   if (home && path.startsWith(home)) {
     return `~${path.slice(home.length)}`;
   }

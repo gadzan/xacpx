@@ -1,16 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { readdirSync } from "node:fs";
 
 import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
+import { MOCK_ACP_AGENT, runAcpxCli } from "../../../../helpers/acpx-cli-spawn";
+import { rmTemp } from "../../../../helpers/rm-temp";
 
-const MOCK_AGENT = resolve(import.meta.dir, "../../../../fixtures/mock-acp-agent.mjs");
-// Use the acpx package bin entry (resolves to dist/cli.js); keep explicit for now
-// as the bin is a JS file invoked via node. Future cleanup: resolve via package.json bin.
-const CLI_ENTRY = resolve(import.meta.dir, "../../../../../node_modules/acpx/dist/cli.js");
+const MOCK_AGENT = MOCK_ACP_AGENT;
 /**
  * G1 / PR0 Gate: CLI ↔ Runtime bidirectional record compatibility.
  * Must use real acpx CLI (spawned node acpx) for one side of each direction,
@@ -19,40 +17,29 @@ const CLI_ENTRY = resolve(import.meta.dir, "../../../../../node_modules/acpx/dis
  * persistent record (same acpxRecordId, history preserved).
  */
 
-function runAcpx(home: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
-  const cmd = `${process.execPath} ${MOCK_AGENT}`;
-  return new Promise((resolveP, reject) => {
-    const cp = spawn(process.execPath, [CLI_ENTRY, "--agent", cmd, ...args], {
-      env: { ...process.env, HOME: home },
-      cwd: home,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    cp.stdout.on("data", (d) => (out += String(d)));
-    cp.stderr.on("data", (d) => (err += String(d)));
-    cp.on("close", (code) => resolveP({ code: code ?? 1, out, err }));
-    cp.on("error", reject);
-  });
-}
+const runAcpx = runAcpxCli;
 
 test("G1: Runtime create → CLI store lists same record and can be resumed by Runtime again", async () => {
   const home = await mkdtemp(join(tmpdir(), "xacpx-g1-rt-cli-"));
+  const stateDir = join(home, ".acpx");
+  const adapter = createXacpxRuntimeAdapter({
+    stateDir,
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    agentOverrides: { mock: [`${process.execPath}`, MOCK_AGENT] },
+  });
+  // Created outside the try so the finally can release the ACP-agent children:
+  // on Windows a live child keeps the temp home locked (rm → EBUSY).
+  const runtime = adapter.raw();
+  const handles: Array<Awaited<ReturnType<typeof runtime.ensureSession>>> = [];
   try {
-    const stateDir = join(home, ".acpx");
-    const adapter = createXacpxRuntimeAdapter({
-      stateDir,
-      permissionMode: "approve-all",
-      nonInteractivePermissions: "deny",
-      agentOverrides: { mock: [`${process.execPath}`, MOCK_AGENT] },
-    });
-    const runtime = adapter.raw();
     const handle1 = await runtime.ensureSession({
       sessionKey: "g1-rt-cli",
       agent: "mock",
       mode: "persistent",
       cwd: home,
     });
+    handles.push(handle1);
     const recordId = handle1.acpxRecordId!;
     expect(recordId.length).toBeGreaterThan(0);
 
@@ -83,6 +70,7 @@ test("G1: Runtime create → CLI store lists same record and can be resumed by R
       mode: "persistent",
       cwd: home,
     });
+    handles.push(handle2);
     expect(handle2.acpxRecordId).toBe(recordId);
     const turn2 = runtime.startTurn({ handle: handle2, text: "second prompt after CLI list", mode: "prompt", requestId: "g1-rt-2" });
     await turn2.promptStarted;
@@ -97,36 +85,46 @@ test("G1: Runtime create → CLI store lists same record and can be resumed by R
     const filesAfter = readdirSync(join(stateDir, "sessions"));
     expect(filesAfter).toContain(`${safeId}.json`);
   } finally {
-    await rm(home, { recursive: true, force: true });
+    // Close every session first: each one owns an ACP-agent child process, and
+    // on Windows a live child keeps the temp home locked (rm → EBUSY) long
+    // after the CLI subprocess the test awaited has exited.
+    for (const handle of handles) {
+      await runtime.close({ handle, reason: "test-done" }).catch(() => {});
+    }
+    await rmTemp(home);
   }
 }, 30_000);
 
 test("G1: CLI store record → Runtime ensure resumes same recordId/history", async () => {
   const home = await mkdtemp(join(tmpdir(), "xacpx-g1-cli-rt-"));
-  try {
-    // Real CLI creates a record via `sessions new` (HOME-isolated)
-    const created = await runAcpx(home, ["sessions", "new", "--name", "g1-cli-rt"]);
-    expect(created.code).toBe(0);
-    const cliRecordId = created.out.trim();
-    expect(cliRecordId.length).toBeGreaterThan(0);
-    // CLI's record file must exist
-    const sessionsDir = join(home, ".acpx", "sessions");
-    const cliFile = join(sessionsDir, `${encodeURIComponent(cliRecordId)}.json`);
-    const st = await stat(cliFile);
-    expect(st.isFile()).toBe(true);
-    const cliRaw = JSON.parse(await readFile(cliFile, "utf8")) as Record<string, unknown>;
-    expect((cliRaw as { name?: string }).name).toBe("g1-cli-rt");
+  const stateDir = join(home, ".acpx");
+  // Real CLI creates a record via `sessions new` (HOME-isolated)
+  const created = await runAcpx(home, ["sessions", "new", "--name", "g1-cli-rt"]);
+  expect(created.code).toBe(0);
+  const cliRecordId = created.out.trim();
+  expect(cliRecordId.length).toBeGreaterThan(0);
+  // CLI's record file must exist
+  const sessionsDir = join(home, ".acpx", "sessions");
+  const cliFile = join(sessionsDir, `${encodeURIComponent(cliRecordId)}.json`);
+  const st = await stat(cliFile);
+  expect(st.isFile()).toBe(true);
+  const cliRaw = JSON.parse(await readFile(cliFile, "utf8")) as Record<string, unknown>;
+  expect((cliRaw as { name?: string }).name).toBe("g1-cli-rt");
 
-    // Runtime must be able to resume the SAME recordId (via sessionKey = cliRecordId)
-    const stateDir = join(home, ".acpx");
-    const adapter = createXacpxRuntimeAdapter({
-      stateDir,
-      permissionMode: "approve-all",
-      nonInteractivePermissions: "deny",
-      agentOverrides: { mock: [`${process.execPath}`, MOCK_AGENT] },
-    });
-    const rt = adapter.raw();
+  // Runtime must be able to resume the SAME recordId (via sessionKey = cliRecordId)
+  const adapter = createXacpxRuntimeAdapter({
+    stateDir,
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    agentOverrides: { mock: [`${process.execPath}`, MOCK_AGENT] },
+  });
+  // Created outside the try so the finally can release the ACP-agent child:
+  // on Windows a live child keeps the temp home locked (rm → EBUSY).
+  const rt = adapter.raw();
+  const handles: Array<Awaited<ReturnType<typeof rt.ensureSession>>> = [];
+  try {
     const h = await rt.ensureSession({ sessionKey: cliRecordId, agent: "mock", mode: "persistent", cwd: home });
+    handles.push(h);
     expect(h.acpxRecordId).toBe(cliRecordId);
 
     // Do a Runtime turn on the CLI-created record; history should be appended to same file
@@ -146,6 +144,9 @@ test("G1: CLI store record → Runtime ensure resumes same recordId/history", as
     expect(list.out).toContain(cliRecordId);
     expect(list.out).toContain("g1-cli-rt");
   } finally {
-    await rm(home, { recursive: true, force: true });
+    for (const handle of handles) {
+      await rt.close({ handle, reason: "test-done" }).catch(() => {});
+    }
+    await rmTemp(home);
   }
 }, 30_000);

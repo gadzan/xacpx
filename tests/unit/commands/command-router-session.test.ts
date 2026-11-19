@@ -2139,8 +2139,12 @@ test("native list and attach refuse a hidden native ID across different drivers 
 
 test("native list and attach refuse a hidden native ID across different drivers that share a raw command", async () => {
   const config = createConfig();
-  config.agents.agentA = { driver: "custom-a", command: "/opt/agent --acp" };
-  config.agents.agentB = { driver: "custom-b", command: "/opt/agent --acp" };
+  // A raw command (not argv) so the launch goes through the raw-command branch;
+  // kept whitespace-free because Windows refuses a raw string command with
+  // arguments rather than quoting it lossily (covered separately in
+  // collect-reap-targets.test.ts), which this test is not about.
+  config.agents.agentA = { driver: "custom-a", command: "/opt/agent" };
+  config.agents.agentB = { driver: "custom-b", command: "/opt/agent" };
   const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState(), { platform: "linux" });
   const transport = createTransport();
   const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
@@ -2161,8 +2165,8 @@ test("native list and attach refuse a hidden native ID across different drivers 
     created.transport_session,
   );
   const launchB = resolveConfiguredAgentLaunch(config.agents.agentB, config.transport, { platform: "linux" });
-  expect(resolvedA.rawCommand).toBe("/opt/agent --acp");
-  expect(launchB.rawCommand).toBe("/opt/agent --acp");
+  expect(resolvedA.rawCommand).toBe("/opt/agent");
+  expect(launchB.rawCommand).toBe("/opt/agent");
   expect(resolvedA.driver).toBe("custom-a");
   expect(config.agents.agentB.driver).toBe("custom-b");
   expect(sameNativeCatalog(

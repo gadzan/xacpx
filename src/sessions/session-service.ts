@@ -155,6 +155,15 @@ export class SessionService {
   private readonly runtimeRoot: string;
   private readonly acpxCommandMetadata: Readonly<AcpxCommandMetadata>;
   private readonly permissionInteractionCapable?: boolean;
+  /**
+   * Platform every launch spec in this service was resolved under. Callers that
+   * re-resolve an agent launch (native session listing/attach) must use this,
+   * not the ambient process.platform, or they compute a different catalog
+   * identity than the sessions they are guarding.
+   */
+  get resolvedPlatform(): NodeJS.Platform {
+    return this.platform;
+  }
   private runtimeCapability?: SessionServiceOptions["runtimeCapability"];
   private readonly pendingSessionAliasOperations = new Set<string>();
   private lifecyclePublisher: ((input: SessionResourceLifecyclePublishInput) => void) | undefined;
@@ -1033,6 +1042,12 @@ export class SessionService {
     excludeWorkerBinding?: string,
   ): { siblings: ResolvedSession[]; indeterminateAliases: string[] } {
     const key = physicalLifecycleKeyForResolvedSession(session);
+    // Re-resolve rows with the SAME acp-output guard the incoming session
+    // carries. On Windows an explicit agent `command` resolves to argv and the
+    // guard wrapper becomes part of the physical identity, while on POSIX the
+    // raw-command branch ignores the guard entirely. A guarded candidate
+    // (worker bindings always guard) would never match its own unguarded row.
+    const guardAcpOutput = isAcpOutputGuardArgv(session.agentArgv ?? []);
     const siblings: ResolvedSession[] = [];
     const indeterminateAliases: string[] = [];
     for (const row of Object.values(this.state.sessions)) {
@@ -1044,7 +1059,7 @@ export class SessionService {
       }
       let candidate: ResolvedSession;
       try {
-        candidate = this.toResolvedSession(row);
+        candidate = this.toResolvedSession(row, { guardAcpOutput });
       } catch {
         indeterminateAliases.push(row.alias);
         continue;

@@ -7,8 +7,8 @@ import {
   symlinkSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { WorkspaceFs } from "../../../src/control/workspace-fs";
 
 let root: string;
@@ -83,11 +83,11 @@ describe("WorkspaceFs listing & reading", () => {
   });
 
   test("expands a leading ~ in the workspace cwd", async () => {
-    // HOME is set per test run; point a workspace at "~" and confirm it resolves.
-    const home = process.env.HOME ?? "";
+    // homedir(), not $HOME: Windows has no HOME (it uses USERPROFILE).
+    const home = homedir();
     const homeFs = new WorkspaceFs(() => [{ name: "h", cwd: "~" }]);
     const { entries } = await homeFs.listDirectory("h");
-    // Resolves to the real home dir without throwing; listing is whatever HOME holds.
+    // Resolves to the real home dir without throwing; listing is whatever it holds.
     expect(Array.isArray(entries)).toBe(true);
     expect(home.length).toBeGreaterThan(0);
   });
@@ -270,7 +270,7 @@ describe("WorkspaceFs git diff", () => {
     expect(d.detached).toBeFalsy();
     expect(d.worktree?.linked).toBe(false);
     // The worktree root resolves to the repo (realpath, so /private prefix on macOS is fine).
-    expect(d.worktree?.root.endsWith(repo.split("/").pop()!)).toBe(true);
+    expect(d.worktree?.root.endsWith(basename(repo))).toBe(true);
     rmSync(repo, { recursive: true, force: true });
   });
 
@@ -302,7 +302,7 @@ describe("WorkspaceFs git diff", () => {
     writeFileSync(join(repo, "f.txt"), "one\n");
     git("add", ".");
     git("commit", "-qm", "init");
-    const wt = join(repo, "..", `wt-${repo.split("/").pop()}`);
+    const wt = join(repo, "..", `wt-${basename(repo)}`);
     git("worktree", "add", "-q", "-b", "feature", wt);
     const gfs = new WorkspaceFs(() => [{ name: "wt", cwd: wt }]);
     const d = await gfs.gitDiff("wt");

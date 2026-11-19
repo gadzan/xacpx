@@ -21,7 +21,8 @@ test("resolves an absolute executable node path", async () => {
 test("never persists Bun as Node and falls back only to a real node executable", async () => {
   const root = await mkdtemp(join(tmpdir(), "bun-node-resolver-"));
   try {
-    const node = join(root, "node");
+    // The PATH scan looks for `node.exe` on Windows and `node` elsewhere.
+    const node = join(root, process.platform === "win32" ? "node.exe" : "node");
     await writeFile(node, "#!/bin/sh\n");
     await chmod(node, 0o755);
     await expect(resolveStableNodeExecutable({ execPath: "/opt/bin/bun", env: { PATH: root } }))

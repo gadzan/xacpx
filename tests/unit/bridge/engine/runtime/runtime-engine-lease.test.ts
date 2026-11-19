@@ -118,12 +118,20 @@ test.serial("P1-6: archive via cancel->freeWarmProcess does not kick drain", asy
       text: "archived-via-cancel-2",
       mode: "queue",
     } as unknown as never);
-    // Wait until first head truly admitted, not just 50ms gamble
-    for (let i=0; i<20; i++) {
-      const hasActive = (engine as any).activeTurns?.get?.(testInput.logicalSessionId) > 0;
-      const isDraining = (engine as any).draining?.has?.(testInput.logicalSessionId);
-      if (hasActive || isDraining) break;
-      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 10); await promise;
+    // Wait until first head truly admitted, not just 50ms gamble.
+    // 20x10ms = 200ms is far too short on Windows, where spawning the worker and
+    // writing its fence costs an order of magnitude more: the first head would
+    // still be unadmitted when the archive below runs, and the later prompt then
+    // fails its fence CAS against a record that does not exist yet.
+    {
+      const deadline = Date.now() + 12_000;
+      for (;;) {
+        const hasActive = (engine as any).activeTurns?.get?.(testInput.logicalSessionId) > 0;
+        const isDraining = (engine as any).draining?.has?.(testInput.logicalSessionId);
+        if (hasActive || isDraining) break;
+        if (Date.now() > deadline) break;
+        const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 25); await promise;
+      }
     }
     // Real archive chain: cancel then freeWarmProcess (cancel no longer kicks)
     await engine.cancel(testInput as unknown as never);
@@ -1031,14 +1039,14 @@ test.serial("P1-17: releaseLogicalSession refuses while the alias turn is active
       setTimeout(tickResolve, 5);
       await tick;
     }
-    const pid: number = manager.get(key).ref.pid;
+    const pid: number = manager.get(key).ref.supervisorPid ?? manager.get(key).ref.pid;
     expect(manager.get(key)?.lifecycle).toBe("busy");
     // Release during the turn must fail closed WITHOUT touching the worker:
     // the logical row stays, the turn keeps running.
     await expect(engine.releaseLogicalSession(input as any)).rejects.toMatchObject({
       code: "RUNTIME_WORKER_TEARDOWN_PENDING",
     });
-    expect(manager.get(key)?.ref.pid).toBe(pid);
+    expect(manager.get(key)?.ref.supervisorPid ?? manager.get(key)?.ref.pid).toBe(pid);
     expect(pidAlive(pid)).toBe(true);
     await pPrompt;
     // After settle the same release succeeds and retires the worker.
@@ -1330,6 +1338,10 @@ test.serial("P1-12c: stale owned fence with a gone owner does NOT block delete (
     // A daemon restart leaves an owned fence whose worker is gone (ESRCH).
     // pid 99999 does not exist on any CI/dev box: reserved by the P1-12
     // fail-closed pin for exactly this meaning.
+    // creationDate is REQUIRED on Windows: without a recorded birth the
+    // identity probe cannot rule out pid reuse and answers "unknown"
+    // (fail-closed), which refuses the discharge this test must observe. The
+    // POSIX process-group probe ignores it, so one seed covers both hosts.
     const physicalKey = physicalFenceKeyForSession(testInput);
     const fencePath = join(fenceDir, `${encodeURIComponent(physicalKey)}.json`);
     await writeFile(fencePath, JSON.stringify({
@@ -1337,7 +1349,7 @@ test.serial("P1-12c: stale owned fence with a gone owner does NOT block delete (
       logicalSessionId: physicalKey,
       generation: "test-gen-stale-owned",
       pid: 99999,
-      creationDate: null,
+      creationDate: "133500000000000000",
       bootstrapVerified: false,
       phase: "owned",
       startedAt: new Date().toISOString(),

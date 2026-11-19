@@ -28,6 +28,7 @@ export interface SessionControlServiceDeps {
 
 export class SessionControlService {
   private readonly sessions: SessionService;
+  private readonly platform: NodeJS.Platform;
   private readonly transport: SessionTransport;
   private readonly orchestration?: OrchestrationRouterOps;
   private readonly activeTurns?: ActiveTurnRegistry;
@@ -38,6 +39,9 @@ export class SessionControlService {
 
   constructor(deps: SessionControlServiceDeps) {
     this.sessions = deps.sessions;
+    // Resolve agent launches on the platform the sessions were created under,
+    // so the native catalog identity matches what the session guard recorded.
+    this.platform = deps.sessions.resolvedPlatform;
     this.transport = deps.transport;
     this.orchestration = deps.orchestration;
     this.activeTurns = deps.activeTurns;
@@ -314,7 +318,7 @@ export class SessionControlService {
     if (!agentConfig || !workspaceConfig) {
       throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
     }
-    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
+    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport, { platform: this.platform });
     const catalog = nativeCatalogIdentityForLaunch({
       cwd: workspaceConfig.cwd,
       ...launch,
@@ -373,7 +377,7 @@ export class SessionControlService {
     if (!agentConfig || !workspaceConfig) {
       throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
     }
-    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
+    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport, { platform: this.platform });
     return nativeCatalogIdentityForLaunch({
       cwd: workspaceConfig.cwd,
       ...launch,

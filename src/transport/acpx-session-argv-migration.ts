@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
 import { resolveAcpxHomeDir } from "./acpx-session-files";
 import { isRecord } from "../config/load-config";
-import { retryTransientWriteErrors, withPrivateFileLock } from "../util/private-file";
+import { retryTransientFileErrors, withPrivateFileLock } from "../util/private-file";
 
 export type SessionArgvMigrationStatus = "noop" | "backfilled" | "rejected" | "invalid";
 
@@ -160,7 +160,7 @@ export async function migrateSessionArgvFile(
       );
     }
     const serialized = `${JSON.stringify(recheck.record, null, 2)}\n`;
-    await retryTransientWriteErrors(
+    await retryTransientFileErrors(
       () => (deps.writeAtomicFn ? deps.writeAtomicFn(filePath, serialized) : writeLocked(serialized)),
       { platform, delay: deps.delay },
     );
