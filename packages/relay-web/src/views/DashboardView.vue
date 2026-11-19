@@ -39,13 +39,14 @@ import ToastHost from "../components/ToastHost.vue";
 import SessionModelBanner from "../components/SessionModelBanner.vue";
 import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
+import NeedsYouInbox from "../components/NeedsYouInbox.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
 import { setNotificationClickHandler, initTabFocusTracker } from "../lib/local-notification";
 import { adoptHomeEntry, backInFlight, goHomeReclaiming, navigateBack, useMobileBack, type BackLayer } from "../lib/mobile-back";
-import { Search, Moon, Sun, Settings, X, ArrowLeft, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, PanelRightOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, ArrowLeft, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, PanelRightOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList, Bell } from "lucide-vue-next";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
@@ -616,6 +617,45 @@ function onSelectGroup(instanceId: string, groupId: string) {
   void groupsStore.selectGroup(instanceId, groupId);
 }
 
+// Cross-instance "Needs you" inbox (UX1). The list itself lives in
+// NeedsYouInbox and reads the account-wide open-interaction view; these
+// handlers only perform the destination switch for the entry's OWN instance —
+// aliases and conversation ids are per-daemon, never global.
+const inboxOpen = ref(false);
+const openInteractionCount = computed(() => directBotsStore.openInteractionCount);
+function openInboxSession(instanceId: string, alias: string): void {
+  inboxOpen.value = false;
+  onSelect(instanceId, alias);
+}
+async function openInboxBot(instanceId: string, botId: string, conversationId: string, topicId: string | null): Promise<void> {
+  inboxOpen.value = false;
+  closeDesktop();
+  chat.clearSelection();
+  groupsStore.clearSelection();
+  await directBotsStore.selectBot(instanceId, botId);
+  // Land on the interaction's exact topic, but only inside the conversation
+  // it names: a topic id from another conversation (or instance) must never
+  // steer the freshly selected Bot elsewhere.
+  if (topicId && directBotsStore.activeConversationId === conversationId) {
+    await directBotsStore.switchTopic(topicId);
+  }
+}
+async function openInboxGroup(instanceId: string, groupId: string, conversationId: string, topicId: string | null): Promise<void> {
+  inboxOpen.value = false;
+  closeDesktop();
+  chat.clearSelection();
+  directBotsStore.clearSelection();
+  await groupsStore.selectGroup(instanceId, groupId);
+  if (topicId && groupsStore.activeConversationId === conversationId && groupsStore.activeTopicId !== topicId) {
+    await groupsStore.switchTopic(topicId);
+  }
+}
+/** Mobile ⋯ sheet entry: the sheet is replaced by the inbox sheet. */
+function openInboxFromSheet(): void {
+  closeSheet();
+  inboxOpen.value = true;
+}
+
 let everOnline = false;
 const subscribedInstanceIds = (): string[] => instances.instances.map((instance) => instance.id);
 async function reloadSnapshot() {
@@ -657,6 +697,11 @@ watch(
 );
 
 onMounted(async () => {
+  // The header badge counts open interactions, so its clock must run whether or
+  // not the inbox itself is mounted: an expired request has to leave the badge
+  // without waiting for an unrelated store write. Refcounted with the inbox's
+  // own start/stop pair.
+  directBotsStore.startInboxClock();
   migrateAwayFromLegacyTerminalIds();
   // Claim this entry as the home entry BEFORE anything pushes on top of it. A cold
   // start straight into a pane (notification deep link, new tab, PWA restore) must
@@ -731,6 +776,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  directBotsStore.stopInboxClock();
   focusTracker?.dispose();
   focusTracker = null;
   setNotificationClickHandler(null);
@@ -773,6 +819,20 @@ onUnmounted(() => {
           <Search :size="14" class="shrink-0 text-fg-muted" />
           <span class="hidden flex-1 text-ui text-fg-muted sm:inline lg:hidden xl:inline">{{ $t("nav.searchPlaceholder") }}</span>
           <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-xs text-fg-muted sm:inline">⌘K</kbd>
+        </button>
+        <!-- UX1 inbox: every open interaction under the account, with a count
+             badge. Hidden count when empty — no button affordance without work. -->
+        <button
+          data-test="needs-you-button"
+          :aria-label="$t('needsYou.title')"
+          class="relative grid h-12 w-12 lg:h-8 lg:w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          @click="inboxOpen = !inboxOpen"
+        >
+          <Bell :size="15" class="shrink-0" />
+          <span v-if="openInteractionCount > 0" data-test="needs-you-count"
+                class="absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-none text-white">
+            {{ openInteractionCount }}
+          </span>
         </button>
         <!-- Exactly one of the two placements exists at a time, so each test id stays
              unique: `!isDesktop` here, `isDesktop` in the pane's content-bar slot. -->
@@ -1035,6 +1095,16 @@ onUnmounted(() => {
         <LayoutList :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("mobileBar.openTabs", { n: openTabCount }) }}</span>
       </button>
+      <button type="button" data-test="sheet-needs-you"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="openInboxFromSheet">
+        <Bell :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("needsYou.title") }}</span>
+        <span v-if="openInteractionCount > 0" data-test="sheet-needs-you-count"
+              class="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1.5 text-xs font-semibold text-white">
+          {{ openInteractionCount }}
+        </span>
+      </button>
       <button type="button" data-test="sheet-files"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
               @click="openSheetRight('files')">
@@ -1108,5 +1178,10 @@ onUnmounted(() => {
     <CommandPalette v-if="paletteOpen"
                     @close="paletteOpen = false"
                     @select-session="(id, alias) => { onSelect(id, alias); paletteOpen = false; }" />
+    <NeedsYouInbox v-if="inboxOpen"
+                   @close="inboxOpen = false"
+                   @open-session="openInboxSession"
+                   @open-bot="openInboxBot"
+                   @open-group="openInboxGroup" />
   </div>
 </template>

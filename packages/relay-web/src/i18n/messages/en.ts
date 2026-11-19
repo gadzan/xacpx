@@ -1339,6 +1339,18 @@ export default {
       createTopicFirst: "Create a topic to start chatting",
     },
   },
+  needsYou: {
+    title: "Needs you",
+    empty: "Nothing needs you right now.",
+    open: "Open",
+    session: "Session {alias}",
+    direct: "Bot {name}",
+    group: "Group {name}",
+    unplaced: "Answer here",
+    secondsLeft: "{count}s left",
+    minutesLeft: "{count}m left",
+    hoursLeft: "{count}h left",
+  },
   capability: {
     refresh: "Refresh models",
     refreshFailed: "Last read failed: {message}",

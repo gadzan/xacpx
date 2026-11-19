@@ -1333,6 +1333,18 @@ export default {
       createTopicFirst: "先新建话题再发消息",
     },
   },
+  needsYou: {
+    title: "需要你",
+    empty: "暂无需要你处理的事情。",
+    open: "前往",
+    session: "会话 {alias}",
+    direct: "Bot {name}",
+    group: "群组 {name}",
+    unplaced: "在此回答",
+    secondsLeft: "还剩 {count} 秒",
+    minutesLeft: "还剩 {count} 分钟",
+    hoursLeft: "还剩 {count} 小时",
+  },
   capability: {
     refresh: "刷新模型",
     refreshFailed: "上次读取失败：{message}",
