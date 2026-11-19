@@ -1318,11 +1318,10 @@ describe("Group Components", () => {
       groups.topicsByConversation["i1:conversation_g"]!.push({ id: "topic_2", conversationId: "conversation_g", title: "Release", status: "active", createdAt: "now", updatedAt: "now" });
       const switchTopic = vi.spyOn(groups, "switchTopic").mockResolvedValue();
       window.innerWidth = 500;
-      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] }, attachTo: document.body });
       await flushPromises();
       await wrapper.find('[data-test="group-topic-pill"]').trigger("click");
-      // The mobile picker teleports to <body> (so a sheet opened from a dialog
-      // escapes the dialog's containing block); read and tap the document copy.
+      // The app is mounted into the document, so the sheet is read from there.
       const sheet = document.querySelector<HTMLElement>('[data-test="group-topic-sheet"]');
       expect(sheet).not.toBeNull();
       const rows = Array.from(sheet!.querySelectorAll<HTMLElement>('[data-test="topic-row"]'));

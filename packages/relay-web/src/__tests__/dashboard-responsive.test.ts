@@ -60,6 +60,9 @@ beforeEach(() => {
   // Back navigation writes history entries; start every test from an untagged entry so
   // one test's stack cannot shift another test's back target.
   window.history.replaceState({}, "");
+  // Mounts attach to <body> (that is where the app runs) and clear it per test, so
+  // one test's sheets cannot answer the next test's document queries.
+  document.body.innerHTML = "";
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [capableInstance] }), { status: 200 })));
 });
 
@@ -85,7 +88,7 @@ async function settleBacks(): Promise<void> {
 }
 
 function mountDash() {
-  return mount(DashboardView, { global: { stubs } });
+  return mount(DashboardView, { global: { stubs }, attachTo: document.body });
 }
 
 /** Select a session so the single mobile top bar (and its ⋯ sheet) is the active chrome. */
@@ -202,6 +205,7 @@ test("file viewer Close removes the tab and returns to chat", async () => {
   const fvStub = { name: "FileViewer", template: "<div data-test=\"fv-stub\" />", emits: ["close"] };
   const wrapper = mount(DashboardView, {
     global: { stubs: { ChatPane: true, TaskPanel: true, "router-link": true, FileViewer: fvStub } },
+    attachTo: document.body,
   });
   await flushPromises();
 
@@ -251,7 +255,7 @@ test("backdrop click closes the open files/tasks drawer", async () => {
 
 test("selecting a session from the home list routes to chat and hides the list below lg", async () => {
   const chat = useChatStore();
-  const wrapper = mount(DashboardView, { global: { stubs: { ChatPane: true, TaskPanel: true, "router-link": true } } });
+  const wrapper = mount(DashboardView, { global: { stubs: { ChatPane: true, TaskPanel: true, "router-link": true } }, attachTo: document.body });
   await flushPromises();
   expect(wrapper.find('[data-drawer="left"]').classes()).not.toContain("max-lg:hidden");
 
@@ -567,7 +571,7 @@ test("mobile home renders the tree as the main content plus the new-session FAB"
 
 test("FAB with one online instance opens the create dialog for it directly", async () => {
   const nsStub = { name: "NewSessionDialog", props: ["instanceId"], template: '<div data-test="ns-stub">{{ instanceId }}</div>' };
-  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, NewSessionDialog: nsStub } } });
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, NewSessionDialog: nsStub } }, attachTo: document.body });
   await flushPromises();
   // The fixture's single instance is online.
   await wrapper.find('[data-test="fab-new-session"]').trigger("click");
@@ -583,7 +587,7 @@ test("FAB with several online instances opens a picker with the last-used instan
   // under its own key because deselecting clears the persisted chat selection).
   localStorage.setItem("xacpx.lastInstance", "i2");
   const nsStub = { name: "NewSessionDialog", props: ["instanceId"], template: '<div data-test="ns-stub">{{ instanceId }}</div>' };
-  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, NewSessionDialog: nsStub } } });
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, NewSessionDialog: nsStub } }, attachTo: document.body });
   await flushPromises();
   const instances = useInstancesStore();
   instances.instances = [

@@ -221,7 +221,9 @@ async function abandonRowUnknown(): Promise<void> {
     <ContextMenu v-if="rowMenu" :x="rowMenu.x" :y="rowMenu.y" :items="rowMenuItems"
                  @select="onRowMenuSelect" @close="rowMenu = null" />
 
-    <div v-if="confirmKind" data-dd-panel class="fixed inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-scrim" @click.self="navigateBack">
+    <!-- A confirm over the still-open topic sheet: the ladder's confirm rung keeps
+         it above that sheet's backdrop wherever the sheet renders. -->
+    <div v-if="confirmKind" data-dd-panel class="fixed inset-0 z-confirm flex items-center justify-center bg-scrim p-4 backdrop-blur-scrim" @click.self="navigateBack">
       <div role="dialog" aria-modal="true" data-test="topic-confirm" class="w-full max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
         <h3 class="text-base font-semibold text-fg">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearTitle") : $t("bot.topic.confirmDeleteTitle") }}</h3>
         <p class="mt-2 text-sm text-fg-muted-overlay">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearBody") : $t("bot.topic.confirmDeleteBody") }}</p>
@@ -257,7 +259,7 @@ async function abandonRowUnknown(): Promise<void> {
         </div>
       </div>
     </div>
-    <div v-if="isolationTopic" data-dd-panel class="fixed inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-scrim" @click.self="navigateBack">
+    <div v-if="isolationTopic" data-dd-panel class="fixed inset-0 z-confirm flex items-center justify-center bg-scrim p-4 backdrop-blur-scrim" @click.self="navigateBack">
       <div role="dialog" aria-modal="true" data-test="topic-isolation" class="w-full max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
         <h3 class="text-base font-semibold text-fg">{{ $t("bot.topic.isolationTitle") }}</h3>
         <p class="mt-2 text-sm text-fg-muted-overlay">{{ $t("bot.topic.isolationBody") }}</p>

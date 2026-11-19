@@ -44,13 +44,20 @@ defineExpose({ body });
 // height (or with a fast downward flick) closes through navigateBack, the same
 // close the backdrop and the ✕ use, and a short release springs back through
 // the sheet-panel transition (disabled under prefers-reduced-motion).
-// A sheet opened OVER another modal (the Agent picker inside a dialog) keeps the
-// lower scrim and drops its own dimming and blur, and takes one rung up so it
-// paints above that dialog. The depth is the layer count at mount, captured
-// before useModalA11y pushes this sheet's own layer: a sheet that later gains a
-// dialog above it keeps z-sheet, so that dialog stays on top.
+// A sheet rendered inside a dialog panel inherits that panel's containing block:
+// `backdrop-filter` (and `transform`, `filter`) make `position: fixed` resolve
+// against the panel, so the sheet parks mid-screen with a straight bottom edge.
+// The ancestors are measured at mount; only then does this layer leave for
+// <body>. Every other sheet stays where it was rendered, so a hand-rolled
+// overlay in the same pane keeps beating it on DOM order.
+//
+// An escaped sheet sits over that dialog: it keeps the lower scrim, drops its
+// own dimming and blur, and takes one rung up. The depth is the layer count at
+// mount, captured before useModalA11y pushes this sheet's own layer, so a sheet
+// that later gains a dialog above it still stays below it.
 const layerDepth = ref(0);
-const stacked = computed(() => layerDepth.value > 0);
+const escaping = ref(false);
+const stacked = computed(() => escaping.value && layerDepth.value > 0);
 const resolvedZ = computed(() => props.zClass ?? (stacked.value ? "z-dialog-nested" : "z-sheet"));
 const backdropClass = computed(() => stacked.value ? "bg-transparent" : "bg-scrim backdrop-blur-scrim");
 const dragOffset = ref(0);
@@ -74,6 +81,18 @@ function syncVv(): void {
 }
 onMounted(() => {
   layerDepth.value = modalLayers.value.length;
+  // Ancestors only, and only below <body>: the sheet's own panel carries the
+  // glass blur and must not count as its own containing block. jsdom reports
+  // unset values as "" (and no backdropFilter at all), so only a real value
+  // that differs from `none` counts.
+  for (let el = panel.value?.parentElement; el && el !== document.body; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    const [t, f, b] = [cs.transform, cs.filter, cs.backdropFilter];
+    if ((t && t !== "none") || (f && f !== "none") || (b && b !== "none")) {
+      escaping.value = true;
+      break;
+    }
+  }
   if (typeof window !== "undefined" && window.visualViewport) {
     vv = window.visualViewport;
     vv.addEventListener("resize", syncVv);
@@ -160,12 +179,10 @@ useModalA11y(panel, () => emit("close"), {
 </script>
 
 <template>
-  <!-- Teleport to body: a sheet opened inside a dialog (the Agent/Workspace
-       pickers inside NewSessionDialog) must resolve `fixed` against the
-       viewport, not against the dialog panel — the panel's backdrop-filter
-       establishes a containing block that parks an in-place `fixed` sheet
-       mid-screen with a straight bottom edge. -->
-  <Teleport to="body">
+  <!-- Teleport only when the mount measurement found a containing-block ancestor
+       (see `escaping`): the pickers inside NewSessionDialog. Anything else keeps
+       its in-page position, so same-pane overlays still order by DOM. -->
+  <Teleport to="body" :disabled="!escaping">
   <!-- Attributes belong to the dialog, not its backdrop. -->
   <div data-test="sheet-backdrop" class="sheet-backdrop fixed inset-0 lg:hidden" :class="[resolvedZ, backdropClass]" @click="navigateBack" />
   <div ref="panel" v-bind="$attrs" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1"

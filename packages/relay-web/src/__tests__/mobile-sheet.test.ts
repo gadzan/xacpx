@@ -105,27 +105,46 @@ describe("MobileSheet pull-to-close", () => {
     wrapper.unmount();
   });
 
-  it("drops its own dimming only when it opens over a lower modal, and raises one rung", async () => {
-    // A dialog is already open when the sheet appears: the Agent picker inside
-    // NewSessionDialog. The lower layer keeps the dimming and the blur.
+  it("escapes a containing-block ancestor and, over a lower modal, drops its own dimming", async () => {
+    // The Agent picker inside NewSessionDialog: a dialog panel that establishes a
+    // containing block (backdrop-filter in the browser, transform here), with the
+    // dialog already on the layer stack.
+    const trap = document.createElement("div");
+    trap.style.transform = "translateX(0)";
+    document.body.appendChild(trap);
     const closeLower = pushModal({ id: "parent-dialog", close: () => {} });
-    const over = mountSheet();
+    const over = mount(MobileSheet, {
+      props: { title: "Agents", testId: "sheet" },
+      slots: { default: '<button data-test="content-row">row</button>' },
+      attachTo: trap,
+    });
     await nextTick();
+    await nextTick();
+    // It left the trapping ancestor for <body>, so fixed resolves on the viewport.
+    expect(trap.querySelector('[data-test="sheet-backdrop"]')).toBeNull();
     const overScrim = document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement;
+    expect(overScrim.parentElement).toBe(document.body);
     expect(overScrim.className.split(/\s+/)).not.toContain("bg-scrim");
-    expect(overScrim.className.split(/\s+/)).not.toContain("backdrop-blur-scrim");
     expect(overScrim.className.split(/\s+/)).toContain("bg-transparent");
     expect(panelEl().className.split(/\s+/)).toContain("z-dialog-nested");
     over.unmount();
     closeLower();
+    trap.remove();
 
-    // The reverse order: a layer that mounts after the sheet sits above it, so
-    // the sheet keeps its own scrim and its base rung instead of covering it.
-    const under = mountSheet();
+    // Same pane, no filter: the sheet stays in place, keeps its own scrim and its
+    // base rung, so a layer that mounts after it still paints above by DOM order.
+    const plain = document.createElement("div");
+    document.body.appendChild(plain);
+    const under = mount(MobileSheet, {
+      props: { title: "Sessions", testId: "sheet" },
+      slots: { default: '<button data-test="content-row">row</button>' },
+      attachTo: plain,
+    });
     await nextTick();
     const closeUpper = pushModal({ id: "late-dialog", close: () => {} });
     await nextTick();
-    const underScrim = document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement;
+    const underScrim = plain.querySelector('[data-test="sheet-backdrop"]') as HTMLElement;
+    expect(underScrim).not.toBeNull();
     expect(underScrim.className.split(/\s+/)).toContain("bg-scrim");
     expect(panelEl().className.split(/\s+/)).toContain("z-sheet");
     closeUpper();

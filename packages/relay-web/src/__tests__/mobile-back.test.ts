@@ -78,14 +78,17 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   captured.onEvent = undefined;
+  // Mounts attach to <body> (that is where the app runs), so clear the DOM between
+  // tests instead of letting one test's sheets answer the next test's queries.
+  document.body.innerHTML = "";
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [capableInstance] }), { status: 200 })));
 });
 
 function mountDash() {
-  return mount(DashboardView, { global: { stubs } });
+  return mount(DashboardView, { global: { stubs }, attachTo: document.body });
 }
-/** Sheets teleport to <body> (a sheet inside a dialog must escape the dialog's
- *  containing block), so sheet assertions read the document, not the wrapper. */
+/** The app is mounted into the document, so a sheet is read from there rather than
+ *  from the wrapper. */
 function sheetEl(testId: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(`[data-test="${testId}"]`);
 }
@@ -342,6 +345,7 @@ describe("mobile back navigation", () => {
     const counting = { name: "ChatPane", setup() { mounts++; }, template: "<div/>" };
     const wrapper = mount(DashboardView, {
       global: { stubs: { ...stubs, ChatPane: counting } },
+      attachTo: document.body,
     });
     await flushPromises();
     await selectSession();
