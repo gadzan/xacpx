@@ -44,7 +44,6 @@ function mountRow(state: AgentCapabilityState, props?: {
     props: {
       instanceId: "i1",
       agentName: props?.agentName ?? "codex",
-      driver: "codex",
       installedHint: props?.installedHint ?? "built-in",
       workspaceNames: props?.workspaceNames ?? ["repo"],
     },
@@ -134,8 +133,9 @@ describe("AgentReadinessRow", () => {
       input.workspace === "web" ? webState : repoState,
     );
     const w = mount(AgentReadinessRow, {
-      props: { instanceId: "i1", agentName: "codex", driver: "codex", workspaceNames: ["repo", "web"] },
+      props: { instanceId: "i1", agentName: "codex", workspaceNames: ["repo", "web"] },
     });
+
     await flushPromises();
     expect(w.get('[data-test="arr-status"]').text()).toBe("Ready");
     await w.get('[data-test="arr-workspace"]').setValue("web");
@@ -163,7 +163,7 @@ describe("AgentReadinessRow", () => {
       return input.workspace === "web" ? webState : cached;
     });
     const w = mount(AgentReadinessRow, {
-      props: { instanceId: "i1", agentName: "codex", driver: "codex", workspaceNames: ["repo", "web"] },
+      props: { instanceId: "i1", agentName: "codex", workspaceNames: ["repo", "web"] },
     });
     await flushPromises();
     // Singular form: the plural pipe must not render "1 models".

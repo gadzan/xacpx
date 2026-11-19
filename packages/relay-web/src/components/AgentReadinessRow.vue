@@ -8,7 +8,6 @@ import { useInstancesStore } from "../stores/instances";
 const props = defineProps<{
   instanceId: string;
   agentName: string;
-  driver: string;
   installedHint?: string;
   workspaceNames: string[];
 }>();

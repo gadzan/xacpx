@@ -91,7 +91,7 @@ const driverGroups = computed<SelectGroup[]>(() => [
                   class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
                   :disabled="busy" @click="remove(a.name)"><Trash2 :size="14" /></button>
         </div>
-        <AgentReadinessRow :instance-id="props.instanceId" :agent-name="a.name" :driver="a.driver"
+        <AgentReadinessRow :instance-id="props.instanceId" :agent-name="a.name"
                            :installed-hint="installedHint(a.driver)" :workspace-names="workspaceNames" />
       </li>
       <li v-if="!list.length" class="px-3 py-2 text-sm text-fg-muted">{{ $t("common.noMatch") }}</li>
