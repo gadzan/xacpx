@@ -534,7 +534,7 @@ xacpx channel add <channel-type>
 
 冷模型枚举走单一的 inspector 接缝：`src/transport/acpx-model-inspector.ts` 是 `acpx/runtime` 的 `inspectAgentModels`（75 秒超时）的唯一封装，它**不创建 session、也不需要用户 prompt** 就能读取 adapter 的模型目录 —— xacpx 在上游解析 agent argv，只把快照映射到 `AgentCapabilityProbeResult`。`control.agents.capabilities.get` 会读取一个 owned runtime、已保存的模型列表或普通会话，并可以运行该探测（显式刷新总是重新探测）。无法认证或无法枚举模型的探测会返回该状态。它不会凭空编造 Claude 或 Codex 的目录。
 
-已验证的模型列表持久化在 `state.json` 可再生的 `capability_lists` 段中，键为 agent + 工作区 cwd + 启动 identity（adapter pin/command/argv）+ 认证材料，因此 daemon 重启后仍然显示该列表。改动其中任何一个键都会得到不同的键：旧列表绝不会被新的 adapter pin 复用。显式的 "Fetch model list"（`probe: true`）总是重新探测，而不是重放已保存的列表；该刷新失败时仍会返回已保存的列表，但 state 会带一个 `reason` 标记它未经新鲜验证。损坏或格式错误的缓存条目在加载时被丢弃，绝不会阻塞启动。
+已验证的模型列表持久化在 `state.json` 可再生的 `capability_lists` 段中，键为 agent + 启动 identity（driver、settings policy、adapter pin/command/argv、registry）+ 认证材料，因此 daemon 重启后仍然显示该列表。工作区 cwd 不在键中：该 agent 在此 daemon 上的每个工作区共用同一份列表。daemon 进程本身就是实例边界，另一个实例有自己的 `state.json`。改动其余任何一个键都会得到不同的键：旧列表绝不会被新的 adapter pin 复用，按旧的工作区作用域键保存的列表在保留期清理前不再被读取。刷新仍在请求它的那个工作区里探测，因此项目级配置公布了不同目录时，该工作区的一次刷新会覆盖其他工作区共享的列表，直到下次刷新；会话启动时 adapter 会重新校验 model id。显式的 "Fetch model list"（`probe: true`）总是重新探测，而不是重放已保存的列表；该刷新失败时仍会返回已保存的列表，但 state 会带一个 `reason` 标记它未经新鲜验证。损坏或格式错误的缓存条目在加载时被丢弃，绝不会阻塞启动。
 
 #### Windows raw command 迁移
 

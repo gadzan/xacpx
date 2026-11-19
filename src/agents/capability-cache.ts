@@ -13,8 +13,8 @@ export function isLegacyCapabilityKey(key: string): boolean {
 
 /**
  * Adapter model lists live in the regenerable `capability_lists` section of
- * state.json, keyed by the capability fingerprint (agent + cwd + launch
- * identity + auth material). Reads are synchronous and side-effect free.
+ * state.json, keyed by the capability fingerprint (agent + launch
+ * identity + auth material, not workspace cwd). Reads are synchronous and side-effect free.
  *
  * Like `native_session_lists`, this section is live-only: it is written to
  * disk but never published through `replaceRuntimeState`, which copies
