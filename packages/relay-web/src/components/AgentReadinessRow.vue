@@ -12,6 +12,9 @@ const props = defineProps<{
   workspaceNames: string[];
 }>();
 
+// Read-only readiness row: status, reason, and hints only. Install, download,
+// sign-in, and update actions belong to UX2b and must never be added here.
+
 type RowState = { status: "idle" } | { status: "loading" } | AgentCapabilityState;
 
 const { t } = useI18n();
@@ -123,9 +126,6 @@ watch(
   },
 );
 </script>
-
-// Read-only readiness row: status, reason, and hints only. Install, download,
-// sign-in, and update actions belong to UX2b and must never be added here.
 
 <template>
   <div :data-test="`arr-row-${agentName}`" class="mt-1 space-y-1 rounded-sm bg-surface-2/60 px-2 py-1.5 text-xs">
