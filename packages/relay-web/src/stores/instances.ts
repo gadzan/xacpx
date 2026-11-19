@@ -35,6 +35,7 @@ import { useChatStore } from "./chat";
 import { useAuthStore } from "./auth";
 import { dropSession as dropSessionViewSnapshots } from "../lib/view-snapshot-cache";
 import { loadGroupMode, saveGroupMode, type SidebarGroupMode } from "../lib/sidebar-group-mode";
+import { randomUuid } from "../lib/random-id";
 
 // An instance-side RPC error comes back as a 200 with an `{error:{code,message}}`
 // payload (the gateway resolves, it does not reject), so api.rpc won't throw.
@@ -1192,7 +1193,7 @@ export const useInstancesStore = defineStore("instances", () => {
       const pinned = agentForkRequests.get(key);
       const targetAlias = pinned?.targetAlias
         ?? nextSessionForkAgentAlias(inst?.sessions ?? [], sourceAlias, targetAgent);
-      const requestId = pinned?.requestId ?? `session-fork-${crypto.randomUUID()}`;
+      const requestId = pinned?.requestId ?? `session-fork-${randomUuid()}`;
       agentForkRequests.set(key, { targetAlias, requestId });
       try {
         const result = unwrap(await api.rpc<SessionDto>(instanceId, "control.sessions.fork", {
@@ -1237,7 +1238,7 @@ export const useInstancesStore = defineStore("instances", () => {
       const inst = byId(instanceId);
       const pinned = nodeForkRequests.get(key);
       const targetAlias = pinned?.targetAlias ?? nextSessionForkAlias(inst?.sessions ?? [], sourceAlias);
-      const requestId = pinned?.requestId ?? `session-fork-${crypto.randomUUID()}`;
+      const requestId = pinned?.requestId ?? `session-fork-${randomUuid()}`;
       nodeForkRequests.set(key, { targetAlias, requestId });
       try {
         const result = unwrap(await api.rpc<SessionDto>(instanceId, "control.sessions.fork", {

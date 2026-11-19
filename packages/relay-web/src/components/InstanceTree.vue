@@ -15,6 +15,7 @@ import { pushToast } from "../lib/use-toasts";
 import { useSwipeActions } from "../lib/use-swipe-actions";
 import { useDropdown } from "../lib/use-dropdown";
 import type { DropdownGroup } from "../lib/use-dropdown";
+import { randomUuid } from "../lib/random-id";
 import { groupSessions, dedupedSessionName, sessionPresentationName, archivedLast } from "../lib/sidebar-group-mode";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
@@ -578,7 +579,7 @@ async function onFork(inst: InstanceView, sourceAlias: string): Promise<void> {
       inst.id,
       sourceAlias,
       nextSessionForkAlias(inst.sessions, sourceAlias),
-      `session-fork-${crypto.randomUUID()}`,
+      `session-fork-${randomUuid()}`,
     );
     pushToast("success", "instance.forkCreated", { alias: created.alias });
     emit("select", inst.id, created.alias);
