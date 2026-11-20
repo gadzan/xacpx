@@ -529,61 +529,66 @@ function describeSubmitError(err: unknown): string {
         </div>
 
         <section v-show="view === 'basic'" id="bot-panel-basic" class="space-y-4">
-        <!-- Avatar: click to view enlarged; the corner badge opens the appearance editor. -->
-        <div class="flex items-center gap-3">
-          <div class="relative shrink-0">
+        <!-- Avatar: click to view enlarged; the corner badge opens the appearance
+             editor. Narrow screens center the avatar above the fields; from sm up
+             it sits beside them, the two fields stacked to its full height. -->
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-5">
+          <div class="relative shrink-0 self-center">
             <button type="button" data-test="bot-avatar-quick-view"
                     :aria-label="$t('bot.avatar.quickView')"
                     aria-haspopup="dialog"
                     class="block rounded-2xl outline-none transition-transform duration-150 ease-ui motion-reduce:transition-none hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent"
                     @click="avatarQuickView = true">
-              <BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="56" static />
+              <span class="sm:hidden"><BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="96" static /></span>
+              <span class="hidden sm:block"><BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="128" static /></span>
             </button>
             <button type="button" data-test="bot-avatar-edit"
                     :aria-label="$t('bot.avatar.editAppearance')"
-                    class="absolute -bottom-1 -right-1 grid h-5 w-5 place-items-center rounded-full bg-surface-2 text-fg-muted ring-1 ring-border transition-colors hover:bg-raised hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+                    class="absolute bottom-0.5 right-0.5 grid h-6 w-6 place-items-center rounded-full bg-raised text-fg shadow-press transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-accent"
                     @click="view = 'appearance'">
-              <Pencil :size="11" />
+              <Pencil :size="12" />
             </button>
           </div>
-        </div>
-        <!-- Name -->
-        <div>
-          <label for="bot-name" class="block text-xs font-medium text-fg-muted mb-1.5">
-            {{ $t("bot.fields.name") }} <span class="text-danger-overlay">*</span>
-          </label>
-          <input
-            id="bot-name"
-            v-model="name"
-            @input="nameDirty = true"
-            type="text"
-            required
-            maxlength="60"
-            :placeholder="$t('bot.fields.namePlaceholder')"
-            :aria-invalid="nameNeedsWorkspaceChars ? 'true' : undefined"
-            :aria-describedby="nameNeedsWorkspaceChars ? 'bot-name-error' : undefined"
-            class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
-            :class="nameNeedsWorkspaceChars ? 'ring-1 ring-danger focus-visible:ring-2 focus-visible:ring-danger' : ''"
-          />
-          <p v-if="nameNeedsWorkspaceChars" id="bot-name-error" data-test="bot-name-error" role="alert" class="mt-1 text-xs text-danger-overlay">
-            {{ $t("bot.validation.dedicatedWorkspaceNameInvalid") }}
-          </p>
-        </div>
+          <div class="min-w-0 flex-1 space-y-3">
+            <!-- Name -->
+            <div>
+              <label for="bot-name" class="block text-xs font-medium text-fg-muted mb-1.5">
+                {{ $t("bot.fields.name") }} <span class="text-danger-overlay">*</span>
+              </label>
+              <input
+                id="bot-name"
+                v-model="name"
+                @input="nameDirty = true"
+                type="text"
+                required
+                maxlength="60"
+                :placeholder="$t('bot.fields.namePlaceholder')"
+                :aria-invalid="nameNeedsWorkspaceChars ? 'true' : undefined"
+                :aria-describedby="nameNeedsWorkspaceChars ? 'bot-name-error' : undefined"
+                class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
+                :class="nameNeedsWorkspaceChars ? 'ring-1 ring-danger focus-visible:ring-2 focus-visible:ring-danger' : ''"
+              />
+              <p v-if="nameNeedsWorkspaceChars" id="bot-name-error" data-test="bot-name-error" role="alert" class="mt-1 text-xs text-danger-overlay">
+                {{ $t("bot.validation.dedicatedWorkspaceNameInvalid") }}
+              </p>
+            </div>
 
-        <!-- Role / Title -->
-        <div>
-          <label for="bot-role" class="block text-xs font-medium text-fg-muted mb-1.5">
-            {{ $t("bot.fields.role") }}
-          </label>
-          <input
-            id="bot-role"
-            v-model="role"
-            @input="roleDirty = true"
-            type="text"
-            maxlength="100"
-            :placeholder="$t('bot.fields.rolePlaceholder')"
-            class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
-          />
+            <!-- Role / Title -->
+            <div>
+              <label for="bot-role" class="block text-xs font-medium text-fg-muted mb-1.5">
+                {{ $t("bot.fields.role") }}
+              </label>
+              <input
+                id="bot-role"
+                v-model="role"
+                @input="roleDirty = true"
+                type="text"
+                maxlength="100"
+                :placeholder="$t('bot.fields.rolePlaceholder')"
+                class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
+              />
+            </div>
+          </div>
         </div>
 
         <!-- Agent & Workspace row -->
