@@ -73,6 +73,14 @@ test("the Jev form shows the masked key and the pinned model, never the key itse
   );
 });
 
+test("Jev routing settings live under automatic collaboration", async () => {
+  stubJev();
+  const w = mountDialog();
+  await flushPromises();
+  const autoCollab = w.find('[data-test="auto-collab-settings"]');
+  expect(autoCollab.find('[data-test="jev-details"]').exists()).toBe(true);
+});
+
 test("typing a key and saving patches only the key", async () => {
   const calls = stubJev({ update: { ...STORED, keyMasked: "sk-…1234" } });
   const w = mountDialog();
