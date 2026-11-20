@@ -148,13 +148,13 @@ describe("CommandPalette", () => {
       await nextTick();
       await nextTick();
       const panel = w.get('[data-test="command-palette"] > div');
-      expect((panel.element as HTMLElement).style.minHeight).toBe("380px");
+      expect((panel.element as HTMLElement).style.minHeight).toBe("min(380px, calc(100dvh - 7rem))");
 
       // Narrowing to nothing must not shrink the panel under the caret.
       await w.get('[data-test="palette-input"]').setValue("no-such-session");
       await nextTick();
       expect(w.findAll('[data-test="palette-row"]')).toHaveLength(0);
-      expect((panel.element as HTMLElement).style.minHeight).toBe("380px");
+      expect((panel.element as HTMLElement).style.minHeight).toBe("min(380px, calc(100dvh - 7rem))");
       w.unmount();
     } finally {
       if (original) Object.defineProperty(HTMLElement.prototype, "offsetHeight", original);

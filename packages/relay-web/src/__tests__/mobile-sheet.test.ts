@@ -217,7 +217,8 @@ describe("MobileSheet pull-to-close", () => {
       await nextTick();
       await nextTick();
       // Clamped to the viewport cap: min-height would otherwise beat max-height.
-      expect(panelEl().style.minHeight).toBe("min(640px, 85dvh)");
+      expect(panelEl().style.minHeight)
+        .toBe("min(640px, min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - 12px)))");
       pinned.unmount();
 
       const plain = mountSheet();

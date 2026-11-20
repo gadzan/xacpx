@@ -118,19 +118,18 @@ onBeforeUnmount(() => {
   vv?.removeEventListener("scroll", syncVv);
   vv = null;
 });
+/** The tallest the panel may paint: 85dvh, minus the notch and a 12px gap, and
+ *  further shrunk to the visual viewport while the keyboard is up. */
+const heightCap = computed(() =>
+  vvCap.value != null ? `${vvCap.value}px` : "min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - 12px))",
+);
 const panelStyle = computed<CSSProperties>(() => {
-  // 85dvh caps long lists; the min() keeps 12px plus the notch headroom above
-  // the panel so it never touches the status bar.
-  const style: CSSProperties = {
-    maxHeight: "min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - 12px))",
-  };
+  const style: CSSProperties = { maxHeight: heightCap.value };
   if (dragOffset.value > 0) style.transform = `translateY(${dragOffset.value}px)`;
   if (vvBottom.value > 0) style.bottom = `${vvBottom.value}px`;
-  if (vvCap.value != null) style.maxHeight = `${vvCap.value}px`;
-  // Never taller than the current cap: min-height wins over max-height otherwise.
-  if (pinnedHeight.value > 0) {
-    style.minHeight = `min(${pinnedHeight.value}px, ${vvCap.value != null ? `${vvCap.value}px` : "85dvh"})`;
-  }
+  // Never taller than the cap: min-height wins over max-height otherwise, and a
+  // rotation between open and read would otherwise pin the panel past the edge.
+  if (pinnedHeight.value > 0) style.minHeight = `min(${pinnedHeight.value}px, ${heightCap.value})`;
   return style;
 });
 const CLOSE_FRACTION = 0.25;

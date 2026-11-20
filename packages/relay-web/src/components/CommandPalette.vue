@@ -98,7 +98,7 @@ onBeforeUnmount(() => {
          safe-area-aware side insets keep >=16px on every edge, and max-w-lg (512)
          can never exceed viewport - 32px because the padding lives inside the
          flex container. -->
-    <div ref="panel" :style="pinnedHeight ? { minHeight: `${pinnedHeight}px` } : undefined"
+    <div ref="panel" :style="pinnedHeight ? { minHeight: `min(${pinnedHeight}px, calc(100dvh - 7rem))` } : undefined"
          class="w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
       <div class="flex min-h-12 items-center gap-2 px-4">
         <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
