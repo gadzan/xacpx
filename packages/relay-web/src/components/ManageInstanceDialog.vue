@@ -356,7 +356,7 @@ onMounted(async () => {
               </div>
               <p class="text-xs text-fg-muted">{{ $t("instance.groupModeHint") }}</p>
             </section>
-            <section class="space-y-2">
+            <section data-test="auto-collab-settings" class="space-y-2">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.autoCollabTitle") }}</h3>
               <div class="flex items-center gap-3">
                 <UiSwitch v-if="panel.phase !== 'read-only'" test-id="router-toggle"
@@ -372,35 +372,6 @@ onMounted(async () => {
               </div>
               <p data-test="router-hint" class="text-xs text-fg-muted">{{ routerHint }}</p>
               <p v-if="routerErrorText" data-test="router-error" class="text-xs text-danger-overlay">{{ routerErrorText }}</p>
-            </section>
-            <section data-test="terminal-settings" class="space-y-2">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.terminalSettingsTitle") }}</h3>
-              <div class="flex items-center gap-3">
-                <UiSwitch v-if="terminalPanel.phase !== 'read-only'" test-id="terminal-settings-toggle"
-                          :checked="terminalSettings?.enabled ?? false"
-                          :label="(terminalSettings?.enabled ?? false) ? $t('instance.terminalSettingsDisable') : $t('instance.terminalSettingsEnable')"
-                          :disabled="terminalPanel.phase !== 'editable' || terminalSaving || !instanceOnline"
-                          @toggle="toggleTerminal" />
-                <p data-test="terminal-settings-status" class="text-sm text-fg-muted">
-                  {{ terminalStatusText }}
-                </p>
-              </div>
-              <p v-if="terminalSettings?.restartRequired" data-test="terminal-restart-required" class="text-xs text-warn-overlay">{{ $t('instance.terminalSettingsRestart') }}</p>
-              <p v-if="terminalError" data-test="terminal-settings-error" class="text-xs text-danger-overlay">{{ terminalError }}</p>
-            </section>
-            <section data-test="files-settings" class="space-y-2">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.filesSettingsTitle") }}</h3>
-              <div class="flex items-center gap-3">
-                <UiSwitch v-if="filesPanel.phase !== 'read-only'" test-id="files-settings-toggle"
-                          :checked="filesSettings?.enabled ?? false"
-                          :label="(filesSettings?.enabled ?? false) ? $t('instance.filesSettingsDisable') : $t('instance.filesSettingsEnable')"
-                          :disabled="filesPanel.phase !== 'editable' || filesSaving || !instanceOnline"
-                          @toggle="toggleFiles" />
-                <p data-test="files-settings-status" class="text-sm text-fg-muted">{{ filesStatusText }}</p>
-              </div>
-              <p data-test="files-settings-hint" class="text-xs text-fg-muted">{{ $t("instance.filesSettingsHint") }}</p>
-              <p v-if="filesError" data-test="files-settings-error" class="text-xs text-danger-overlay">{{ filesError }}</p>
-            </section>
             <details v-if="jevEditable || jevUpgradeNotice" data-test="jev-details" class="rounded-lg border border-hairline px-3 py-2">
               <summary class="cursor-pointer text-sm font-semibold text-fg">{{ $t("instance.jevTitle") }}</summary>
               <p v-if="jevUpgradeNotice" data-test="jev-upgrade-notice" class="mt-2 text-xs text-fg-muted">{{ $t(jevUpgradeNotice) }}</p>
@@ -456,6 +427,35 @@ onMounted(async () => {
               <p v-if="jevErrorText" data-test="jev-error" class="text-xs text-danger-overlay">{{ jevErrorText }}</p>
               </div>
             </details>
+            </section>
+            <section data-test="terminal-settings" class="space-y-2">
+              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.terminalSettingsTitle") }}</h3>
+              <div class="flex items-center gap-3">
+                <UiSwitch v-if="terminalPanel.phase !== 'read-only'" test-id="terminal-settings-toggle"
+                          :checked="terminalSettings?.enabled ?? false"
+                          :label="(terminalSettings?.enabled ?? false) ? $t('instance.terminalSettingsDisable') : $t('instance.terminalSettingsEnable')"
+                          :disabled="terminalPanel.phase !== 'editable' || terminalSaving || !instanceOnline"
+                          @toggle="toggleTerminal" />
+                <p data-test="terminal-settings-status" class="text-sm text-fg-muted">
+                  {{ terminalStatusText }}
+                </p>
+              </div>
+              <p v-if="terminalSettings?.restartRequired" data-test="terminal-restart-required" class="text-xs text-warn-overlay">{{ $t('instance.terminalSettingsRestart') }}</p>
+              <p v-if="terminalError" data-test="terminal-settings-error" class="text-xs text-danger-overlay">{{ terminalError }}</p>
+            </section>
+            <section data-test="files-settings" class="space-y-2">
+              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.filesSettingsTitle") }}</h3>
+              <div class="flex items-center gap-3">
+                <UiSwitch v-if="filesPanel.phase !== 'read-only'" test-id="files-settings-toggle"
+                          :checked="filesSettings?.enabled ?? false"
+                          :label="(filesSettings?.enabled ?? false) ? $t('instance.filesSettingsDisable') : $t('instance.filesSettingsEnable')"
+                          :disabled="filesPanel.phase !== 'editable' || filesSaving || !instanceOnline"
+                          @toggle="toggleFiles" />
+                <p data-test="files-settings-status" class="text-sm text-fg-muted">{{ filesStatusText }}</p>
+              </div>
+              <p data-test="files-settings-hint" class="text-xs text-fg-muted">{{ $t("instance.filesSettingsHint") }}</p>
+              <p v-if="filesError" data-test="files-settings-error" class="text-xs text-danger-overlay">{{ filesError }}</p>
+            </section>
             <section class="space-y-1">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.versionLabel") }}</h3>
               <p class="text-sm text-fg-muted" data-test="instance-version">
