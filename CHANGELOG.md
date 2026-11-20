@@ -1,16 +1,99 @@
 # Changelog
-## [Unreleased]
+## [0.24.10] - 2026-11-20
+
+0.24.10 把 0.24.6–0.24.10 的 beta 线转成正式版。下面是这条线相对 0.24.5 的用户可见变化。
 
 ### Added
 
-- 会话可改用另一已配置智能体继续（UX3）：会话菜单中的「改用其他智能体继续」在同一工作区创建新的逻辑会话分支，源会话及其 id 保持可寻址；分支复用现有可移植分叉交接，首条生效 prompt 只消费一次交接块；只列出已配置智能体并排除源智能体，不创建或安装驱动（#606）。
-- `control.sessions.fork` 新增可选 `targetAgent`，并广播能力位 `session.fork.agent.v1`（附加在 `session.fork.handoff.v1` 之上）：旧连接器会拒收该载荷，所以 Relay Web 在缺少能力位时隐藏入口。切换目标不继承源模型与 effort，未配置目标以 `session-fork-agent-unavailable` 拒绝。分叉记录持久化生效目标智能体（含迁移），重放不同目标以 `session-fork-request-mismatch` 拒绝；无该列的旧记录只在请求目标为源智能体、或已解析目标实际智能体一致时才重放（#606）。
+- Direct / Group 会话运行时落地：每次运行经 SQLite outbox 持久化，Topic 隔离、崩溃恢复、seq 与幂等写入各有覆盖；认领、快照、所有权、取消与 teardown 的缺口全部收口，Bot 删除绑定到持久工作，`control.conversation.prompt` 与 `control.upload` 接受附件引用（#346、#467）。
+- 自动协作：内置 Router 通过 TypeSafe Jev（`jev-1.13.0`）在每次结算后挑下一步动作与合格成员，依次推进调查、产出、独立验证与修订；新交付必须有本轮新验证，证据前沿有界并可分页读取公开结果；超长或空白的验证报告连续两次停下交给人工（#395、#416、#421）。
+- Run 可恢复暂停，以及按批次结算的协作预算：`control.runs.pause` / `control.runs.resume` 在 `control_revision` 上 CAS 并写持久 receipt，运行中的暂停先记录 drain 意图再由持久行自收敛；工作窗口按 `max(8, shortage)` 确定性续期并写入 `run_budget_decisions`；未解决问题跨窗口保留，Router 不能对自己都不能接受的残余工作给出 `complete`。
+- 群组多轮交接（V2 P0-B）成为默认：`conversations.followupRedispatch: false` 可回滚；唤醒可以继续派活，完成判定读整个 Run 的等待图；未指定目标的群组消息由该群组配置的 lead 应答（#503）。
+- 专用工作区：新建 Bot 默认在 `~/.xacpx/bots/` 下分配私有工作区，分配、注册与保存共用一次配置事务；编辑 Bot 时可现场分配（`dedicatedWorkspace: true`），移除 Bot 时可一并删除仍未被占用的专属目录；专属工作区对 `workspace list/add/remove` 与微信 `/workspace` 隐藏（#460、#475、#531）。
+- 模型能力发现：agent 的模型列表作为能力状态上报（`EmptyCapability` 表示「已公布且为空」，`ReadyCapability` 带 `freshness` / `lastVerifiedAt`），列表按 agent + workspace + 启动身份持久到 `state.json` 的 `capability_lists`，daemon 重启后仍可用，显式读取总会重新探测（#393、#464、#565、#602）。
+- 终端与文件写入开关：`control.terminal.settings.*` 改 `channels[relay].options.terminal.enabled`，`control.files.settings.*` 改 `files.writeEnabled` 并热应用到 live config，两者都在配置变更互斥锁内落盘（#452、#477）。
+- 公开运行轨迹：每个 Run 的过程持久进 Core SQLite，通过有界的只读详情与 trace RPC 提供给面板的思考气泡与过程抽屉（#447）。
+- `peer.*` 对等会话委派原型：`peer_delegate` / `peer_approve` / `peer_watch` / `peer_confirm` / `peer_cancel` / `peer_list` / `peer_get` 让会话 A 直接委派给会话 B。
+- `acquireFileLock` 插件 API：一套生命周期内的 OS 锁（POSIX stable-file flock、Windows 命名管道守卫），运行时所有权与终端注册表共用。
+- Windows 运行时 worker 在自身代码启动前继承 supervisor 铸造的、代际绑定的 kill-on-close Job；`session recover` 只接受严格参数。
+- 复用式全栈验证栈 `scripts/verify-stack.mjs`：临时状态目录下的隔离 daemon + hub + dashboard，附 `docs/verification-stack.md`（#403）。
+
+### Changed
+
+- `acpx` 从 0.15.1 钉到 0.19.5（精确版本，无 caret），CLI 与 Bridge 两条通道吸收 0.19.x 的队列所有权关闭竞态；管理适配器跟进 Codex 与 Claude 的发布版（#448）。
+- 群成员 prompt 拆成三层：稳定的协作契约作为可缓存前缀、当前 Run 的事实快照、带边界标记的成员产出证据；协作规则只保留一份表述（#504、#509）。
+- Router 输入不再把 64 条 assignment 当作 Run 一生历史，改为按批次的新近窗口并携带真实累计计数；member 名单移入快照层，两轮之间共享可缓存前缀。
+- 群组创建时固定工作区模式：`per-member` 的 Topic 不携带执行目标，同一 Run 内成员可并行，规范 cwd 的预约仍串行。
 
 ### Fixed
 
-- 修复非安全上下文（局域网或 Tailscale 的 `http://` 地址）下 `crypto.randomUUID` 不存在时，会话分叉、切换智能体等请求 id 生成直接抛错的问题；改用兼容 `crypto.getRandomValues` 的 UUID v4 生成器。
-- 切换智能体、分叉、删除会话现在会在动作开始时立即显示持续 spinner 与操作文案，并在源会话行显示旋转图标；完成后再给成功/失败提示，不再出现菜单关闭后几秒无反馈的空白期。
-- 实例管理把 Jev 路由设置移入“群组自动协作”分区，和它实际驱动的自动 Router 放在一起，不再挂在 Files 设置之后。
+- 工作区删除不再与并发会话绑定竞争：daemon 内删除在同一临界区重查占用并移除，Bot 自动工作区回滚会保留他人刚注册的目录；`xacpx workspace rm` 在 daemon 运行或状态不确定时拒绝（#461、#462）。
+- 硬删除与软关闭不再被重启遗留的所有权封印永久拦住：quiescence 探测能证明 owner 已消失，`admitted` 封印同样在探测中解除。
+- 中文或非 ASCII 名称派生的 workspace 名在所有入口使用同一哈希兜底，不再退化成 `workspace`。
+- 会话创建时的目录或启动路径缺失会点名具体哪一个，而不是笼统的 spawn 失败。
+- 运行中刷新模型 / effort 芯片不再等 45s 超时：只读的 `getSessionModel` / `getSessionEffort` 走 bridge 控制通道，`setModel` 超时后返回 `{ applied: false, pending: true }` 并在后台协调。
+- 受控移除的 Bot 不再以「已禁用」身份留在目录里；elicitation 响应时限放宽到五分钟并对齐 transport watchdog（#517、#518）。
+- daemon 默认启动超时提高到 60s，正常重启不再被报成 `did not report ready state`（#456）。
+
+## [relay 0.14.12] - 2026-11-20
+
+### Added
+
+- 一条时间线成为 Direct 与 Group 唯一的会话界面：共享 `ConversationTimeline`（`RoomView` + `conversation.timeline`）、一行状态条与 Run-wide 过程抽屉；消息、当前发言者、交接、排队/全员 pass/失败 notice 都走同一投影，旧的 `GroupTranscript` / `ConversationMessageList` / `GroupDispatch*` 删除（#569）。
+- 圆桌讨论：输入区点开选 1/2/3 轮再由普通发送键提交；被停止的成员回合合并成一行去重头像，交接渲染为重叠的发送/接收头像对（#579）。
+- 会话分叉：会话菜单分叉稳定头部，消息行分叉持久 prompt 节点，均以能力位把关，同一节点重试复用同一请求 id（#586、#588）。
+- 「改用其他智能体继续」（UX3）：会话菜单里选另一个已配置智能体，在同一工作区开出新的逻辑会话分支，源会话 id 保持可寻址，只列出已配置智能体并排除源智能体（#606）。
+- 跨实例「需要你」收件箱，以及实例 Agents 区的只读 provider 就绪状态（#604、#605）。
+- 登录页「在此设备上记住 token」：勾选后 token 存入 `localStorage`，会话过期后预填并保持勾选，登出或换账号登录会清旧值（#583）。
+- Bot 编辑：移动端头像居中 96px，桌面端 128px 与右侧竖排的名称/角色两栏等高，角标去掉深色描边（#613）。
+
+### Changed
+
+- 设计系统收敛（WP-1 … WP-18）：前景/强调/危险文字改为实色语义 token，发丝边替换实色边框，弹层统一走 `DialogShell`，菜单与选择器收敛为 `SelectMenu` / `DropdownPanel`，开关收敛为一份 `UiSwitch`（#612）。
+- 模型选择器状态矩阵：loading / fresh / stale / refreshing / empty / unsupported / needs-setup / error，读取状态收进字段内的刷新图标，读取期间列表保持可选（#582、#569）。
+- 手机几何：侧栏与群聊不再整列横滚，宽代码与表格只在各自块内滚动；侧栏轨道 32、选中块 28、粗指针热区 44；桌面外壳收成两行（#596、#600）。
+- 带搜索的选择器面板锁住打开高度，筛选时行不再在指尖下移动；弹出面板的遮罩点击不再穿透到底层（#610、#603）。
+
+### Fixed
+
+- 非安全上下文（局域网或 Tailscale 的 `http://`）下请求 id 生成不再抛错，改用 `crypto.getRandomValues` 的 UUID v4（#607）。
+- 切换智能体、分叉与删除会话在动作开始就给出 spinner 与文案，不再有菜单关闭后的空白期（#608）。
+- 下拉行标签回到左缘；实例管理把 Jev 路由移入「群组自动协作」分区（#609、#611）。
+- 群组对话框不再因默认路由提示里的 `@` 白屏；空 Bot 页的起步 chip 只填不发（#577、#590）。
+
+## [relay-protocol 0.6.4] - 2026-11-20
+
+### Added
+
+- 会话分叉与「改用其他智能体继续」：`control.sessions.fork` 新增可选 `targetAgent`，能力位 `session.fork.agent.v1` 挂在既有 `session.fork.handoff.v1` 之上；`MessageRecordDto.nodeId` 携带核心为每条生效 prompt 铸的持久节点 id，供按轮次节点分叉回传；`ThreadForkSourcePointDto` 增加 `{ type: "message" }` 来源点，`TopicForkDto` 增加可选 `mode: "snapshot" | "handoff"`（#586、#588、#606）。
+- 一条时间线与圆桌讨论的 wire：`ConversationTimelineDto` / `RoomView`、`{ mode: "roundtable", botIds, rounds? }` target 与 `conversations.roundtable.v1`、Run/MemberTurn 的 `shape` / `rounds` / `leadBotId` / `roundIndex` / `speakerIndex` / `speechOutcome` / `origin`；`runsDetailsBatch` 的 `roundtableV1` 标记让旧严格校验器仍能读历史批次（#546）。
+- 新的 control RPC 与载荷校验器：`control.conversations.router.update`、`control.terminal.settings.get|update`、`control.files.settings.get|update`、`control.jev.get|update|test`、`control.runs.details.batch`、`control.runs.trace.get`、`control.runs.pause|resume`、`control.runs.abandon`、`control.runs.cancelMember`、`control.group.topics.set-isolation`、`control.direct.topics.fork`（#405、#447、#452、#468、#477、#480、#534、#586）。
+- 能力位成对广播：`runs.pause.v1`、`bots.dedicated-workspace.v1`、`bots.dedicated-workspace-update.v1`、`groups.workspace-mode.v1`、`groups.handoff-memory-summary.v1`、`groups.public-memory-switch.v1`、`groups.default-routing.v1`、`session.fork.handoff.v1` / `session.fork.message.v1` / `session.fork.agent.v1`，全部为增量字段，旧连接器照旧通过校验（#460、#475、#481、#558–#560）。
+- 模型能力发现语义：`EmptyCapability` 表示「已公布且为空」，`ReadyCapability` 带 `freshness` / `refreshing` / `lastVerifiedAt` 与可选 `reason`，`EffortView` 带可选 `forModelId`；未知或不完整载荷仍解析为 stale-response，不冒充空列表（#565、#569）。
+- Bot 与 Run 的字段：结构化头像契约（形状 / 颜色 / 表情 / 动效，旧文本头像继续可读）、`BotUpdateRequestDto.dedicatedWorkspace`、`BotSummaryDto` / `BotDetailDto` 的 `dedicatedWorkspace: { name, path }`、移除预览与运行详情里的 `abandonableRunIds` / `abandonedAt`（#460、#475、#534）。
+- `workspaceNameFallback` / `hasWorkspaceNameChars` / `stableHash8` 让 CLI、daemon 与面板共用一条工作区命名规则（#460）。
+
+## [channel-relay 0.7.8] - 2026-11-20
+
+### Added
+
+- 控制桥转发新增的会话与实例 RPC：`conversations.router.update`、`terminal.settings.*`、`files.settings.*`、`jev.*`、`runs.pause|resume|abandon`、`runs.cancelMember`、`runs.details.batch`、`runs.trace.get`、`group.topics.set-isolation`、话题分叉与 `sessionModelGet.refresh`；旧 core 一律得到 `unsupported-rpc` 而不是 `internal`（#405、#447、#452、#468、#477、#534）。
+- 能力广告改为「core 探测 + 本端 validator」双门：`conversations.roundtable.v1`、`conversations.timeline.v1`、`runs.pause.v1`、`groups.public-memory-switch.v1`、`groups.handoff-memory-summary.v1`、`groups.default-routing.v1`、`groups.workspace-mode.v1`、`session.fork.*` 与四个话题分叉能力只在两侧都接受时才宣布（#480、#481、#558–#560、#586、#588）。
+- 桌面 ARD 隧道转发：新增可配置背压上限的流控转发，以及连接器侧的平滑模式诊断。
+- elicitation 支持第二种路由：直连会话 turn 由 `InteractionRequestDto.sessionAlias` 承载，不再只认会话关联。
+
+### Changed
+
+- `minXacpxVersion` 随本版 core 抬到 `0.24.10`；协议与 rmux bridge 的版本钉随本批发布。
+- 终端注册表写入者持有内核锁直到关闭：POSIX 复用 core 的 flock / Bun helper，Windows 用命名管道守卫，崩溃即释放所有权。
+
+## [channel-feishu 0.8.7] - 2026-11-20
+
+- 跟随 core 0.24.10 重新发布，`peerDependencies.xacpx` 下限对齐本版 core；本次无用户可见行为变化。
+
+## [channel-discord 0.8.7] - 2026-11-20
+
+- 跟随 core 0.24.10 重新发布，`peerDependencies.xacpx` 下限对齐本版 core；本次无用户可见行为变化。
 
 ## [relay 0.14.12-beta.24] - 2026-11-19
 
