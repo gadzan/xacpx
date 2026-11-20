@@ -1885,6 +1885,27 @@ describe("Direct Bot Components", () => {
       expect(second.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-cached");
       second.unmount();
     });
+
+    it("groups Bot settings into the borrowed Identity/Brain/Knows/Does/Rules sections", async () => {
+      seedLocalInstance();
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect(wrapper.findAll('[data-test^="bot-group-"]').map((group) => group.attributes("data-test")))
+        .toEqual([
+          "bot-group-identity",
+          "bot-group-does",
+          "bot-group-knows",
+          "bot-group-brain",
+          "bot-group-rules",
+        ]);
+      expect(wrapper.get('[data-test="bot-group-brain"]').text())
+        .toContain(i18n.global.t("bot.groups.brainHint"));
+      wrapper.unmount();
+    });
+
   });
 
   describe("ConversationPromptInput.vue", () => {

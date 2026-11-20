@@ -529,6 +529,8 @@ function describeSubmitError(err: unknown): string {
         </div>
 
         <section v-show="view === 'basic'" id="bot-panel-basic" class="space-y-4">
+        <div data-test="bot-group-identity" class="space-y-3">
+          <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.identity") }}</h3>
         <!-- Avatar: click to view enlarged; the corner badge opens the appearance
              editor. Narrow screens center the avatar above the fields; from sm up
              it sits beside them, the two fields stacked to its full height. -->
@@ -590,7 +592,13 @@ function describeSubmitError(err: unknown): string {
             </div>
           </div>
         </div>
+        </div>
 
+        <div data-test="bot-group-does" class="space-y-3">
+          <div class="space-y-1">
+            <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.does") }}</h3>
+            <p class="text-xs text-fg-muted">{{ $t("bot.groups.doesHint") }}</p>
+          </div>
         <!-- Agent & Workspace row -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <!-- Agent -->
@@ -635,7 +643,13 @@ function describeSubmitError(err: unknown): string {
             </p>
           </div>
         </div>
+        </div>
 
+        <div data-test="bot-group-knows" class="space-y-3">
+          <div class="space-y-1">
+            <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.knows") }}</h3>
+            <p class="text-xs text-fg-muted">{{ $t("bot.groups.knowsHint") }}</p>
+          </div>
         <!-- Instructions -->
         <div>
           <label for="bot-instructions" class="block text-xs font-medium text-fg-muted mb-1.5">
@@ -656,7 +670,13 @@ function describeSubmitError(err: unknown): string {
             {{ $t("bot.fields.instructionsHint") }}
           </p>
         </div>
+        </div>
 
+        <div data-test="bot-group-brain" class="space-y-3">
+          <div class="space-y-1">
+            <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.brain") }}</h3>
+            <p class="text-xs text-fg-muted">{{ $t("bot.groups.brainHint") }}</p>
+          </div>
         <ModelPicker
           audience="bot"
           :show-applies-later="isEditing"
@@ -672,6 +692,12 @@ function describeSubmitError(err: unknown): string {
           @update:effort="onEffortPick"
           @fetch="loadCapabilities(true)"
         />
+        </div>
+        <div data-test="bot-group-rules" class="space-y-3">
+          <div class="space-y-1">
+            <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.rules") }}</h3>
+            <p class="text-xs text-fg-muted">{{ $t("bot.groups.rulesHint") }}</p>
+          </div>
         <div>
             <label class="flex items-center gap-2 cursor-pointer text-sm">
               <input
@@ -693,6 +719,7 @@ function describeSubmitError(err: unknown): string {
            class="rounded-lg bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
           {{ $t("bot.lifecycle.reenableNote") }}
         </p>
+        </div>
         </section>
         <section v-show="view === 'appearance'" id="bot-panel-appearance">
           <BotAvatarEditor v-model:preview-state="avatarPreviewState" :model-value="avatar" :driver="avatarDriver" :name="name" @update:model-value="onAvatarPick" />

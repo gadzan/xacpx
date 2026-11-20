@@ -938,6 +938,17 @@ export default {
         offline: "Instance offline", retired: "Removed Bot",
       },
     },
+    groups: {
+      identity: "Identity",
+      brain: "Brain",
+      knows: "Knows",
+      does: "Does",
+      rules: "Rules",
+      brainHint: "Model and reasoning effort used for future turns.",
+      knowsHint: "Instructions the Bot carries into future turns.",
+      doesHint: "Agent and workspace where this Bot runs.",
+      rulesHint: "When this Bot accepts new work.",
+    },
     fields: {
       name: "Name",
       namePlaceholder: "e.g. Code Reviewer",

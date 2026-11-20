@@ -95,6 +95,10 @@
 
 - 跟随 core 0.24.10 重新发布，`peerDependencies.xacpx` 下限对齐本版 core；本次无用户可见行为变化。
 
+### Changed
+
+- Bot 设置表单借鉴 OpenBot 的 Identity / Brain / Knows / Does / Rules 分组，只重排现有字段并增加组说明，不改变保存、校验或运行时行为。
+
 ## [relay 0.14.12-beta.24] - 2026-11-19
 
 ### Changed

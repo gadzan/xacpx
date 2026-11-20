@@ -934,6 +934,17 @@ export default {
         offline: "实例离线", retired: "已移除 Bot",
       },
     },
+    groups: {
+      identity: "身份",
+      brain: "核心",
+      knows: "已知",
+      does: "行为",
+      rules: "规则",
+      brainHint: "后续轮次使用的模型与推理等级。",
+      knowsHint: "Bot 在后续轮次中遵循的指令。",
+      doesHint: "Bot 运行所用的 Agent 与工作区。",
+      rulesHint: "Bot 何时接收新工作。",
+    },
     fields: {
       name: "名称",
       namePlaceholder: "例如：代码审查助手",
