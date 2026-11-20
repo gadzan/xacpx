@@ -69,12 +69,19 @@ function onKeydown(e: KeyboardEvent) {
 // Focus returns to whatever opened the palette: a command surface that drops
 // the caret on <body> strands keyboard users after Escape.
 let previouslyFocused: HTMLElement | null = null;
+// Results narrow as you type, and a panel that shrinks under the caret reads as
+// broken. The height it opened with is pinned; only the list scrolls or empties.
+const panel = ref<HTMLElement | null>(null);
+const pinnedHeight = ref(0);
 
 onMounted(() => {
   previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   unregister = pushModal({ id: "palette", close: () => emit("close") });
   lockBodyScroll();
-  void nextTick(() => input.value?.focus());
+  void nextTick(() => {
+    input.value?.focus();
+    if (panel.value) pinnedHeight.value = panel.value.offsetHeight;
+  });
 });
 onBeforeUnmount(() => {
   unregister?.();
@@ -91,7 +98,8 @@ onBeforeUnmount(() => {
          safe-area-aware side insets keep >=16px on every edge, and max-w-lg (512)
          can never exceed viewport - 32px because the padding lives inside the
          flex container. -->
-    <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+    <div ref="panel" :style="pinnedHeight ? { minHeight: `min(${pinnedHeight}px, calc(100dvh - 7rem))` } : undefined"
+         class="w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
       <div class="flex min-h-12 items-center gap-2 px-4">
         <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
         <input ref="input" v-model="query" data-test="palette-input" data-ring="container"

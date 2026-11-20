@@ -140,6 +140,28 @@ describe("CommandPalette", () => {
     opener.remove();
   });
 
+  it("keeps the height it opened at while the query narrows the results", async () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 380 });
+    try {
+      const w = mount(CommandPalette, { attachTo: document.body });
+      await nextTick();
+      await nextTick();
+      const panel = w.get('[data-test="command-palette"] > div');
+      expect((panel.element as HTMLElement).style.minHeight).toBe("min(380px, calc(100dvh - 7rem))");
+
+      // Narrowing to nothing must not shrink the panel under the caret.
+      await w.get('[data-test="palette-input"]').setValue("no-such-session");
+      await nextTick();
+      expect(w.findAll('[data-test="palette-row"]')).toHaveLength(0);
+      expect((panel.element as HTMLElement).style.minHeight).toBe("min(380px, calc(100dvh - 7rem))");
+      w.unmount();
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, "offsetHeight", original);
+      else delete (HTMLElement.prototype as unknown as { offsetHeight?: number }).offsetHeight;
+    }
+  });
+
   it("a backdrop pointer sequence closes once on click and never reaches the page under it", async () => {
     const onNew = vi.fn();
     const covered = document.createElement("button");

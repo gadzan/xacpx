@@ -182,7 +182,8 @@ const listRole = computed(() => props.role ?? "listbox");
 
 <template>
   <!-- <lg: the same rows inside a bottom sheet (title = the dropdown's scene name). -->
-  <MobileSheet v-if="isMobile && dd.open" :title="title ?? ''" :z-class="sheetZ" :test-id="sheetTestId ?? testId" dd-panel @close="dd.closeMenu()">
+  <MobileSheet v-if="isMobile && dd.open" :title="title ?? ''" :z-class="sheetZ" :test-id="sheetTestId ?? testId" dd-panel
+               :stable-height="showSearch" @close="dd.closeMenu()">
     <!-- Search sits in the sheet's fixed band: the header and the field stay put
          while only the rows scroll. -->
     <template v-if="showSearch" #fixed>
