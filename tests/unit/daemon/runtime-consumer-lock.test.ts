@@ -175,7 +175,12 @@ test("Bun acquisition timeout kills a helper that already holds flock before its
   let helperPid: number | undefined;
   const timedOut = createRuntimeConsumerLock({
     lockFilePath,
-    helperAcquireTimeoutMs: 3_000,
+    // The busy window ends when this timeout kills the helper — and the kill is
+    // what releases the flock. Spawn wait (2s) + settle (100ms) + probe budget
+    // must therefore fit inside it; 3s did not, and a loaded runner lost the
+    // race every time. The handshake delay stays above the timeout so the helper
+    // can never answer first.
+    helperAcquireTimeoutMs: 8_000,
     // The Node helper takes the flock before delaying its protocol response.
     helperHandshakeDelayMs: 10_000,
     onDiagnostic: (event, context) => {
@@ -199,7 +204,7 @@ test("Bun acquisition timeout kills a helper that already holds flock before its
   // see FREE forever. Wait for spawn, then for the helper's flock syscall.
   await Bun.sleep(100);
 
-  const busyDeadline = Date.now() + 1_500;
+  const busyDeadline = Date.now() + 5_000;
   let observedBusy = false;
   while (!observedBusy && Date.now() < busyDeadline) {
     observedBusy = await probeFlockBusy(lockFilePath);
