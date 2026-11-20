@@ -125,6 +125,8 @@ function harness(options: {
     url?: string;
   };
   runListOutcome?: "error" | "empty";
+  /** Tags that exist in addition to the per-package release tag. */
+  extraTags?: string[];
 } = {}) {
   const clock = virtualClock();
   const remoteTags = options.remoteTags ?? new Set<string>();
@@ -132,6 +134,7 @@ function harness(options: {
   const tags = new Set(releaseLib.PACKAGE_REGISTRY.map((pkg) =>
     releaseLib.tagFor(pkg.id, pending.includes(pkg.id) ? previousVersion : version),
   ));
+  for (const tag of options.extraTags ?? []) tags.add(tag);
   const manifests: Record<string, string> = Object.fromEntries(releaseLib.PACKAGE_REGISTRY.map((pkg) => [
     join(root, pkg.manifestPath),
     JSON.stringify({ version }),
@@ -311,6 +314,20 @@ test("registry polling recovers from a temporary 404 and a thrown request", asyn
   expect(attempts).toBe(3);
   expect(fixture.clock.sleeps).toEqual([15_000, 15_000]);
   expect(fixture.output.join("\n")).not.toContain("is not visible yet");
+});
+
+test("a graduated stable tag drops out of the resume set even though a beta tag sorts above it", () => {
+  // `git tag --sort=-v:refname` ranks 0.6.4-beta.14 above 0.6.4, so the newest
+  // tag is not the released one. Reading the plan off the newest tag kept the
+  // package pending forever and `publish` then refused its own tag.
+  const fixture = harness({
+    pending: ["relay-protocol", "relay"],
+    extraTags: [protocolTag, releaseLib.tagFor("relay-protocol", `${version}-beta.14`)],
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(fixture.tags.has(protocolTag)).toBe(true);
+  expect(plan.releases.map((release) => release.id)).toEqual(["relay"]);
 });
 
 test("an unconfirmed protocol wave leaves the relay tag uncreated and prints recovery steps", async () => {
