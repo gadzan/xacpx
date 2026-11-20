@@ -106,8 +106,9 @@ onMounted(() => {
     syncVv();
   }
   if (props.stableHeight) {
-    // One frame after mount, so the measured height includes the rows the sheet
-    // opened with. The entry animation is transform-only, so it cannot skew this.
+    // One tick after mount, so the rows the sheet opened with are laid out;
+    // reading offsetHeight forces the layout, and the entry animation is
+    // transform-only, so it cannot skew this.
     void nextTick(() => {
       if (panel.value) pinnedHeight.value = panel.value.offsetHeight;
     });
