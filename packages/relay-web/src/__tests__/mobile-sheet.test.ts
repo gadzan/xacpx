@@ -204,4 +204,30 @@ describe("MobileSheet pull-to-close", () => {
     expect(wrapper.emitted("close")).toBeUndefined();
     wrapper.unmount();
   });
+
+  it("pins the height it opened at when asked, and never does so unasked", async () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 640 });
+    try {
+      const pinned = mount(MobileSheet, {
+        props: { title: "Agents", testId: "sheet", stableHeight: true },
+        slots: { default: '<button data-test="content-row">row</button>' },
+        attachTo: document.body,
+      });
+      await nextTick();
+      await nextTick();
+      // Clamped to the viewport cap: min-height would otherwise beat max-height.
+      expect(panelEl().style.minHeight).toBe("min(640px, 85dvh)");
+      pinned.unmount();
+
+      const plain = mountSheet();
+      await nextTick();
+      await nextTick();
+      expect(panelEl().style.minHeight).toBe("");
+      plain.unmount();
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, "offsetHeight", original);
+      else delete (HTMLElement.prototype as unknown as { offsetHeight?: number }).offsetHeight;
+    }
+  });
 });

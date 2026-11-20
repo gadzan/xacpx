@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, type CSSProperties } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, type CSSProperties } from "vue";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { modalLayers, navigateBack } from "../lib/mobile-back";
 import { X } from "lucide-vue-next";
@@ -32,7 +32,11 @@ const props = withDefaults(defineProps<{
   padded?: boolean;
   /** The `#header` slot supplies its own close control. */
   showClose?: boolean;
-}>(), { height: "md", padded: false, showClose: true });
+  /** Sheets whose rows are filtered from inside (the searchable dropdowns) pin
+   *  the height they opened at, so a narrowing query cannot shrink the panel
+   *  under the finger. Short lists keep their own short height. */
+  stableHeight?: boolean;
+}>(), { height: "md", padded: false, showClose: true, stableHeight: false });
 const emit = defineEmits<{ close: [] }>();
 const panel = ref<HTMLElement | null>(null);
 const body = ref<HTMLElement | null>(null);
@@ -57,6 +61,8 @@ defineExpose({ body });
 // that later gains a dialog above it still stays below it.
 const layerDepth = ref(0);
 const escaping = ref(false);
+/** Height measured once at open; only `stableHeight` sheets pin it. */
+const pinnedHeight = ref(0);
 const stacked = computed(() => escaping.value && layerDepth.value > 0);
 const resolvedZ = computed(() => props.zClass ?? (stacked.value ? "z-dialog-nested" : "z-sheet"));
 const backdropClass = computed(() => stacked.value ? "bg-transparent" : "bg-scrim backdrop-blur-scrim");
@@ -99,6 +105,13 @@ onMounted(() => {
     vv.addEventListener("scroll", syncVv);
     syncVv();
   }
+  if (props.stableHeight) {
+    // One frame after mount, so the measured height includes the rows the sheet
+    // opened with. The entry animation is transform-only, so it cannot skew this.
+    void nextTick(() => {
+      if (panel.value) pinnedHeight.value = panel.value.offsetHeight;
+    });
+  }
 });
 onBeforeUnmount(() => {
   vv?.removeEventListener("resize", syncVv);
@@ -114,6 +127,10 @@ const panelStyle = computed<CSSProperties>(() => {
   if (dragOffset.value > 0) style.transform = `translateY(${dragOffset.value}px)`;
   if (vvBottom.value > 0) style.bottom = `${vvBottom.value}px`;
   if (vvCap.value != null) style.maxHeight = `${vvCap.value}px`;
+  // Never taller than the current cap: min-height wins over max-height otherwise.
+  if (pinnedHeight.value > 0) {
+    style.minHeight = `min(${pinnedHeight.value}px, ${vvCap.value != null ? `${vvCap.value}px` : "85dvh"})`;
+  }
   return style;
 });
 const CLOSE_FRACTION = 0.25;
