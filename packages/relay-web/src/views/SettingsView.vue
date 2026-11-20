@@ -21,6 +21,8 @@ import {
 import AddInstanceDialog from "../components/AddInstanceDialog.vue";
 import Tooltip from "../components/Tooltip.vue";
 import UiButton from "../components/UiButton.vue";
+import UiSwitch from "../components/UiSwitch.vue";
+
 const auth = useAuthStore();
 const theme = useThemeStore();
 const router = useRouter();
@@ -283,25 +285,16 @@ onBeforeUnmount(() => {
                switch off stops app notifications and never claims the browser
                permission was revoked. -->
           <span data-test="notif-state" class="text-sm text-fg-muted">{{ notifStateLabel }}</span>
-          <button
+          <UiSwitch
             v-if="notifSwitchShown"
-            type="button"
-            role="switch"
-            data-test="notif-toggle"
-            :aria-checked="notifSwitchOn"
-            :aria-label="$t('settings.notifTitle')"
-            :aria-busy="notifBusy"
+            test-id="notif-toggle"
+            :checked="notifSwitchOn"
+            :label="$t('settings.notifTitle')"
+            :busy="notifBusy"
             :disabled="notifBusy || notifState === 'server-disabled'"
-            class="relative grid h-11 w-11 shrink-0 place-items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed"
-            @click="onNotifSwitch"
-          >
-            <!-- 44x26 visual inside a 44x44 transparent hit disc. -->
-            <span class="relative block h-[26px] w-[44px] rounded-full transition-colors duration-150 ease-ui motion-reduce:transition-none"
-                  :class="[notifSwitchOn ? 'bg-accent' : 'bg-fill-track', notifBusy || notifState === 'denied' ? 'opacity-60' : '']">
-              <span class="absolute top-[3px] block h-5 w-5 rounded-full bg-raised shadow-press transition-[left] duration-150 ease-ui motion-reduce:transition-none"
-                    :class="notifSwitchOn ? 'left-[21px]' : 'left-[3px]'" />
-            </span>
-          </button>
+            :muted="notifBusy || notifState === 'denied'"
+            @toggle="onNotifSwitch"
+          />
           <Tooltip v-if="notifHint" :text="notifHint">
             <button type="button" data-test="notif-info" :aria-label="$t('settings.moreInfo')" :title="$t('settings.moreInfo')"
                     class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0">

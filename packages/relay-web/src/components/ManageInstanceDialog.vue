@@ -8,6 +8,7 @@ import { navigateBack } from "../lib/mobile-back";
 import DialogShell from "./DialogShell.vue";
 import UiButton from "./UiButton.vue";
 import WorkspacesManager from "./WorkspacesManager.vue";
+import UiSwitch from "./UiSwitch.vue";
 import AgentsManager from "./AgentsManager.vue";
 
 const props = defineProps<{ instanceId: string; instanceName: string }>();
@@ -358,16 +359,11 @@ onMounted(async () => {
             <section class="space-y-2">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.autoCollabTitle") }}</h3>
               <div class="flex items-center gap-3">
-                <button v-if="panel.phase !== 'read-only'" data-test="router-toggle" type="button" role="switch"
-                        :aria-checked="routerEnabled"
-                        :aria-label="routerEnabled ? $t('instance.autoCollabDisable') : $t('instance.autoCollabEnable')"
-                        :disabled="!routerEditable || routerSaving || !instanceOnline"
-                        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                        :class="routerEnabled ? 'bg-accent' : 'bg-surface-2'"
-                        @click="toggleRouter">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
-                        :class="routerEnabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
-                </button>
+                <UiSwitch v-if="panel.phase !== 'read-only'" test-id="router-toggle"
+                          :checked="routerEnabled"
+                          :label="routerEnabled ? $t('instance.autoCollabDisable') : $t('instance.autoCollabEnable')"
+                          :disabled="!routerEditable || routerSaving || !instanceOnline"
+                          @toggle="toggleRouter" />
                 <p data-test="router-status" class="text-sm text-fg-muted">{{ routerStatus }}</p>
               </div>
               <div v-if="routerReason" data-test="router-reason" class="space-y-1 rounded-sm bg-fg/5 px-3 py-2">
@@ -380,16 +376,11 @@ onMounted(async () => {
             <section data-test="terminal-settings" class="space-y-2">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.terminalSettingsTitle") }}</h3>
               <div class="flex items-center gap-3">
-                <button v-if="terminalPanel.phase !== 'read-only'" data-test="terminal-settings-toggle" type="button" role="switch"
-                        :aria-checked="terminalSettings?.enabled ?? false"
-                        :aria-label="(terminalSettings?.enabled ?? false) ? $t('instance.terminalSettingsDisable') : $t('instance.terminalSettingsEnable')"
-                        :disabled="terminalPanel.phase !== 'editable' || terminalSaving || !instanceOnline"
-                        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                        :class="terminalSettings?.enabled ? 'bg-accent' : 'bg-surface-2'"
-                        @click="toggleTerminal">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
-                        :class="terminalSettings?.enabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
-                </button>
+                <UiSwitch v-if="terminalPanel.phase !== 'read-only'" test-id="terminal-settings-toggle"
+                          :checked="terminalSettings?.enabled ?? false"
+                          :label="(terminalSettings?.enabled ?? false) ? $t('instance.terminalSettingsDisable') : $t('instance.terminalSettingsEnable')"
+                          :disabled="terminalPanel.phase !== 'editable' || terminalSaving || !instanceOnline"
+                          @toggle="toggleTerminal" />
                 <p data-test="terminal-settings-status" class="text-sm text-fg-muted">
                   {{ terminalStatusText }}
                 </p>
@@ -400,16 +391,11 @@ onMounted(async () => {
             <section data-test="files-settings" class="space-y-2">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.filesSettingsTitle") }}</h3>
               <div class="flex items-center gap-3">
-                <button v-if="filesPanel.phase !== 'read-only'" data-test="files-settings-toggle" type="button" role="switch"
-                        :aria-checked="filesSettings?.enabled ?? false"
-                        :aria-label="(filesSettings?.enabled ?? false) ? $t('instance.filesSettingsDisable') : $t('instance.filesSettingsEnable')"
-                        :disabled="filesPanel.phase !== 'editable' || filesSaving || !instanceOnline"
-                        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                        :class="filesSettings?.enabled ? 'bg-accent' : 'bg-surface-2'"
-                        @click="toggleFiles">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
-                        :class="filesSettings?.enabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
-                </button>
+                <UiSwitch v-if="filesPanel.phase !== 'read-only'" test-id="files-settings-toggle"
+                          :checked="filesSettings?.enabled ?? false"
+                          :label="(filesSettings?.enabled ?? false) ? $t('instance.filesSettingsDisable') : $t('instance.filesSettingsEnable')"
+                          :disabled="filesPanel.phase !== 'editable' || filesSaving || !instanceOnline"
+                          @toggle="toggleFiles" />
                 <p data-test="files-settings-status" class="text-sm text-fg-muted">{{ filesStatusText }}</p>
               </div>
               <p data-test="files-settings-hint" class="text-xs text-fg-muted">{{ $t("instance.filesSettingsHint") }}</p>
