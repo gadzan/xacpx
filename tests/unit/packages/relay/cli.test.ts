@@ -538,6 +538,14 @@ test("resolveBundledWebRoot falls back to the monorepo sibling packages/web/dist
   expect(await resolveBundledWebRoot(pathToFileURL(join(relayDist, "cli.js")).href)).toBe(sibling);
 });
 
+test("resolveBundledWebRoot rejects an installed package whose dashboard build is missing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
+  const fromUrl = await fixtureWebPackage(root);
+  const { unlinkSync } = await import("node:fs");
+  unlinkSync(join(root, "node_modules", "@ganglion", "xacpx-web", "dist", "index.html"));
+  await expect(resolveBundledWebRoot(fromUrl)).rejects.toThrow(/dashboard build is missing/);
+});
+
 test("resolveBundledWebRoot returns undefined when neither location has the dashboard", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
   const dist = join(root, "dist");

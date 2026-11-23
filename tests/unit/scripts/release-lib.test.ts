@@ -138,9 +138,10 @@ test("a protocol release compiles the consumers whose range it rewrites", () => 
     "web",
     "channel-relay",
   ]);
-  // A consumer that also ships is compiled by its own build.
+  // A consumer that also ships is compiled by its own build. relay's build
+  // runs build:web, so the dashboard is not typechecked a second time.
   expect(gateScope(["relay-protocol", "relay"])?.compiles.map((compile) => compile.id))
-    .toEqual(["web", "channel-relay"]);
+    .toEqual(["channel-relay"]);
   expect(gateScope(["relay"])?.compiles).toEqual([]);
 });
 
@@ -296,10 +297,11 @@ test("a core release pulls in every floor tracker, listed separately from real c
   expect(floorTrackers).toEqual(["channel-relay", "channel-feishu", "channel-discord"]);
 });
 
-test("a dashboard change releases web alone", () => {
-  const { releases, floorTrackers } = expandReleaseSet({ changed: ["web"] });
-  expect(releases).toEqual(["web"]);
+test("a dashboard change republishes relay so its published range names that web version", () => {
+  const { releases, floorTrackers, webFollowers } = expandReleaseSet({ changed: ["web"] });
+  expect(releases).toEqual(["web", "relay"]);
   expect(floorTrackers).toEqual([]);
+  expect(webFollowers).toEqual(["relay"]);
 });
 
 test("channel-yuanbao is never pulled in by a core release", () => {
@@ -365,6 +367,18 @@ test("collectEdits rewrites the protocol range in all three consumers with one v
   for (const edit of files) expect(edit.to).toBe("^0.6.4-beta.2");
 });
 
+test("collectEdits rewrites the web range in relay when the dashboard ships", () => {
+  const edits = collectEdits({
+    releases: ["web", "relay"],
+    versions: { web: "0.1.1-beta.0", relay: "0.14.13-beta.0" },
+    previousVersions: { web: "0.1.0", relay: "0.14.12" },
+  });
+  const webRange = edits.find((edit) => edit.path?.join(".") === "dependencies.@ganglion/xacpx-web");
+  expect(webRange?.file).toBe("packages/relay/package.json");
+  expect(webRange?.from).toBe("^0.1.0");
+  expect(webRange?.to).toBe("^0.1.1-beta.0");
+});
+
 test("collectEdits asks for the bridge sync whenever channel-relay ships", () => {
   const edits = collectEdits({ releases: ["channel-relay"], versions: {}, previousVersions: {} });
   expect(edits.some((edit) => edit.kind === "script" && edit.script === "sync-rmux-bridge-versions.mjs")).toBe(true);
@@ -376,8 +390,16 @@ function consistentManifests(core: string) {
   return {
     [COMPAT_MANIFEST]: { version: core, dependencies: { "@ganglion/xacpx": `^${core}` } },
     "packages/relay-protocol/package.json": { version: "0.6.4-beta.2" },
-    "packages/relay/package.json": { dependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" } },
-    "packages/web/package.json": { devDependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" } },
+    "packages/relay/package.json": {
+      dependencies: {
+        "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2",
+        "@ganglion/xacpx-web": "^0.1.0",
+      },
+    },
+    "packages/web/package.json": {
+      version: "0.1.0",
+      devDependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" },
+    },
     "packages/channel-relay/package.json": {
       peerDependencies: { xacpx: `>=${core}` },
       dependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" },
@@ -390,7 +412,7 @@ function consistentManifests(core: string) {
   };
 }
 
-const consistentVersions = { core: "0.24.10-beta.3", "relay-protocol": "0.6.4-beta.2" };
+const consistentVersions = { core: "0.24.10-beta.3", "relay-protocol": "0.6.4-beta.2", web: "0.1.0" };
 
 test("collectFloorViolations accepts a fully synced tree", () => {
   expect(collectFloorViolations({
@@ -415,6 +437,16 @@ test("collectFloorViolations reports a stale protocol range and a stale compat s
   expect(violations).toHaveLength(2);
   expect(violations.join("\n")).toMatch(/packages\/web.*\^0\.6\.4-beta\.2/);
   expect(violations.join("\n")).toMatch(/weacpx-compat.*\^0\.24\.10-beta\.3/);
+});
+
+test("collectFloorViolations reports a web range that would not match the shipped dashboard", () => {
+  const manifests = consistentManifests("0.24.10-beta.3");
+  manifests["packages/relay/package.json"].dependencies["@ganglion/xacpx-web"] = "^0.1.0";
+  const violations = collectFloorViolations({
+    versions: { ...consistentVersions, web: "0.1.1-beta.0" },
+    manifests,
+  });
+  expect(violations.join("\n")).toMatch(/web range \^0\.1\.0 != \^0\.1\.1-beta\.0/);
 });
 
 test("collectFloorViolations reports a drifted minXacpxVersion", () => {

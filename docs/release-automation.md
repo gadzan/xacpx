@@ -84,8 +84,10 @@ mid-flight, which is exactly the case that deserves a human.
 A package ships when a file it owns changed since its own last tag. Two
 propagations are not obvious:
 
-- **`packages/web/**` → `web`.** The dashboard publishes as `@ganglion/xacpx-web`.
-  A UI-only change no longer releases `relay`; relay depends on the package.
+- **`packages/web/**` → `web`, and `relay` is republished with it.** The
+  dashboard publishes as `@ganglion/xacpx-web`. Relay's published range has to
+  name that version: npm's `^X.Y.Z` does not match a prerelease, so leaving the
+  old range on npm would make `npm i -g @ganglion/xacpx-relay` fail.
 - **A core release republishes `channel-relay`, `channel-feishu`, and
   `channel-discord` even with no source change.** Those plugins statically
   import runtime named exports from `xacpx/plugin-api`, which ESM resolves

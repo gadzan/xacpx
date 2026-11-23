@@ -193,7 +193,7 @@ jobs:
       - name: Benchmark CLI vs Runtime (macOS)
         run: bun scripts/benchmark-runtime-vs-cli.mjs
   relay-web-e2e:
-    name: Relay Web terminal E2E
+    name: Web dashboard E2E
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:

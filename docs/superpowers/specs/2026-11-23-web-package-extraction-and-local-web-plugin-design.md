@@ -380,13 +380,14 @@ const LEGACY_RELAY_FALLBACK: WebRuntimeConfig = {
 
 ### 9.2 Release 自动化波次（`scripts/release-lib.mjs` & `scripts/release.mjs`）
 
-遵循 `docs/release-automation.md` 的静态波次规则，调整为 3 波发布：
+遵循 `docs/release-automation.md` 的静态波次规则。PR 1 落地的是 4 波；`control-bridge` 与 `channel-web` 在后续 PR 加入对应波次：
 
 | 波次 | 发布包 | 说明 |
 | :--- | :--- | :--- |
 | Wave 1 | `@ganglion/xacpx-relay-protocol` | 底层协议 |
-| Wave 2 | `@ganglion/xacpx-web`、`@ganglion/xacpx-control-bridge` | Web 静态资产包（独立 tag `web-v*`）与共享桥接包（`control-bridge-v*`） |
-| Wave 3 | `@ganglion/xacpx-relay`、`@ganglion/xacpx-channel-relay`、`@ganglion/xacpx-channel-web` | 消费方；随 protocol / web / core 联动更新范围与 `minXacpxVersion` |
+| Wave 2 | `@ganglion/xacpx-web` | 看板静态资产（tag `web-v*`）。后续的 `control-bridge` 也在这一波 |
+| Wave 3 | `@ganglion/xacpx-relay`、`@ganglion/xacpx-channel-relay` | hub 依赖已发布的看板。看板发版时 hub 跟着重发，使依赖范围点名该版本 |
+| Wave 4 | `@ganglion/xacpx`、其余 channel 包 | 与看板无安装顺序耦合。后续的 `channel-web` 在这一波 |
 
 同步更新脚本与 CI：
 - `scripts/release-lib.mjs`：

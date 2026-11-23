@@ -33,7 +33,8 @@
 |---|---|---|---|
 | `@ganglion/xacpx` | 用 `npm view` 核对 | 0.24.10-beta.18 | 含会话热度（warmth）后端：`transport.isSessionWarm` + `SessionWarmthTracker` |
 | `@ganglion/xacpx-relay-protocol` | 用 `npm view` 核对 | 0.6.4-beta.14 | `SessionDto.warm?` 可选字段 |
-| `@ganglion/xacpx-relay` | 用 `npm view` 核对 | 0.14.12-beta.23 | 内嵌看板（尾部缓存绑定 incarnation，同名重建不复活旧尾部） |
+| `@ganglion/xacpx-web` | 用 `npm view` 核对 | 0.1.0 | 看板静态资产，无运行时依赖 |
+| `@ganglion/xacpx-relay` | 用 `npm view` 核对 | 0.14.12 | 依赖 `@ganglion/xacpx-web`，不再内嵌看板 |
 | `@ganglion/xacpx-channel-relay` | 用 `npm view` 核对 | 0.7.8-beta.18 | 连接器 |
 
 > 用 `npm view <pkg> version` 随时核对线上版本。
@@ -46,8 +47,9 @@
 2. **Sidecar platform packages**（checksum manifest；Task 27）
 3. **core `@ganglion/xacpx`** —— `SessionResourceCatalog` / plugin-api；channel-relay `minXacpxVersion` / peer
 4. **`@ganglion/xacpx-relay-protocol`**
-5. **`@ganglion/xacpx-relay`（含内嵌 relay-web）**
-6. **`@ganglion/xacpx-channel-relay`**（最后发）
+5. **`@ganglion/xacpx-web`**
+6. **`@ganglion/xacpx-relay`**（依赖已发布的看板包）
+7. **`@ganglion/xacpx-channel-relay`**（最后发）
 
 RMUX platform 包发布后，用 `npm install --package-lock-only --ignore-scripts`
 更新 npm 锁文件中的可选包记录。记录必须保留版本、下载地址和完整性信息；
@@ -59,15 +61,16 @@ RMUX platform 包发布后，用 `npm install --package-lock-only --ignore-scrip
 1. **core `@ganglion/xacpx`** —— channel-relay 声明
    `peerDependencies.xacpx >= <minXacpxVersion>`（当前 `0.24.10-beta.18`），
    必须先发布含所需 core 能力的版本。
-2. **`@ganglion/xacpx-relay-protocol`** —— relay 和 channel-relay 都依赖它（当前 `^0.6.4-beta.14`）。
-3. **`@ganglion/xacpx-relay` + `@ganglion/xacpx-channel-relay`** —— 两者都依赖已发布的 protocol。
+2. **`@ganglion/xacpx-relay-protocol`** —— relay、web 和 channel-relay 都依赖它。
+3. **`@ganglion/xacpx-web`** —— hub 依赖它。
+4. **`@ganglion/xacpx-relay` + `@ganglion/xacpx-channel-relay`** —— 两者都依赖已发布的 protocol，hub 还依赖已发布的看板。
 
 `bun run publish:relay-stack` 已按 2→3 的拓扑顺序串好。半截升级时旧 hub/connector/web 组合会安全隐藏终端 UI（缺 capability），属预期。
 
 有一条不走"安全隐藏"这一套：**会话表单的放置**（`InteractionRequestDto.sessionAlias`，见
 [relay-interaction-deployment](relay-interaction-deployment.md) §2.3/§6）。字段是附加的，旧 hub 会存成 `""`、
 旧 web 没有会话作用域，线协议仍然兼容、不报错，于是表单会落到无面板可渲染的状态并静默等到超时。
-因此 **`@ganglion/xacpx-relay`（含内嵌 relay-web）与 `@ganglion/xacpx-channel-relay` 必须配套发布**，
+因此 **`@ganglion/xacpx-web`、`@ganglion/xacpx-relay` 与 `@ganglion/xacpx-channel-relay` 必须配套发布**，
 core 不低于 channel-relay 的 `minXacpxVersion`（当前 `0.24.10-beta.18`）；旧 core 组合会 fail-closed（resolver 不产出路由、channel 在调 hub 前就拒），不会静默。
 
 ### RMUX terminal smoke（opt-in）
@@ -94,8 +97,7 @@ bun test tests/smoke/relay-rmux-terminal.test.ts
 bun run verify:publish
 ```
 
-它会 `build:packages`（含把看板嵌进 relay 包）再校验每个包的 tarball。relay 包这一项会断言
-`dist/relay-web/index.html` 在 tarball 里——**没有它就等于发了个没看板的 hub**，校验会直接失败。
+它会 `build:packages` 再校验每个包的 tarball。看板包必须带 `dist/index.html` 且 `index.js` 能解析到这份构建；hub 必须依赖 `@ganglion/xacpx-web`。缺任何一项校验都会失败。
 
 ## 发布 core（tag 触发，已有 CI）
 
@@ -108,17 +110,21 @@ git tag v<X.Y.Z>
 git push origin v<X.Y.Z>
 ```
 
-## 发布 relay 三包（tag 触发，已有 CI）
+## 发布 relay 四包（tag 触发，已有 CI）
 
-relay 三包各有 tag 触发 workflow（`publish-relay-protocol.yml` / `publish-relay.yml` /
-`publish-channel-relay.yml`，结构与频道包一致：test + `verify:publish` + tag/版本一致性校验 +
-`npm publish`（`secrets.NPM_TOKEN`）+ GitHub release）。按拓扑顺序推 tag：
+protocol、web、relay、channel-relay 各有 tag 触发 workflow（`publish-relay-protocol.yml` /
+`publish-web.yml` / `publish-relay.yml` / `publish-channel-relay.yml`，结构与频道包一致：test +
+`verify:publish` + tag/版本一致性校验 + `npm publish`（`secrets.NPM_TOKEN`）+ GitHub release）。
+看板必须先于 hub：hub 的依赖范围要能解析到刚发出的看板版本。按拓扑顺序推 tag：
 
 ```bash
 # 2. protocol 先发（确认 packages/relay-protocol/package.json 的 version）
 git tag relay-protocol-v<X.Y.Z> && git push origin relay-protocol-v<X.Y.Z>
 
-# 3. protocol 发布完成后，再发 hub 和连接器
+# 3. 看板（确认 packages/web/package.json 的 version）
+git tag web-v<X.Y.Z> && git push origin web-v<X.Y.Z>
+
+# 4. 看板发布完成后，再发 hub 和连接器
 git tag relay-v<X.Y.Z>          && git push origin relay-v<X.Y.Z>
 git tag channel-relay-v<X.Y.Z>  && git push origin channel-relay-v<X.Y.Z>
 ```
@@ -143,8 +149,8 @@ bun run publish:relay-stack   # publish:relay-protocol → publish:relay → pub
 ```bash
 npm i -g @ganglion/xacpx-relay
 xacpx-relay start
-#   预期输出含：dashboard: /…/@ganglion/xacpx-relay/dist/relay-web
-#   若是 dashboard: (none) → 看板没打进包，回头查 build:relay 的 bundle:relay-web 步骤
+#   预期输出含：dashboard: /…/@ganglion/xacpx-web/dist
+#   若是 dashboard: (none) → 没装到 @ganglion/xacpx-web，或该包没有 dist/index.html
 ```
 
 连接器侧：
@@ -162,6 +168,7 @@ xacpx channel add relay --url <host> --token <access-token>
 | `@ganglion/xacpx-channel-yuanbao` | `channel-yuanbao-v<X.Y.Z>` | publish-channel-yuanbao.yml |
 | `@ganglion/xacpx-channel-discord` | `channel-discord-v<X.Y.Z>` | publish-channel-discord.yml |
 | `@ganglion/xacpx-relay-protocol` | `relay-protocol-v<X.Y.Z>` | publish-relay-protocol.yml |
+| `@ganglion/xacpx-web` | `web-v<X.Y.Z>` | publish-web.yml |
 | `@ganglion/xacpx-relay` | `relay-v<X.Y.Z>` | publish-relay.yml |
 | `@ganglion/xacpx-channel-relay` | `channel-relay-v<X.Y.Z>` | publish-channel-relay.yml |
 

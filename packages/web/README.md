@@ -1,6 +1,6 @@
 # @ganglion/xacpx-web
 
-Static dashboard for xacpx. The relay hub and the local web channel both serve this build; neither copies it into its own package.
+Static dashboard for xacpx. The relay hub serves this build instead of copying it into its own package. A local web channel is planned to serve the same build.
 
 The published package has no runtime dependencies. Vue and the other UI libraries are bundled into `dist/` at build time.
 

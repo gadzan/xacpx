@@ -29,22 +29,30 @@ export function defaultDbPath(): string {
  * 2. The monorepo sibling `packages/web/dist`, for a `cli.js` that was built
  *    before that dependency is installed.
  *
- * Returns undefined when neither place has `index.html`. `fromUrl` exists so
- * tests can point resolution at a fixture; production passes this module.
+ * Returns undefined only when the package is not installed and the sibling
+ * build is absent. An installed package with no `dist/index.html` is a bad
+ * publish: that throws instead of looking like "no dashboard". `fromUrl`
+ * exists so tests can point resolution at a fixture.
  */
 export async function resolveBundledWebRoot(
   fromUrl: string = import.meta.url,
 ): Promise<string | undefined> {
+  let entry: string | undefined;
   try {
-    const require = createRequire(fromUrl);
-    const entry = require.resolve("@ganglion/xacpx-web");
-    const mod = await import(pathToFileURL(entry).href) as {
+    entry = createRequire(fromUrl).resolve("@ganglion/xacpx-web");
+  } catch {
+    entry = undefined;
+  }
+  if (entry) {
+    const moduleUrl = pathToFileURL(entry).href;
+    const mod = await import(moduleUrl) as {
       tryResolveWebRoot?: (moduleUrl?: string) => string | undefined;
     };
-    const root = mod.tryResolveWebRoot?.(pathToFileURL(entry).href);
-    if (root) return root;
-  } catch {
-    // Not installed from this module. Fall through to the source-tree sibling.
+    const root = mod.tryResolveWebRoot?.(moduleUrl);
+    if (!root) {
+      throw new Error("@ganglion/xacpx-web is installed but its dashboard build is missing (dist/index.html). Reinstall the package.");
+    }
+    return root;
   }
   const sibling = resolve(dirname(fileURLToPath(fromUrl)), "../../web/dist");
   if (existsSync(join(sibling, "index.html"))) return sibling;

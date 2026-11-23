@@ -139,6 +139,8 @@ export function gateScope(releaseIds) {
   const specs = releaseIds.map((id) => RELEASE_ARTIFACTS[id]);
   if (specs.some((spec) => spec === undefined)) return null;
   const covered = new Set(releaseIds);
+  // relay's own build runs `build:web`, which already typechecks the dashboard.
+  if (covered.has("relay")) covered.add("web");
   const compiles = releaseIds.includes("relay-protocol")
     ? PROTOCOL_CONSUMERS
       .filter((id) => !covered.has(id))
@@ -170,6 +172,14 @@ export const COMPAT_MANIFEST = "weacpx-compat/package.json";
 
 /** Every consumer whose protocol dependency range must equal the protocol version. */
 export const PROTOCOL_CONSUMERS = ["relay", "web", "channel-relay"];
+
+/**
+ * Packages whose published dependency on `@ganglion/xacpx-web` must name the
+ * web version that just shipped. npm's `^X.Y.Z` does not match `X.Y.Z-beta.N`,
+ * so a dashboard beta would otherwise make `npm i -g @ganglion/xacpx-relay`
+ * fail with ETARGET. These are republished with web, not merely rewritten.
+ */
+export const WEB_RANGE_FOLLOWERS = ["relay"];
 
 /**
  * How to compile each protocol consumer, for the gate that runs when the
@@ -408,18 +418,24 @@ export function detectChanged(changedPaths) {
  * must be republished only so a published floor keeps tracking core.
  *
  * @param {{changed:PackageId[]}} input
- * @returns {{releases:PackageId[], floorTrackers:PackageId[]}} `releases` in registry order
+ * @returns {{releases:PackageId[], floorTrackers:PackageId[], webFollowers:PackageId[]}} `releases` in registry order
  */
 export function expandReleaseSet({ changed }) {
   const changedSet = new Set(changed);
   const coreReleased = changedSet.has("core");
+  const webReleased = changedSet.has("web");
   const floorTrackers = coreReleased ? CORE_FLOOR_TRACKERS.filter((id) => !changedSet.has(id)) : [];
+  const webFollowers = webReleased ? WEB_RANGE_FOLLOWERS.filter((id) => !changedSet.has(id)) : [];
 
   // A core release always republishes every floor-tracker, even one with no
   // source change: its published peer range would otherwise point at an older
   // core than the one it was verified against.
   const all = new Set(changed);
   if (coreReleased) for (const id of CORE_FLOOR_TRACKERS) all.add(id);
+  // Same shape for the dashboard: the follower's published range has to name
+  // the web version, so rewriting the manifest without publishing it would
+  // leave `npm i -g` on the old range.
+  if (webReleased) for (const id of WEB_RANGE_FOLLOWERS) all.add(id);
 
   // A protocol release bumps the range in all three consumers, but a consumer
   // only gets republished if it has changes of its own: the range bump alone
@@ -427,7 +443,7 @@ export function expandReleaseSet({ changed }) {
   // range names them (`^X.Y.Z` excludes `X.Y.Z-beta.N`).
 
   const releases = PACKAGE_REGISTRY.filter((pkg) => all.has(pkg.id)).map((pkg) => pkg.id);
-  return { releases, floorTrackers };
+  return { releases, floorTrackers, webFollowers };
 }
 
 /**
@@ -560,6 +576,16 @@ export function collectFloorViolations({ versions, manifests }) {
     }
   }
 
+  const web = versions.web;
+  if (web) {
+    const expected = `^${web}`;
+    const relay = manifests[registryEntry("relay").manifestPath];
+    const range = relay?.dependencies?.["@ganglion/xacpx-web"];
+    if (relay && range !== expected) {
+      violations.push(`${registryEntry("relay").manifestPath}: web range ${range} != ${expected}`);
+    }
+  }
+
   return violations;
 }
 
@@ -655,6 +681,21 @@ export function collectEdits({ releases, versions, previousVersions }) {
         from,
         to,
         reason: "prerelease ranges must name the exact prerelease; `^X.Y.Z` would not match it",
+      });
+    }
+  }
+
+  if (released.has("web")) {
+    const from = `^${previousVersions.web}`;
+    const to = `^${versions.web}`;
+    for (const id of WEB_RANGE_FOLLOWERS) {
+      edits.push({
+        kind: "json-value",
+        file: registryEntry(id).manifestPath,
+        path: ["dependencies", "@ganglion/xacpx-web"],
+        from,
+        to,
+        reason: "npm excludes prereleases from a caret range, so the follower must name this web version",
       });
     }
   }

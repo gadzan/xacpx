@@ -324,6 +324,19 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
   if (pkg.emptyDependencies && Object.keys(packageJson.dependencies ?? {}).length > 0) {
     failures.push(`${pkg.id}: dependencies must be empty (UI libraries are bundled into dist/)`);
   }
+  if (pkg.id === "web") {
+    try {
+      const entry = pathToFileURL(join(packageRoot, "index.js")).href;
+      const mod = await import(entry);
+      const root = typeof mod.tryResolveWebRoot === "function" ? mod.tryResolveWebRoot(entry) : undefined;
+      if (!root || !existsSync(join(root, "index.html"))) {
+        failures.push("web: index.js did not resolve a dist directory containing index.html");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(`web: index.js failed to load (${message})`);
+    }
+  }
   if (pkg.requiredDependency && !(pkg.requiredDependency in (packageJson.dependencies ?? {}))) {
     failures.push(`${pkg.id}: package.json dependencies must include ${pkg.requiredDependency}`);
   }
