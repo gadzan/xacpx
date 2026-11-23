@@ -86,3 +86,45 @@ test("a peer turn queued behind a busy target still stamps its row", async () =>
   expect(rows.find((row) => row.direction === "in")?.nodeId).toBe("node-queued");
   runtime.close();
 });
+
+test("a peer card delivered during a live turn does not inherit that turn's node id", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+
+  // Live non-peer turn owns the session buffer. A peer card delivered into the
+  // busy session must stay unstamped until ITS turn-started reconciles it —
+  // otherwise the Web's per-message fork control would fork at the live turn.
+  fire({
+    type: "turn-started",
+    chatKey: "relay:backend",
+    sessionAlias: "backend",
+    prompt: "user working",
+    promptRequestId: "user-req-1",
+    nodeId: "node-user-live",
+  });
+  fire({ type: "agent-message", chatKey: "relay:agent-message:backend", sessionAlias: "backend", message: peerMessage });
+
+  const mid = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(mid.find((row) => row.text === "schema changed")?.nodeId).toBeUndefined();
+
+  fire({ type: "turn-finished", chatKey: "relay:backend", sessionAlias: "backend", ok: true });
+  fire({
+    type: "turn-started",
+    chatKey: "relay:agent-message:backend",
+    sessionAlias: "backend",
+    promptRequestId: "msg_peer_1",
+    nodeId: "node-peer",
+    peerOrigin: {
+      requestMessageId: "msg_peer_1",
+      completion: "none",
+      source: { nodeId: "n1", endpointId: "sender" },
+      target: { nodeId: "n1", endpointId: "target" },
+    },
+  });
+
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.find((row) => row.text === "schema changed")?.nodeId).toBe("node-peer");
+  runtime.close();
+});
