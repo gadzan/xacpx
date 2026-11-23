@@ -53,6 +53,27 @@ async function readEventually(user: string, instanceId: string, alias: string): 
   return null;
 }
 
+/** When a snapshot of the SAME entry already exists, "the entry appeared" is not
+ *  enough: the debounced write-back is async, so a read a couple of ms early
+ *  still sees the previous snapshot. Poll until the content reaches `ok`. */
+async function readUntil(
+  user: string,
+  instanceId: string,
+  alias: string,
+  ok: (rows: MessageRecordDto[]) => boolean,
+): Promise<MessageRecordDto[] | null> {
+  let last: MessageRecordDto[] | null = null;
+  for (let i = 0; i < 100; i += 1) {
+    const rows = await read(user, instanceId, alias);
+    if (rows) {
+      last = rows;
+      if (ok(rows)) return rows;
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return last;
+}
+
 /** Purges are fire-and-forget too; poll until the entry is gone. */
 async function goneEventually(user: string, instanceId: string, alias: string): Promise<boolean> {
   for (let i = 0; i < 100; i += 1) {
@@ -122,9 +143,11 @@ test("authoritative loadHistory replaces the seeded tail and writes back on the 
   await chat.loadHistory();
   expect(chat.messages.length).toBe(50); // full replace, stale row converged
 
-  // The write-back is debounced; switching sessions flushes it for the outgoing session.
+  // The write-back is debounced; switching sessions flushes it for the outgoing
+  // session. It is also async, so poll until the CONTENT is the 50-row snapshot
+  // (the previous [1] entry is readable for a few ms while the write lands).
   chat.select("i1", "other");
-  const cached = (await readEventually("alice", "i1", "s1"))!;
+  const cached = (await readUntil("alice", "i1", "s1", (rows) => rows.length === TAIL_ROWS))!;
   expect(cached.length).toBe(TAIL_ROWS); // tail only
   expect(cached.at(-1)).toMatchObject({ id: 50, text: "fresh50" });
 });

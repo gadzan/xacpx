@@ -177,11 +177,20 @@ export async function read(user: string, instanceId: string, alias: string, inca
       }
       return null;
     }
-    // LRU touch in its own transaction: under real quota pressure the put can
-    // fail, and that must not nullify a hit whose rows are already in hand.
+    // LRU touch, as a read-modify-write INSIDE one readwrite transaction: a
+    // touch that re-puts the snapshot read above would clobber a concurrent
+    // writeTranscript that committed in between (the transcript write-back is
+    // async, so a seed-read racing it is normal). Re-reading inside the tx makes
+    // the touch a no-op on the data and only refresh lastAccess. Under real
+    // quota pressure the put can fail; that must not nullify a hit whose rows are
+    // already in hand.
     try {
       const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put({ ...record, lastAccess: now });
+      const store = tx.objectStore(STORE);
+      const fresh = await asPromise<TailRecord | undefined>(
+        store.get(key) as IDBRequest<TailRecord | undefined>,
+      );
+      if (fresh) store.put({ ...fresh, lastAccess: now });
       await txDone(tx);
     } catch { /* touch is best-effort */ }
     return (rows as MessageRecordDto[]).slice(-TAIL_ROWS);
@@ -507,8 +516,14 @@ async function loadTranscript(
     return null;
   }
   try {
+    // Same read-modify-write touch as read(): re-read inside the write tx so a
+    // concurrent writeTranscript is never rolled back to the snapshot above.
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put({ ...record, lastAccess: now });
+    const store = tx.objectStore(STORE);
+    const fresh = await asPromise<TailRecord | undefined>(
+      store.get(key) as IDBRequest<TailRecord | undefined>,
+    );
+    if (fresh) store.put({ ...fresh, lastAccess: now });
     await txDone(tx);
   } catch { /* touch is best-effort */ }
   return { record, full };

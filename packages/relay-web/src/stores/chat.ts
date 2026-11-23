@@ -274,11 +274,18 @@ export const useChatStore = defineStore("chat", () => {
   // TRANSCRIPT_SHOW/PAGE bound how much of that union we display / page in.
   const TRANSCRIPT_SHOW = 50;
   const TRANSCRIPT_PAGE = 50;
-  /** Merge two oldest-first row lists by id (incoming wins); result oldest-first. */
+  /** Merge two oldest-first row lists by id (incoming wins); result oldest-first.
+   *  Rows WITHOUT a numeric id cannot be deduped by key, so they are never dropped:
+   *  an older hub may omit ids, and silently deleting a row the server did return
+   *  is worse than a possible repeat. They keep arrival order at the end (the
+   *  callers slice the tail, so that reads as "newest"). */
   function unionRows(a: MessageRecordDto[], b: MessageRecordDto[]): MessageRecordDto[] {
     const byId = new Map<number, MessageRecordDto>();
-    for (const r of [...a, ...b]) if (typeof r.id === "number") byId.set(r.id, r);
-    return [...byId.values()].sort((x, y) => (x.id as number) - (y.id as number));
+    for (const r of a) if (typeof r.id === "number") byId.set(r.id, r);
+    for (const r of b) if (typeof r.id === "number") byId.set(r.id, r);
+    const keyed = [...byId.values()].sort((x, y) => (x.id as number) - (y.id as number));
+    const unkeyed = [...a, ...b].filter((r) => typeof r.id !== "number");
+    return unkeyed.length === 0 ? keyed : [...keyed, ...unkeyed];
   }
   // Upper-bound notice: cumulative rows evicted by the client transcript caps
   // (per-session 1000 rows / 8 MB, global 64 MB, 30-day TTL). Non-null → the
