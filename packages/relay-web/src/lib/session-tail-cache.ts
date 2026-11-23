@@ -360,7 +360,8 @@ function estimateRowBytes(r: MessageRecordDto): number {
         const d = st.detail;
         if (d) {
           if (d.type === "text") n += ((d.text?.length ?? 0) + (d.output?.length ?? 0)) * 2;
-          else if (d.type === "command" || d.type === "search") n += ((d.output?.length ?? 0)) * 2 + ((d.command?.length ?? d.query?.length ?? 0)) * 2;
+          else if (d.type === "command") n += (d.output?.length ?? 0) * 2 + d.command.length * 2;
+          else if (d.type === "search") n += (d.output?.length ?? 0) * 2 + d.query.length * 2;
           else if (d.type === "read") n += ((d.preview?.length ?? 0) + (d.path?.length ?? 0)) * 2;
           else if (d.type === "fields") for (const f of d.fields) n += (f.value?.length ?? 0) * 2;
           else if (d.type === "diff") n += ((d.oldText?.length ?? 0) + (d.newText?.length ?? 0)) * 2;
@@ -401,7 +402,7 @@ export function stripOversizedPreviews(row: MessageRecordDto): MessageRecordDto 
       changed = true;
       const copy = { ...a } as Record<string, unknown>;
       delete copy.previewUrl;
-      return copy as typeof a;
+      return copy as unknown as typeof a;
     }
     return a;
   });
