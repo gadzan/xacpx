@@ -971,7 +971,35 @@ test("GET /api/config reports client-side retention (server keeps no transcript)
   expect(res.status).toBe(200);
   // Legacy fields are accepted but ignored; old clients render the last
   // server-side defaults (30/2000) instead of "0 days · 0 messages".
-  expect(await res.json()).toEqual({ historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 } });
+  expect(await res.json()).toEqual({
+    hostMode: "relay",
+    auth: { required: true, mode: "token" },
+    capabilities: {
+      multiInstance: true,
+      pairing: true,
+      invites: true,
+      webPush: false,
+      relayUpdate: true,
+      agentDirectory: true,
+      terminal: true,
+      desktop: true,
+    },
+    historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 },
+  });
+});
+
+test("GET /api/config is public so the dashboard can choose a host mode before login", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const app = createApp({
+    accounts: new AccountStore(db),
+    instances: new InstanceStore(db),
+    gateway: { isOnline: () => false, sendRequest: async () => ({}) },
+    messages: new MemoryMessageStore(),
+  });
+  const res = await app.request("/api/config");
+  expect(res.status).toBe(200);
+  expect((await res.json()).hostMode).toBe("relay");
 });
 
 test("pairing-token rejects non-JSON bodies with 415", async () => {

@@ -579,6 +579,12 @@ export const useInstancesStore = defineStore("instances", () => {
 
 
   async function loadAgentDirectory(): Promise<void> {
+    const { useRuntimeStore } = await import("./runtime");
+    const runtime = useRuntimeStore();
+    if (runtime.loaded && !runtime.config.capabilities.agentDirectory) {
+      agentDirectory.value = [];
+      return;
+    }
     try {
       const res = await api.get<{ endpoints: WebAgentDirectoryEndpointDto[] }>("/api/agent-directory");
       agentDirectory.value = res.endpoints ?? [];
