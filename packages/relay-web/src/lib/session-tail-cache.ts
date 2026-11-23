@@ -338,14 +338,14 @@ const fullOf = (record: TailRecord | undefined): MessageRecordDto[] =>
 
 /** Estimate a row's persisted weight in bytes without serializing it.
  *  JSON.stringify costs O(row) CPU AND allocates the full string; a session
- *  window merged from 50 rows can hold multi-MB previewUrl payloads, so a
+ *  window merged from 50 rows can hold multi-hundred-KB previewUrl payloads, so a
  *  `while (JSON.stringify(kept))` halving loop serializes tens of MB per
  *  write-back and freezes the UI thread. Field-wise estimate: text/ids at
- *  face value, structured by its heavy parts, attachments capped (see
- *  ATTACHMENT_BYTES_CAP — oversized previewUrls are dropped at cache time).
- *  Over-estimating is safe (earlier eviction); under-estimating is bounded
- *  by the row cap + the hard re-check on the kept tail in writeTranscript. */
-const ATTACHMENT_BYTES_CAP = 4 * 1024;
+ *  face value, structured by its heavy parts, attachments by their persisted
+ *  metadata + capped preview (oversized previewUrls are dropped at cache time).
+ *  The estimate must track REAL persisted bytes: over-estimating by orders of
+ *  magnitude does not "fail safe" — it evicts the user's real history. */
+const ATTACHMENT_BYTES_CAP = 256 * 1024;
 function estimateRowBytes(r: MessageRecordDto): number {
   let n = (r.text?.length ?? 0) * 2 + 64;
   n += (r.createdAt?.length ?? 0) * 2;
@@ -380,19 +380,29 @@ function estimateRowBytes(r: MessageRecordDto): number {
   }
   if (r.attachments) {
     for (const a of r.attachments) {
-      // A base64 previewUrl dominates the estimate (and the real bytes): cap
-      // per attachment so one giant image cannot starve an entire session.
+      // A base64 previewUrl dominates the persisted bytes: cap per attachment
+      // (at the relay's own 256KB preview admission bound, so everything the
+      // hub legitimately holds also survives in cache) so one giant image
+      // cannot starve an entire session. `size` is the ORIGINAL file size —
+      // the file body is never cached, only metadata
+      // (id/filename/mimeType/size/kind) — so it must not count toward the
+      // byte budget: counting it over-estimates by orders of magnitude and
+      // evicts the user's real history.
       const previewLen = a.previewUrl && a.previewUrl.startsWith("data:image/") ? Math.min(a.previewUrl.length, ATTACHMENT_BYTES_CAP) : 0;
-      n += ((a.filename?.length ?? 0) + (a.mimeType?.length ?? 0)) * 2 + (a.size ?? 0) + previewLen;
+      n += ((a.filename?.length ?? 0) + (a.mimeType?.length ?? 0)) * 2 + previewLen;
     }
   }
   return n;
 }
 
-/** Strip oversized attachment previewUrls before caching: a single camera
- *  photo as base64 can exceed TRANSCRIPT_MAX_BYTES alone and would evict the
- *  whole session on the next write-back. Metadata (filename/size/kind) stays;
- *  the full row is re-hydrated from the hub via ensureFullMessage when opened. */
+/** Strip oversized attachment previewUrls before caching: a single huge data
+ *  URL would eat the whole session byte budget on the next write-back. Metadata
+ *  (filename/size/kind) stays; the stripped preview is metadata-only from then
+ *  on — there is no hub re-hydration path for attachments (`ensureFullMessage`
+ *  only hydrates compact structured tool cards), and after a hub restart the hub
+ *  no longer holds the row at all. Same-boot hub rows still carry their preview,
+ *  so `loadHistory`'s union restores it while the hub is alive. The cap matches
+ *  the relay's preview admission bound, so legitimate rows are never stripped. */
 export function stripOversizedPreviews(row: MessageRecordDto): MessageRecordDto {
   if (!row.attachments) return row;
   let changed = false;

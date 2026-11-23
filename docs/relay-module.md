@@ -227,8 +227,8 @@ Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任�
   - 内存 transcript 自限（环上限写入时强制；`prune()` 同口径保底）；
   - GC 过期的 `web_sessions`（`AccountStore.pruneExpired(now)`）与
     `pairing_tokens`（`InstanceStore.prunePairingTokens(now)`）。
-- **CLI**：`--history-retention-days` 已退休（接受但忽略并提示）；slot anchors 启动时清空
-  （旧 boot id 已无意义），recovery receipts 保留（无正文的去重 key）。
+- **CLI**：`--history-retention-days` 已退休（接受但忽略并提示）；slot anchors 只在 serving 启动时清空
+  （旧 boot id 已无意义；`ls`/`add token` 等管理命令开库不触发），recovery receipts 保留（无正文的去重 key）。
 
 ## 阶段五加固（审计修复）
 
@@ -450,7 +450,7 @@ interface TurnAccumulator {
 - 单测按文件跑（tests/unit/packages/relay、tests/unit/packages/channel-relay）；
   run-tests.mjs 会预构建 relay-protocol dist。
 - 模拟 hub 重启：`tests/unit/packages/relay/runtime-restart.test.ts` 用两个 in-process runtime
-  共享同一磁盘 SQLite 文件，验证跨重启的 history 行 + state 快照恢复与去重。
+  共享同一磁盘 SQLite 文件，验证跨重启的行消亡（旧 boot 行不复活）+ state 快照恢复/回填与去重。
 - 全链路：`tests/unit/packages/relay/web-dashboard-e2e.test.ts` 用真实 relay-server
   （`startRelayServer`）+ 真实连接器（RelayClient/createControlBridge/subscribeControlEvents）
   验证 实例事件 → relay → web 客户端 + 历史缓存的端到端路径。

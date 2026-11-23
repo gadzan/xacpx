@@ -84,7 +84,8 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   供首屏未连接时渲染中性 connecting 态而非报错。
 - `views/SettingsView.vue`（路由 `/settings`）：实例接入 token 生成器（回显
   `xacpx channel add relay --url ... --token ...` 命令）、主题切换、登出、
-  只读历史保留摘要（来自 `GET /api/config`，保留策略服务端配置、v1 不可在 Web 改）。
+  只读历史保留摘要（来自 `GET /api/config`：`client-side` 走客户端口径——本设备每会话最近
+  1000 条/8MB，只读展示；旧 hub 走 legacy 分支）。
   （邀请/角色已移除——认证改为纯令牌，见 docs/relay-module.md。）
 
 ## 聊天流式缓冲（阶段四加固）
@@ -1342,7 +1343,7 @@ Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行
   取消在途回合（`control.prompt.cancel`）、左栏实例树会话创建/删除 UI。
 - **阶段七**消息附件：`PromptInput` 附件入口 + `MessageAttachments` 渲染 + 客户端 512px 降采样持久 preview（见上节）。
 - **PR5** Direct Bot 会话：Relay Web direct Bot vertical slice，包含 `stores/direct-bots.ts`、`BotDialog.vue`、`DirectBotPane.vue`、`ConversationPromptInput.vue`、实例树模式切换与完整回归套件（当时的 `ConversationMessageList.vue` 消息列表是后来 `ConversationTimeline` 的前身，已删除）。
-- 历史保留策略为服务端配置（`--history-retention-days`），v1 在 Web 端只读、不可编辑（见 docs/relay-module.md）。
+- 历史保留为客户端配置（本设备留存：每会话最近 1000 条/8MB；`--history-retention-days` 已退休），Web 端只读展示（见 docs/relay-module.md）。
 
 ## Direct Bot composer completions (Issue #399)
 

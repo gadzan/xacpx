@@ -30,8 +30,10 @@ export function canonicalRecoveryId(sessionAlias: string, recoveryId?: string): 
  *
  * Boot-scoped (history-retirement, 2026-11): hub message ids restart every
  * boot (MemoryMessageStore), so anchors from a previous boot would point at
- * dead ids — `createRelayRuntime` clears the table on startup. Within a boot
- * the anchor still bridges turn-started → turn-finished/state.sync.
+ * dead ids — a SERVING hub clears the table on startup (`serving: true`, i.e.
+ * `startRelayServer`). Management commands open the same DB without the flag
+ * and must never clear it. Within a boot the anchor still bridges
+ * turn-started → turn-finished/state.sync.
  *
  * Keyed by `(instance_id, recovery_id)`:
  * - Non-empty `recoveryId` is the real recovery identity (exact match only).

@@ -48,7 +48,7 @@
 |---|---|
 | `stores/messages-memory.ts`（新） | 与 `MessageStore` 同方法、同语义的内存实现；id 用随机 boot 前缀 + 计数器（秒级有序、boot 内递增、boot 间几乎不撞），客户端可按 id 合并；每会话 500 行环 + 全局 10000 行（ oldest-first 驱逐）；`deleteByInstance` 随实例删除清行 |
 | `stores/messages.ts` | 增 `MessageHistoryStore`（`Pick` 全部 21 个方法）；SQLite 类保留（回滚路径 + 单测对象），生产不再接线 |
-| `server.ts` | `new MemoryMessageStore(options.now)`；启动调 `retireMessageTables`（+VACUUM、warn 日志） + `slotAnchors.clearAll()`；`--history-retention-days` 标 `@deprecated`；`createApp` 不再传已废弃的 retention 参数；hourly maintenance 只做全局计数 cap（无 age prune） |
+| `server.ts` | `new MemoryMessageStore(options.now)`；serving 启动（`serving: true`，即 `startRelayServer`）调 `retireMessageTables`（+VACUUM、warn 日志） + `slotAnchors.clearAll()`；管理命令（`ls`/`add token`/`rm token`…）开库不带该 flag，保持无副作用；`--history-retention-days` 标 `@deprecated`；`createApp` 不再传已废弃的 retention 参数；hourly maintenance 只做全局计数 cap（无 age prune） |
 | `db.ts` | `initSchema` 不再建 `messages` 表及相关索引/迁移分支；新增 `retireMessageTables()` |
 | `stores/accounts.ts` | `deleteAccountCascade` 删除 `messages` 表引用（表已不存在；运行中 hub 的内存行经 `instances` 归属校验已不可达，属有界泄漏，见 §7） |
 | `stores/turn-slot-anchors.ts` | 增 `clearAll()`；类注释改为 boot-scoped 语义 |
@@ -56,12 +56,14 @@
 | `http/app.ts` | `messages: MessageHistoryStore`；`/api/config` 报 `client-side`（数字段保留旧默认值兼容老客户端）；`deleteBySession`/`markQueued` 等调用不变（内存实现）；DELETE 实例同时调 `deleteByInstance` 清内存行 |
 | `cli.ts` | USAGE 去掉 `--history-retention-days`；`start` 时若传入则提示已退休 |
 
-### 4.1 为什么 slot anchors 启动清空
+### 4.1 为什么 slot anchors 启动清空（仅 serving 启动）
 
 anchor 存的是"turn-started 时的 hub message id"。id 改为每 boot 重排后，
 上个 boot 的 anchor 指向死 id，会污染新 boot 的排序。daemon 重连必带
 `state.sync`（内含 running turns 的 prompt），恢复路径用"回填后 lastId"
 重建 anchor，语义等价——旧测试 `runtime-restart.test.ts` 已按此重写并通过。
+清理只发生在 serving 启动：管理 CLI（`ls`/`add token`/`rm token`…）与运行中 hub
+共享同一个 `--db`，开库时不带 `serving` flag，不得把在途 turn 的 anchor 清掉。
 
 ### 4.2 为什么 recovery receipts 保留
 
@@ -88,7 +90,7 @@ FIFO 重发只认"是否 ack"，hub 重启后靠它去重。行丢了 + 有收�
 | 层 | 值 | 说明 |
 |---|---|---|
 | 每会话行数 | `TRANSCRIPT_MAX_ROWS = 1000` | 超出 oldest-first 丢弃 |
-| 每会话字节 | `TRANSCRIPT_MAX_BYTES = 8 MB` | 按行字段估算（无全量 `JSON.stringify`），超出一半一半从最旧砍；入库前剥离超限 `previewUrl`（>4KB/附件），元数据保留 |
+| 每会话字节 | `TRANSCRIPT_MAX_BYTES = 8 MB` | 按行字段估算（无全量 `JSON.stringify`，附件只计元数据 + 上限内 preview，不计原始文件 `size`），超出一半一半从最旧砍；入库前剥离超 256KB 的 `previewUrl`（relay 准入上限，正常降采样图远小于此），元数据保留 |
 | 全局 | `GLOBAL_BUDGET_BYTES = 64 MB`（既有） | 跨会话 LRU 驱逐（key-cursor，不反序列化 rows） |
 | TTL | 30 天（既有） | 过期惰性删除 |
 | 配额耗尽 | 既有 fallback | 清库后重试只留当前会话 |
@@ -102,7 +104,7 @@ FIFO 重发只认"是否 ack"，hub 重启后靠它去重。行丢了 + 有收�
 - **翻页**：`loadOlder()` 双源（hub `before` + `readOlder(beforeId, 50)`）合并前插；
   跨 hub 重启继续翻页（旧 boot 行全在本地）。
 - **写回**：500ms 防抖，读-改-写（窗口 ∪ 缓存 by id，不替换）：
-  空窗口不删（切会话/空会话不 Aristotle 删缓存），直播中跳过（收敛后再写），
+  空窗口不删（切会话/空会话不会删除缓存），直播中跳过（收敛后再写），
   本次驱逐 `dropped>0` 时刷新横幅计数。
 - **水合**：`ensureFullMessage` 先查本地 `readRow`（full 则直接用），再问 hub；
   hub 404（旧 boot 行）吞掉、保留 compact 卡（best-effort，不弹错）。
@@ -119,20 +121,20 @@ FIFO 重发只认"是否 ack"，hub 重启后靠它去重。行丢了 + 有收�
 |---|---|---|---|
 | Hub 内存环（500/会话，10000/全局） | 写入超限 | oldest-first 丢弃（同 boot 内）；`prune()` 同口径 | 不可见——hub 不是档案，只保证直播 + 同 boot 翻页；重启即空是预期 |
 | 客户端会话行数（1000） | 写回合并超限 | oldest-first 丢弃，`droppedTotal` 累加 | 横幅："本地历史已达上限，仅保留最近 N 条（已清理 M 条）" |
-| 客户端会话字节（8MB） | JSON 估算超限 | 从最旧端折半丢弃（log 次估算），`droppedTotal` 累加 | 同上（与行数上限同一横幅） |
+| 客户端会话字节（8MB） | 字段估算超限 | 从最旧端折半丢弃（log 次估算），`droppedTotal` 累加 | 同上（与行数上限同一横幅） |
 | 客户端全局（64MB） | `putAndEvict` 超限 | 按 `[lastAccess, bytes]` LRU 删整会话（写会话除外）；配额异常时清库重试只留当前会话 | 被驱逐的会话下次打开时从 daemon 种子 + 直播重建（可能缺旧段，无横幅——LRU 语义） |
 | TTL（30 天） | 读/写时检查 | 惰性删除该会话条目 | 下次打开显示空 + 重新拉取（daemon 在线才有全量） |
 | Hub 重启 | 进程退出 | 内存全失；`session-history` 种子 + `state.sync` 回填本 boot 行 | 同 boot 内无感；旧 boot 的行只在**本机缓存**里（换设备 + daemon 离线 = 看不到旧记录，见 §7） |
 | Token/实例删除 | `rm token` / `sessionsRemove` | `deleteBySession` 清内存行；`rm token` 跨进程，运行中 hub 的孤儿行残留至多一个环大小、不可达（归属校验失败 → 404） | 无 |
 
 上限选择的理由：1000 行 ≈ 服务端旧上限 2000 的一半（客户端按需翻页，不必一次全驻留；
-50 行工作集常驻内存，滚动按 50 行页进）；8MB/会话保证图片 `previewUrl`（base64）
-大户不挤爆单会话；64MB 全局沿用既有尾缓存预算（浏览器配额数百 MB，留足余量）；
+50 行工作集常驻内存，滚动按 50 行页进）；8MB/会话按真实占用计费（附件只计元数据 +
+上限内 preview，原始文件 `size` 不计入），超限才从最旧端驱逐；64MB 全局沿用既有尾缓存预算（浏览器配额数百 MB，留足余量）；
 30 天沿用既有 TTL（服务端旧 retention 默认值，心智一致）。
 
 ## 7. 已知取舍与风险
 
-1. **换设备 + daemon 离线 = 旧记录不可见**。接受：daemon 在线即回填；离线只看本机缓存。
+1. **换设备 + daemon 离线 = 旧记录不可见**。接受：daemon 在线时只回填 running turn 与未 ack 的 finished turn（见 §4.3）；离线只看本机缓存。
 2. **全文搜索/多端同步弱化**：缓存是单机 IndexedDB，无跨端合并。接受（当前无此功能）。
 3. **`rm token` 孤儿内存行**：有界（环上限）、不可达、重启清零。可后续给运行中 hub
    加清扫（`deleteAccountCascade` 后广播），暂不做。
@@ -148,12 +150,12 @@ FIFO 重发只认"是否 ack"，hub 重启后靠它去重。行丢了 + 有收�
 
 | 文件 | 动作 |
 |---|---|
-| `stores-messages.test.ts` ×2（`stores/` 与根各一） | 重写为 `MemoryMessageStore` 行为契约：分页/游标、附件、account 隔离说明、ring 驱逐、跨实例 id 不碰撞 |
+| `stores-messages.test.ts` ×2（`stores/` 与根各一） | 重写为 `MemoryMessageStore` 行为契约：分页/游标、附件、account 隔离说明、ring 驱逐、跨实例 id 不碰撞、全局 10000 行 oldest-first 驱逐、`deleteByInstance` 按实例清行 |
 | `db.test.ts` | 新库无 `messages` 表；`retireMessageTables` 删遗留表并上报行数、幂等；`initSchema` 见遗留表不迁移 |
 | `maintenance.test.ts` | prune 改测内存实现（按龄 + 按量） |
 | `stores-accounts.test.ts` | cascade 去掉 messages 断言 |
-| `http-app.test.ts` | `/api/config` 断言 `client-side`；其余 `new MemoryMessageStore()` 直换 |
-| `runtime-restart.test.ts` | 按 §4.3 新语义重写 6 个用例（行随 boot 消亡、收据跨重启去重、anchor 启动清空、回填重建 slot） |
+| `http-app.test.ts` | `/api/config` 断言 `client-side`；其余 `new MemoryMessageStore()` 直换；`DELETE /api/instances/:id` 断言清内存行 |
+| `runtime-restart.test.ts` | 按 §4.3 新语义重写 6 个用例（行随 boot 消亡、收据跨重启去重、anchor 在 serving 启动时清空、回填重建 slot）；全文件运行时带 `serving: true`；新增管理 CLI 开库无副作用用例（anchor 与遗留表均保留） |
 | `runtime-state-sync/fanout/peer-node-stamp/integration/http/messages-endpoint` | 未改——单运行时语义不变，直接通过 |
 | `relay-interaction-transport` / `elicitation` / `collaboration-ux` | `new MemoryMessageStore()` 直换 + 类型改为 `MessageHistoryStore` |
 
@@ -162,7 +164,7 @@ FIFO 重发只认"是否 ack"，hub 重启后靠它去重。行丢了 + 有收�
 
 | 用例 | 状态 |
 |---|---|
-| 新增 7 个 transcript 契约测试（合并/兼容/行上限/翻页/readRow/空窗口/化身隔离） | 全过 |
+| 新增 9 个 transcript 契约测试（合并/兼容/行上限/翻页/readRow/空窗口/化身隔离/附件 `size` 不计入字节预算/超限 preview 剥离留元数据） | 全过 |
 | `select() seeds…`（种子改走 `readTranscript`） | 过——种子路径已验证 |
 | 既有 16 个 store-flow 用例 | 基线同败（环境），CI 复核 |
 | 独立 `bun verify-transcript-cache.ts`（19 项，fake-indexeddb 直驱） | 全过（临时脚本，验证后删除） |
@@ -170,7 +172,7 @@ FIFO 重发只认"是否 ack"，hub 重启后靠它去重。行丢了 + 有收�
 
 ## 9. 发布与回滚
 
-- 发布：随 relay 正常发版；升级后首次启动自动 DROP 遗留表（warn 日志带行数）
+- 发布：随 relay 正常发版；升级后首次 serving 启动自动 DROP 遗留表（warn 日志带行数）
   并 VACUUM 回收空间。升级前必须 `cp relay.db relay.db.bak` 备一份——DROP 不可逆，
   无备份无法恢复旧历史；代码侧不保留改名表（`messages_backup` 仍是磁盘明文留存，
   与退休目标相悖）。现网 `x.gadzan.com` 按此执行。

@@ -35,7 +35,6 @@ import { startMaintenanceLoop } from "./maintenance.js";
 import { createNoopRelayLogger, type RelayLogger } from "./logging.js";
 import { InteractionRegistry } from "./interaction-registry.js";
 
-const MAX_MESSAGES_PER_SESSION = 2000; // @deprecated History retired: memory store caps itself (500/session); kept only for legacy /api/config numbers.
 const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
 // Per-string bound on tool-step / seeded-history content entering the turn buffer. Full
 // file diffs or command output can reach megabytes; everything buffered is broadcast,
@@ -159,6 +158,15 @@ export interface CreateRuntimeOptions {
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
   trustProxy?: boolean;
+  /**
+   * True when the runtime backs a SERVING hub (`startRelayServer`). Only then
+   * may the constructor perform destructive startup cleanup (dropping the
+   * legacy `messages` table, clearing stale slot anchors). Management commands
+   * (`ls`, `add token`, `rm token`, …) open the same `--db` against a possibly
+   * RUNNING hub and must stay side-effect free — clearing anchors out from
+   * under an in-flight turn would misorder its queued prompts and peer cards.
+   */
+  serving?: boolean;
   /** Web push VAPID config; omitted = resolve from env, null = force-disable. */
   vapid?: VapidConfig | null;
   logger?: RelayLogger;
@@ -170,16 +178,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const db = await createSqlDriver(dbPath);
   initSchema(db);
   const logger = options.logger ?? createNoopRelayLogger();
-  // History retirement: message CONTENT must never touch SQLite again. Drop a
-  // legacy `messages` table (and its rows) left by an older hub, then run the
-  // rest of the process against the ephemeral memory store below.
-  // IRREVERSIBLE without a pre-upgrade `cp relay.db` backup — the upgrade
-  // notes require one, and the drop is logged loudly here for the same reason.
-  retireMessageTables(db, (dropped) => {
-    if (dropped > 0) {
-      logger.warn("relay.history.retired", `dropped legacy messages table and VACUUMed (${dropped} rows, unrecoverable without a pre-upgrade backup); transcripts are client-side now`, {});
-    }
-  });
+  // History retirement: message CONTENT must never touch SQLite again. Only a
+  // SERVING hub drops a legacy `messages` table (and its rows) left by an
+  // older hub — management commands share this constructor against a possibly
+  // running hub and must not destroy anything. IRREVERSIBLE without a
+  // pre-upgrade `cp relay.db` backup — the upgrade notes require one, and the
+  // drop is logged loudly here for the same reason.
+  if (options.serving) {
+    retireMessageTables(db, (dropped) => {
+      if (dropped > 0) {
+        logger.warn("relay.history.retired", `dropped legacy messages table and VACUUMed (${dropped} rows, unrecoverable without a pre-upgrade backup); transcripts are client-side now`, {});
+      }
+    });
+  }
   const nowMs = () => (options.now ? options.now().getTime() : Date.now());
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
@@ -187,10 +198,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const slotAnchors = new TurnSlotAnchorStore(db);
   // Slot anchors reference hub transcript ids, which restart every boot —
   // anything left by a previous boot is stale by construction. Recovery
-  // receipts are boot-independent dedup keys and are kept.
-  const clearedAnchors = slotAnchors.clearAll();
-  if (clearedAnchors > 0) {
-    logger.warn("relay.slots.retired", `dropped ${clearedAnchors} stale slot anchor(s) from a previous boot`, {});
+  // receipts are boot-independent dedup keys and are kept. The clear runs only
+  // for a SERVING hub: management commands must not pull anchors out from
+  // under a running hub's in-flight turns.
+  if (options.serving) {
+    const clearedAnchors = slotAnchors.clearAll();
+    if (clearedAnchors > 0) {
+      logger.warn("relay.slots.retired", `dropped ${clearedAnchors} stale slot anchor(s) from a previous boot`, {});
+    }
   }
   let gatewayRef: InstanceGateway | null = null;
   // Desktop streams bind to the requesting control socket's viewerId for their
@@ -1347,7 +1362,7 @@ export interface StartRelayOptions {
   /**
    * @deprecated Retired with server-side history: accepted so old callers
    * keep compiling, but never read — the hub no longer prunes by age.
-   * `startRelayServer` forwards nothing from it; the memory store self-caps.
+   * Not forwarded to the runtime.
    */
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
@@ -1368,7 +1383,7 @@ export interface RunningRelay {
 export async function startRelayServer(options: StartRelayOptions): Promise<RunningRelay> {
   const runtime = await createRelayRuntime(options.dbPath, {
     webRoot: options.webRoot,
-    historyRetentionDays: options.historyRetentionDays,
+    serving: true,
     requestTimeoutMs: options.requestTimeoutMs,
     vapid: options.vapid,
     trustProxy: options.trustProxy,

@@ -18,7 +18,12 @@ import { join } from "node:path";
 
 import { expect, test } from "bun:test";
 import { MSG, RELAY_PROTOCOL_VERSION } from "../../../../packages/relay-protocol/src/index";
-import { createRelayRuntime, type RelayRuntime } from "../../../../packages/relay/src/server";
+import { createRelayRuntime as createRuntime, type RelayRuntime } from "../../../../packages/relay/src/server";
+/** Every runtime in this file simulates a SERVING hub restart: pass serving: true
+ *  so startup performs the destructive cleanup (legacy table drop, stale anchor
+ *  clear) exactly like `startRelayServer`. Bare `createRelayRuntime` without the
+ *  flag stays side-effect free for management commands (`ls`, `add token`, …). */
+const createRelayRuntime = (dbPath: string) => createRuntime(dbPath, { serving: true });
 
 const STARTED_AT = 1_700_000_000_000;
 
@@ -319,6 +324,42 @@ test("legacy empty recoveryId backend+frontend each slot to their own backfilled
     expect(turns.backend).toBe(bePrompt!.id);
     expect(turns.frontend).toBe(fePrompt!.id);
     b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a non-serving open (management CLI) never clears anchors or drops legacy tables", async () => {
+  // `ls` / `add token` / `rm token` share the constructor against a possibly
+  // RUNNING hub's `--db`: they must be side-effect free. Only a serving start
+  // performs the destructive retirement.
+  const dir = mkdtempSync(join(tmpdir(), "relay-mgmt-"));
+  const dbPath = join(dir, "relay.db");
+  try {
+    const serving = await createRelayRuntime(dbPath);
+    seedIdentity(serving);
+    serving.slotAnchors.put({ instanceId: "i1", sessionAlias: "backend", recoveryId: "r-live", slotAfterId: 7 });
+    serving.db.run("CREATE TABLE messages (id INTEGER PRIMARY KEY, body TEXT)");
+    serving.db.run("INSERT INTO messages (body) VALUES ('legacy')");
+    serving.close();
+
+    // Management-style open: no `serving` flag — everything stays.
+    const mgmt = await createRuntime(dbPath);
+    try {
+      expect(mgmt.slotAnchors.get("i1", "r-live")?.slotAfterId).toBe(7);
+      expect(mgmt.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM messages`)?.n).toBe(1);
+    } finally {
+      mgmt.close();
+    }
+
+    // The next serving start performs the retirement.
+    const restarted = await createRelayRuntime(dbPath);
+    try {
+      expect(restarted.slotAnchors.get("i1", "r-live")).toBeUndefined();
+      expect(restarted.db.get(`SELECT name FROM sqlite_master WHERE type='table' AND name='messages'`)).toBeFalsy();
+    } finally {
+      restarted.close();
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

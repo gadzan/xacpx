@@ -143,7 +143,6 @@ xacpx-relay start \
   [--host 0.0.0.0] \
   [--http-port 8787] \
   [--ws-port <n>] \
-  [--history-retention-days 30] \
   [--request-timeout-ms 120000] \
   [--trust-proxy]
 ```
@@ -155,7 +154,7 @@ xacpx-relay start \
 | `--ws-port <n>` | _(merged)_ | Omit to merge the instance gateway onto the HTTP port (single-port default). Pass a port to run a dedicated gateway listener you can firewall separately. |
 | `--host <addr>` | `0.0.0.0` | Bind address. |
 | `--web-root <dir>` | _(auto-detected)_ | Dashboard assets directory. Auto-resolves the dashboard embedded in the package (`dist/relay-web` next to `cli.js`); only pass this to override. |
-| `--history-retention-days <n>` | `30` | Cached messages older than this are pruned hourly (also hard-capped at 2000 messages per session). |
+| `--history-retention-days <n>` | _(retired)_ | Accepted for old scripts but ignored — chat history is now kept on each device (dashboard IndexedDB), not on the hub. |
 | `--request-timeout-ms <n>` | `120000` | Per-request timeout for proxied calls to instances. |
 | `--trust-proxy` | _(off)_ | Trust `X-Forwarded-For` for rate limiting. Pass this when behind a reverse proxy; **never** when directly internet-exposed (it would allow IP spoofing). |
 
@@ -438,17 +437,17 @@ There is deliberately **no separate desktop doctor command** in Phase A. The ope
 - **Audit:** `ls` shows all tokens with their labels, creation dates, and instance counts.
 - **Revoke:** `rm token <value-or-id>` removes the user and cascades to its instances, web sessions, and cached messages. The token's web sessions are killed on the next request; open `/ws` sockets linger until reconnect.
 - **Force global re-login:** stop the hub, `sqlite3 <db> "DELETE FROM web_sessions;"`, restart.
-- **Automatic GC:** an hourly maintenance loop prunes cached messages past `--history-retention-days` (and the 2000-per-session cap) and deletes expired web sessions. No cron needed.
+- **Automatic GC:** an hourly maintenance loop deletes expired web sessions, pairing tokens, and invite codes. No cron needed. (Chat history is kept per-device in the dashboard's IndexedDB — newest 1000 messages / 8 MB per session — and is no longer pruned server-side.)
 
 ## Persistence & backup
 
-Everything lives in the one SQLite file at `--db` (default `~/.xacpx-relay/relay.db`). To back up, stop the hub (or snapshot during a quiet moment) and copy the file:
+Accounts, instance registrations, tokens, and recovery keys live in the one SQLite file at `--db` (default `~/.xacpx-relay/relay.db`). To back up, stop the hub (or snapshot during a quiet moment) and copy the file:
 
 ```bash
 cp ~/.xacpx-relay/relay.db /backups/relay-$(date +%F).db
 ```
 
-Losing it means losing all token-users, instance registrations, and cached history — instances would need to be re-paired.
+Losing it means losing all token-users and instance registrations — instances would need to be re-paired. Chat history is NOT in this file: transcripts live per-device in each browser's IndexedDB (newest 1000 messages / 8 MB per session) plus the daemon's own session store, so a DB backup does not back up chat history.
 
 ## Running under systemd (example)
 

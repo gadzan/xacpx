@@ -19,7 +19,7 @@ import {
   isDesktopNotificationsEnabled,
 } from "../lib/web-push";
 import AddInstanceDialog from "../components/AddInstanceDialog.vue";
-import { TRANSCRIPT_MAX_ROWS } from "../lib/session-tail-cache";
+import { TRANSCRIPT_MAX_BYTES, TRANSCRIPT_MAX_ROWS } from "../lib/session-tail-cache";
 import Tooltip from "../components/Tooltip.vue";
 import UiButton from "../components/UiButton.vue";
 const auth = useAuthStore();
@@ -199,7 +199,7 @@ void onMounted(() => { void probeNotifications(); });
               {{ $t("settings.retentionShort", { max: retention?.maxPerSession ?? "—", days: retention?.days ?? "—" }) }}
             </template>
           </p>
-          <Tooltip :text="retention?.mode === 'client-side' ? $t('settings.retentionClientBody', { max: TRANSCRIPT_MAX_ROWS, bytes: '8 MB' }) : $t('settings.retentionBody', { max: retention?.maxPerSession ?? '—', days: retention?.days ?? '—' })">
+          <Tooltip :text="retention?.mode === 'client-side' ? $t('settings.retentionClientBody', { max: TRANSCRIPT_MAX_ROWS, bytes: `${TRANSCRIPT_MAX_BYTES / 1024 / 1024} MB` }) : $t('settings.retentionBody', { max: retention?.maxPerSession ?? '—', days: retention?.days ?? '—' })">
             <button type="button" data-test="retention-info" :aria-label="$t('settings.moreInfo')" :title="$t('settings.moreInfo')"
                     class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0">
               <Info :size="14" />

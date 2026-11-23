@@ -767,6 +767,22 @@ test("PATCH /api/instances/:id renames an owned instance", async () => {
   expect(instances.getOwned(instanceId, accountId)?.name).toBe("renamed");
 });
 
+test("DELETE /api/instances/:id clears the instance's memory transcript rows", async () => {
+  const { app, instances, messages, loginToken, login, admin } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const { instanceId } = instances.redeemPairingToken(token)!;
+  messages.append(instanceId, "backend", "in", "old question");
+  messages.append(instanceId, "backend", "out", "old answer");
+
+  const res = await app.request(`/api/instances/${instanceId}`, { method: "DELETE", headers: { cookie } });
+  expect(res.status).toBe(200);
+  expect(messages.listBySession(admin.id, instanceId, "backend").messages).toEqual([]);
+});
+
 test("PATCH /api/instances/:id with an empty/whitespace name → 400 invalid-name", async () => {
   const { app, instances, loginToken, login } = await makeApp();
   const { cookie } = await login(loginToken);
@@ -944,7 +960,8 @@ test("GET /api/config reports client-side retention (server keeps no transcript)
   const app = createApp({
     accounts, instances, gateway, messages,
     historyRetentionDays: 14, maxMessagesPerSession: 500,
-  });  const loginRes = await app.request("/api/login", {
+  });
+  const loginRes = await app.request("/api/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ token: loginToken }),

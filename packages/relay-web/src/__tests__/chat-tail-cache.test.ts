@@ -491,6 +491,34 @@ test("per-session row cap keeps newest and counts evicted rows", async () => {
   expect(page?.droppedTotal).toBe(200);
 });
 
+test("attachment file size metadata does not count toward the byte budget", async () => {
+  // `size` is the ORIGINAL file size (up to 10MB per attached file); the cache
+  // only persists metadata + a capped preview, so fifty photo-rows must all
+  // survive the 8MB session budget instead of evicting each other.
+  const photo = (id: number): MessageRecordDto => ({
+    ...row(id),
+    attachments: [{ id: `a${id}`, filename: "photo.jpg", mimeType: "image/jpeg", size: 10 * 1024 * 1024, kind: "image" }],
+  });
+  const many = Array.from({ length: 50 }, (_, i) => photo(i + 1));
+  const result = await writeTranscript("alice", "i1", "s1", many);
+  expect(result.dropped).toBe(0);
+  expect((await readTranscript("alice", "i1", "s1", "", 100))?.rows).toHaveLength(50);
+});
+
+test("oversized previews are stripped but attachment metadata survives", async () => {
+  const big = "data:image/jpeg;base64," + "x".repeat(300 * 1024);
+  const withBigPreview: MessageRecordDto = {
+    ...row(1),
+    attachments: [{ id: "a1", filename: "big.jpg", mimeType: "image/jpeg", size: 5 * 1024 * 1024, kind: "image", previewUrl: big }],
+  };
+  const result = await writeTranscript("alice", "i1", "s1", [withBigPreview]);
+  expect(result.dropped).toBe(0);
+  const kept = (await readTranscript("alice", "i1", "s1", "", 100))?.rows;
+  expect(kept).toHaveLength(1);
+  expect(kept![0]!.attachments![0]!.previewUrl).toBeUndefined();
+  expect(kept![0]!.attachments![0]).toMatchObject({ filename: "big.jpg", size: 5 * 1024 * 1024 });
+});
+
 test("readOlder pages backwards with hasMore", async () => {
   const many = Array.from({ length: 30 }, (_, i) => row(i + 1));
   await writeTranscript("alice", "i1", "s1", many);

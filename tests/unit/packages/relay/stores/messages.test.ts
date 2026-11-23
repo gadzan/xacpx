@@ -1,7 +1,7 @@
 // tests/unit/packages/relay/stores/messages.test.ts
 // History retirement: the hub transcript is an ephemeral memory ring.
 import { expect, test } from "bun:test";
-import { MemoryMessageStore } from "../../../../../packages/relay/src/stores/messages-memory";
+import { MEMORY_GLOBAL_MAX_ROWS, MemoryMessageStore } from "../../../../../packages/relay/src/stores/messages-memory";
 
 function fresh() {
   return new MemoryMessageStore();
@@ -45,6 +45,41 @@ test("deleteBySession removes only the targeted instance and alias history", asy
   expect(store.listBySession("a1", "i1", "backend").messages).toEqual([]);
   expect(store.listBySession("a1", "i1", "other").messages.map((m) => m.text)).toEqual(["keep alias"]);
   expect(store.listBySession("a2", "i2", "backend").messages.map((m) => m.text)).toEqual(["keep instance"]);
+});
+
+test("deleteByInstance drops every row of the instance and keeps others", async () => {
+  const store = fresh();
+  store.append("i1", "backend", "in", "gone");
+  store.append("i1", "other", "in", "gone too");
+  store.append("i2", "backend", "in", "stays");
+
+  expect(store.deleteByInstance("i1")).toBe(2);
+  expect(store.listBySession("a1", "i1", "backend").messages).toEqual([]);
+  expect(store.listBySession("a1", "i1", "other").messages).toEqual([]);
+  expect(store.listBySession("a2", "i2", "backend").messages.map((m) => m.text)).toEqual(["stays"]);
+});
+
+test("global budget evicts oldest-first across sessions", async () => {
+  // 25 sessions x 500 rows each: per-session rings keep everything (500 is
+  // the ring cap, not over it), so the 10000-row global budget must drop the
+  // 2500 oldest rows — the whole of the first five sessions.
+  const store = fresh();
+  const SESSIONS = 25;
+  const PER_SESSION = 500;
+  for (let s = 0; s < SESSIONS; s++) {
+    for (let i = 0; i < PER_SESSION; i++) store.append("i1", `s${s}`, "in", `s${s}-m${i}`);
+  }
+  let total = 0;
+  for (let s = 0; s < SESSIONS; s++) {
+    const rows = store.listBySession("a1", "i1", `s${s}`, { limit: 1000 }).messages;
+    total += rows.length;
+    if (s < 5) expect(rows).toEqual([]);
+    else {
+      expect(rows).toHaveLength(PER_SESSION);
+      expect(rows[0]?.text).toBe(`s${s}-m0`);
+    }
+  }
+  expect(total).toBe(MEMORY_GLOBAL_MAX_ROWS);
 });
 
 test("append stores structured agentMessage metadata and custom createdAt", async () => {
