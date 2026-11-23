@@ -2,7 +2,17 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, expect, test, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 import type { MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
-import { read, resetTailCacheForTests, TAIL_ROWS, write } from "../lib/session-tail-cache";
+import {
+  read,
+  readOlder,
+  readRow,
+  readTranscript,
+  resetTailCacheForTests,
+  TAIL_ROWS,
+  TRANSCRIPT_MAX_ROWS,
+  write,
+  writeTranscript,
+} from "../lib/session-tail-cache";
 import {
   read as readViewSnapshot,
   resetViewSnapshotCacheForTests,
@@ -428,4 +438,65 @@ test("removing cancels a pending write-back so it cannot resurrect the purged en
   }
   await new Promise((r) => setTimeout(r, 20));
   expect(await read("alice", "i1", "s1")).toBeNull();
+});
+
+// ── Full-transcript retention (history-retirement): the client IndexedDB copy ──
+// These tests pin the cap/merge/paging contract without touching the hub.
+
+test("writeTranscript unions windows by id; incoming wins", async () => {
+  await writeTranscript("alice", "i1", "s1", [row(1), row(2), row(3)]);
+  await writeTranscript("alice", "i1", "s1", [row(3, "m3-new"), row(4)]);
+  const page = await readTranscript("alice", "i1", "s1", "", 100);
+  expect(page?.rows.map((r) => r.text)).toEqual(["m1", "m2", "m3-new", "m4"]);
+  expect(page?.droppedTotal).toBe(0);
+});
+
+test("legacy tail writes feed the transcript (no migration needed)", async () => {
+  await write("alice", "i1", "s1", [row(1), row(2)]);
+  expect((await readTranscript("alice", "i1", "s1", "", 100))?.rows).toHaveLength(2);
+  expect(await read("alice", "i1", "s1")).toHaveLength(2);
+});
+
+test("per-session row cap keeps newest and counts evicted rows", async () => {
+  const many = Array.from({ length: TRANSCRIPT_MAX_ROWS + 200 }, (_, i) => row(i + 1));
+  const result = await writeTranscript("alice", "i1", "s1", many);
+  expect(result.dropped).toBe(200);
+  const page = await readTranscript("alice", "i1", "s1", "", TRANSCRIPT_MAX_ROWS + 50);
+  expect(page?.rows).toHaveLength(TRANSCRIPT_MAX_ROWS);
+  expect(page?.rows[0]?.id).toBe(201);
+  expect(page?.rows.at(-1)?.id).toBe(TRANSCRIPT_MAX_ROWS + 200);
+  expect(page?.droppedTotal).toBe(200);
+});
+
+test("readOlder pages backwards with hasMore", async () => {
+  const many = Array.from({ length: 30 }, (_, i) => row(i + 1));
+  await writeTranscript("alice", "i1", "s1", many);
+  const newest = await readOlder("alice", "i1", "s1", 31, 10);
+  expect(newest?.rows.map((r) => r.id)).toEqual([21, 22, 23, 24, 25, 26, 27, 28, 29, 30]);
+  expect(newest?.hasMore).toBe(true);
+  const oldest = await readOlder("alice", "i1", "s1", 11, 10);
+  expect(oldest?.rows.map((r) => r.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  expect(oldest?.hasMore).toBe(false);
+  expect(oldest?.droppedTotal).toBe(0);
+});
+
+test("readRow finds one row by id", async () => {
+  await writeTranscript("alice", "i1", "s1", [row(1), row(2)]);
+  expect((await readRow("alice", "i1", "s1", 2))?.text).toBe("m2");
+  expect(await readRow("alice", "i1", "s1", 999)).toBeNull();
+});
+
+test("an empty window never wipes the transcript", async () => {
+  await writeTranscript("alice", "i1", "s1", [row(1)]);
+  await writeTranscript("alice", "i1", "s1", []);
+  expect((await readTranscript("alice", "i1", "s1", "", 100))?.rows).toHaveLength(1);
+});
+
+test("incarnation mismatch starts a fresh transcript", async () => {
+  await writeTranscript("alice", "i1", "s1", [row(1), row(2)], "session-A");
+  await writeTranscript("alice", "i1", "s1", [row(9)], "session-B");
+  const page = await readTranscript("alice", "i1", "s1", "session-B", 100);
+  expect(page?.rows.map((r) => r.id)).toEqual([9]);
+  // The predecessor entry no longer resurrects under its old incarnation.
+  expect(await readTranscript("alice", "i1", "s1", "session-A", 100)).toBeNull();
 });

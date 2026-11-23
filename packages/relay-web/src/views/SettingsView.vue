@@ -19,6 +19,7 @@ import {
   isDesktopNotificationsEnabled,
 } from "../lib/web-push";
 import AddInstanceDialog from "../components/AddInstanceDialog.vue";
+import { TRANSCRIPT_MAX_ROWS } from "../lib/session-tail-cache";
 import Tooltip from "../components/Tooltip.vue";
 import UiButton from "../components/UiButton.vue";
 const auth = useAuthStore();
@@ -27,13 +28,15 @@ const router = useRouter();
 const locale = useLocaleStore();
 const { t } = useI18n();
 const localeLabels: Record<string, string> = { en: "English", "zh-CN": "中文" };
-const retention = ref<{ days: number; maxPerSession: number } | null>(null);
+// History retirement: the hub reports { mode: "client-side" } and keeps no
+// transcript. Legacy hubs report { days, maxPerSession } — still rendered.
+const retention = ref<{ mode?: string; days: number; maxPerSession: number } | null>(null);
 const relay = ref<{ current: string; latest: string | null; updateAvailable: boolean } | null>(null);
 const showAddInstance = ref(false);
 
 onMounted(async () => {
   try {
-    const cfg = await api.get<{ historyRetention: { days: number; maxPerSession: number } }>("/api/config");
+    const cfg = await api.get<{ historyRetention: { mode?: string; days: number; maxPerSession: number } }>("/api/config");
     retention.value = cfg.historyRetention;
   } catch { /* leave null; UI shows a dash */ }
   try {
@@ -189,9 +192,14 @@ void onMounted(() => { void probeNotifications(); });
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.retentionTitle") }}</h2>
         <div class="flex items-center gap-1.5">
           <p class="text-right text-sm text-fg-muted" data-test="retention-body">
-            {{ $t("settings.retentionShort", { max: retention?.maxPerSession ?? "—", days: retention?.days ?? "—" }) }}
+            <template v-if="retention?.mode === 'client-side'">
+              {{ $t("settings.retentionClientShort", { max: TRANSCRIPT_MAX_ROWS }) }}
+            </template>
+            <template v-else>
+              {{ $t("settings.retentionShort", { max: retention?.maxPerSession ?? "—", days: retention?.days ?? "—" }) }}
+            </template>
           </p>
-          <Tooltip :text="$t('settings.retentionBody', { max: retention?.maxPerSession ?? '—', days: retention?.days ?? '—' })">
+          <Tooltip :text="retention?.mode === 'client-side' ? $t('settings.retentionClientBody', { max: TRANSCRIPT_MAX_ROWS, bytes: '8 MB' }) : $t('settings.retentionBody', { max: retention?.maxPerSession ?? '—', days: retention?.days ?? '—' })">
             <button type="button" data-test="retention-info" :aria-label="$t('settings.moreInfo')" :title="$t('settings.moreInfo')"
                     class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0">
               <Info :size="14" />

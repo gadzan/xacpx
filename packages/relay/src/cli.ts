@@ -45,7 +45,7 @@ export function resolveBundledWebRoot(cliJsPath: string = fileURLToPath(import.m
 
 const USAGE = [
   "Usage: xacpx-relay <command>",
-  "  start      [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]",
+  "  start      [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--request-timeout-ms 120000] [--trust-proxy]",
   "             (--ws-port omitted = gateway merged onto the HTTP port; pass it only for a dedicated gateway port)",
   "             [--vapid-subject <s>] [--vapid-public-key <k>] [--vapid-private-key <k>]   (web push; or env XACPX_RELAY_VAPID_*)",
   "  add token  [--label <note>] [--db <path>]",
@@ -95,6 +95,7 @@ export interface StartOptions {
   wsPort: number | undefined;
   host: string | undefined;
   webRoot: string | undefined;
+  /** @deprecated Retired with server-side history: parsed so old scripts keep working, never read. */
   historyRetentionDays: number | undefined;
   requestTimeoutMs: number | undefined;
   trustProxy: boolean;
@@ -139,6 +140,9 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
   // start
   if (args[0] === "start") {
     const startOpts = parseStartOptions(args);
+    if (startOpts.historyRetentionDays !== undefined) {
+      io.print("note: --history-retention-days is retired (message history is client-side now) and ignored.");
+    }
     if (!startOpts.webRoot) {
       startOpts.webRoot = resolveBundledWebRoot();
     }

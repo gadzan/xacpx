@@ -42,6 +42,7 @@
     { "source": "docs/feishu-cardactions-deployment.md", "site": null, "note": "ops runbook; no site page" },
     { "source": "docs/peer-delegation.md", "site": null, "note": "internal design doc; no site page" },
     { "source": "docs/relay-deployment.md", "site": null, "note": "site ships its own longer guide/relay-self-hosting walkthrough" },
+    { "source": "docs/relay-history-retirement.md", "site": null, "note": "internal design/implementation record for the history retirement; no site page" },
     { "source": "docs/relay-interaction-deployment.md", "site": null, "note": "ops runbook; no site page" },
     { "source": "docs/relay-module.md", "site": null, "note": "module doc; no site page" },
     { "source": "docs/relay-release.md", "site": null, "note": "release runbook; no site page" },

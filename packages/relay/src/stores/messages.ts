@@ -50,6 +50,41 @@ function toDto(r: MessageRow): MessageRecordDto {
   };
 }
 
+/**
+ * Storage-agnostic hub transcript surface (history-retirement, 2026-11).
+ *
+ * `MessageStore` (SQLite, durable) and `MemoryMessageStore` (process-local,
+ * ephemeral) both satisfy this shape; `server.ts` programs against it so the
+ * hub runtime no longer depends on WHERE rows live. Production wiring uses the
+ * memory store — the SQLite class remains for its direct unit tests and as a
+ * rollback path.
+ */
+export type MessageHistoryStore = Pick<
+  MessageStore,
+  | "append"
+  | "updateAgentMessage"
+  | "patchAgentMessageCompletionStatus"
+  | "markQueued"
+  | "promoteQueued"
+  | "queuedState"
+  | "appendExecutedQueuedFallback"
+  | "finalizeQueuedFallback"
+  | "hasScheduledInbound"
+  | "appendQueuedFallback"
+  | "findByPromptRequest"
+  | "attachNodeId"
+  | "findByPeerMessage"
+  | "promoteQueuedRow"
+  | "listBySession"
+  | "listPendingBySession"
+  | "deletePendingByQueueItem"
+  | "getById"
+  | "lastId"
+  | "deleteBySession"
+  | "deleteByInstance"
+  | "prune"
+>;
+
 export class MessageStore {
   constructor(private readonly db: SqlDriver, private readonly now: () => Date = () => new Date()) {}
 
@@ -488,6 +523,16 @@ export class MessageStore {
       "DELETE FROM messages WHERE instance_id = ? AND session_alias = ?",
       [instanceId, sessionAlias],
     );
+    return before?.n ?? 0;
+  }
+
+  /** Permanently removes every Hub-cached row of an instance (SQLite rollback path). */
+  deleteByInstance(instanceId: string): number {
+    const before = this.db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM messages WHERE instance_id = ?",
+      [instanceId],
+    );
+    this.db.run("DELETE FROM messages WHERE instance_id = ?", [instanceId]);
     return before?.n ?? 0;
   }
 

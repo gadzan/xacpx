@@ -1,11 +1,17 @@
-// Simulated hub restart, end-to-end across two in-process runtimes sharing ONE
-// on-disk SQLite file (`:memory:` cannot survive a runtime, so a tmp file stands
-// in for the hub's real db): runtime A streams a turn and "dies" mid-turn;
-// runtime B recovers running turn + finished-offline rows from the connector's
-// `instance.state.sync`; runtime C proves the dedup survives ANOTHER restart
-// (the hub-side in-memory fingerprint set died with B — the SQLite recovery
-// receipt, written in the same transaction as the rows, is the last line of
-// defense against a redelivered finishedOffline entry).
+// Hub restart semantics after history retirement (2026-11).
+//
+// The hub transcript is process-local memory: runtime A's rows die with A.
+// What survives a restart on disk:
+// - accounts / instances / pairing (control plane, untouched here),
+// - recovery receipts (boot-independent dedup keys, no message content),
+// - slot anchors are CLEARED on startup (they reference per-boot message ids).
+//
+// Recovery after a restart comes from the daemon's own mirror via
+// `instance.state.sync`: running turns re-backfill their prompt rows, and
+// finishedOffline entries the daemon never got acked for are re-persisted.
+// An entry whose receipt already exists is dropped even though its rows are
+// gone — a real daemon only re-sends unacked entries, and an acked entry was
+// already delivered pre-restart.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,7 +42,7 @@ function sync(runtime: RelayRuntime, payload: unknown) {
 const rows = (runtime: RelayRuntime, alias: string) =>
   runtime.messages.listBySession("a1", "i1", alias).messages.map((m) => [m.direction, m.text]);
 
-test("simulated hub restart: turn/rows recover via state sync, flush once, dedup across restarts", async () => {
+test("hub restart: rows are per-boot, sync backfills from the daemon mirror, receipts dedup", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-restart-"));
   const dbPath = join(dir, "relay.db");
   try {
@@ -45,9 +51,9 @@ test("simulated hub restart: turn/rows recover via state sync, flush once, dedup
     seedIdentity(a);
     fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "hi" });
     fire(a, { type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "hel" });
-    a.close(); // hub restart: turnBuffers die with the process, the db survives
+    a.close(); // hub restart: turnBuffers AND memory rows die with the process
 
-    // ── Runtime B: connector reconnects and pushes its mirror snapshot. ───────
+    // ── Runtime B: daemon reconnects and pushes its mirror snapshot. ─────────
     const b = await createRelayRuntime(dbPath);
     const snapshot = {
       turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "hel", reasoning: "", steps: [], prompt: "hi" }],
@@ -58,7 +64,7 @@ test("simulated hub restart: turn/rows recover via state sync, flush once, dedup
     sync(b, snapshot);
 
     // Running turn restored with its ORIGINAL startedAt; the pre-outage prompt
-    // row was not duplicated by the backfill.
+    // row was backfilled (not duplicated) from the daemon mirror.
     expect(b.stateSnapshot("i1").turns.map((t) => [t.sessionAlias, t.startedAt])).toEqual([["backend", STARTED_AT]]);
     expect(rows(b, "backend")).toEqual([["in", "hi"]]);
     // The turn that finished entirely during the outage recovered as in+out.
@@ -75,14 +81,20 @@ test("simulated hub restart: turn/rows recover via state sync, flush once, dedup
     expect(rows(b, "done")).toHaveLength(2);
     b.close();
 
-    // ── Runtime C: the hub restarts AGAIN; the connector still hasn't seen an
-    // ack and re-sends the same finishedOffline entry. The in-memory fingerprint
-    // set died with B, but the recovery receipt (same transaction as the rows)
-    // survives in SQLite and dedups it — while later genuine turns stay intact. ──
+    // ── Runtime C: the hub restarts AGAIN. ────────────────────────────────────
+    // Memory rows died with B. The receipt for done-1 (SQLite) survived, so a
+    // pathologically re-sent finished entry is dropped, not resurrected — the
+    // daemon already got its ack and a real daemon would not resend it. The
+    // still-running turn IS backfilled again from the daemon's mirror.
     const c = await createRelayRuntime(dbPath);
-    sync(c, { turns: [], usage: [], commands: [], finishedOffline: snapshot.finishedOffline });
-    expect(rows(c, "done")).toEqual([["in", "q"], ["out", "finished reply"]]);
-    expect(rows(c, "backend")).toEqual([["in", "hi"], ["out", "hello"]]);
+    sync(c, {
+      turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "hel", reasoning: "", steps: [], prompt: "hi" }],
+      usage: [],
+      commands: [],
+      finishedOffline: snapshot.finishedOffline,
+    });
+    expect(rows(c, "done")).toEqual([]);
+    expect(rows(c, "backend")).toEqual([["in", "hi"]]);
     c.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -107,23 +119,25 @@ function receivedCard(messageId: string, createdAt: number) {
   };
 }
 
-test("hub restart + finishedOffline persists slotAfterId from turn-start, not lastId or clocks", async () => {
+test("hub restart drops dead-boot slot anchors; finishedOffline without prompt lands unanchored", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-slot-"));
   const dbPath = join(dir, "relay.db");
   const turnStart = STARTED_AT;
-  const peerBehind = turnStart - 30_000;
   try {
     const a = await createRelayRuntime(dbPath);
     seedIdentity(a);
     fire(a, receivedCard("card1", turnStart - 1_000));
     fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", recoveryId: "r-slot", startedAfterSeq: 1 });
-    const afterStart = a.messages.listBySession("a1", "i1", "backend").messages;
-    const triggerId = afterStart[0]!.id!;
-    fire(a, receivedCard("card2", peerBehind));
+    const triggerId = a.messages.listBySession("a1", "i1", "backend").messages[0]!.id!;
+    fire(a, receivedCard("card2", turnStart - 30_000));
     expect(a.messages.listBySession("a1", "i1", "backend").messages.map((m) => m.text)).toEqual(["card1", "card2"]);
     a.close();
 
+    // Startup cleared the anchor (it referenced a dead-boot id); pre-restart
+    // mid-turn cards do not resurrect — the daemon mirror carries only running
+    // and finished turns, and this entry finished with no prompt to backfill.
     const b = await createRelayRuntime(dbPath);
+    expect(b.slotAnchors.get("i1", "r-slot")).toBeUndefined();
     sync(b, {
       turns: [],
       usage: [],
@@ -137,22 +151,21 @@ test("hub restart + finishedOffline persists slotAfterId from turn-start, not la
         startedAt: turnStart,
       }],
     });
-    const rows = b.messages.listBySession("a1", "i1", "backend").messages;
-    expect(rows.map((m) => m.text)).toEqual(["card1", "card2", "reply"]);
-    const out = rows.find((m) => m.direction === "out");
-    expect(out?.slotAfterId).toBe(triggerId);
+    const outRows = b.messages.listBySession("a1", "i1", "backend").messages;
+    expect(outRows.map((m) => [m.direction, m.text])).toEqual([["out", "reply"]]);
+    const out = outRows.find((m) => m.direction === "out");
+    expect(out?.slotAfterId).toBe(0); // empty boot transcript: no anchor, no lastId
     expect(out?.startedAfterSeq).toBe(1);
     expect(typeof out?.startedAt).toBe("number");
-    // Insert order is still trigger, mid-turn card, out — web reorders by slotAfterId.
-    expect(rows[0]!.id).toBe(triggerId);
-    expect(rows[1]!.text).toBe("card2");
+    // The dead-boot trigger id is gone and must never reappear as an anchor.
+    expect(out?.slotAfterId).not.toBe(triggerId);
     b.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("no-buffer turn-finished after hub restart uses the durable slot anchor", async () => {
+test("no-buffer turn-finished after hub restart lands without a dead-boot anchor", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-nobuffer-"));
   const dbPath = join(dir, "relay.db");
   try {
@@ -160,7 +173,6 @@ test("no-buffer turn-finished after hub restart uses the durable slot anchor", a
     seedIdentity(a);
     fire(a, receivedCard("card1", STARTED_AT - 1_000));
     fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", recoveryId: "r-nb", startedAfterSeq: 2 });
-    const triggerId = a.messages.listBySession("a1", "i1", "backend").messages[0]!.id!;
     fire(a, receivedCard("card2", STARTED_AT + 10));
     a.close();
 
@@ -175,10 +187,10 @@ test("no-buffer turn-finished after hub restart uses the durable slot anchor", a
       startedAfterSeq: 2,
       startedAt: STARTED_AT,
     });
-    const rows = b.messages.listBySession("a1", "i1", "backend").messages;
-    const out = rows.find((m) => m.direction === "out");
+    const outRows = b.messages.listBySession("a1", "i1", "backend").messages;
+    const out = outRows.find((m) => m.direction === "out");
     expect(out?.text).toBe("offline reply");
-    expect(out?.slotAfterId).toBe(triggerId);
+    expect(out?.slotAfterId).toBe(0);
     expect(out?.startedAfterSeq).toBe(2);
     b.close();
   } finally {
@@ -186,7 +198,7 @@ test("no-buffer turn-finished after hub restart uses the durable slot anchor", a
   }
 });
 
-test("leftover anchor A is not inherited by outage-started turn B (uses post-reconcile lastId)", async () => {
+test("an outage-started turn anchors to its own backfilled prompt row, never a dead boot's", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-stale-anchor-"));
   const dbPath = join(dir, "relay.db");
   try {
@@ -198,10 +210,11 @@ test("leftover anchor A is not inherited by outage-started turn B (uses post-rec
     for (let i = 2; i <= 12; i++) fire(a, receivedCard(`card${i}`, STARTED_AT + i));
     const lastBeforeOutage = a.messages.listBySession("a1", "i1", "backend").messages.at(-1)!.id!;
     expect(lastBeforeOutage).toBeGreaterThan(triggerA);
-    expect(a.slotAnchors.get("i1", "r-A")?.slotAfterId).toBe(triggerA);
     a.close();
 
     const b = await createRelayRuntime(dbPath);
+    // Dead-boot anchors are gone at startup.
+    expect(b.slotAnchors.get("i1", "r-A")).toBeUndefined();
     sync(b, {
       turns: [{
         sessionAlias: "backend",
@@ -222,7 +235,6 @@ test("leftover anchor A is not inherited by outage-started turn B (uses post-rec
     const restored = b.stateSnapshot("i1").turns.find((t) => t.sessionAlias === "backend");
     expect(restored?.slotAfterId).toBe(promptB!.id);
     expect(restored?.slotAfterId).not.toBe(triggerA);
-    expect(b.slotAnchors.get("i1", "r-A")).toBeUndefined();
     expect(b.slotAnchors.get("i1", "r-B")?.slotAfterId).toBe(promptB!.id);
     b.close();
   } finally {
@@ -230,7 +242,7 @@ test("leftover anchor A is not inherited by outage-started turn B (uses post-rec
   }
 });
 
-test("leftover anchor A is not inherited by finishedOffline B (uses post-reconcile lastId)", async () => {
+test("an outage-finished turn anchors to its own backfilled prompt row, never a dead boot's", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-stale-finish-"));
   const dbPath = join(dir, "relay.db");
   try {
@@ -257,9 +269,9 @@ test("leftover anchor A is not inherited by finishedOffline B (uses post-reconci
         startedAt: STARTED_AT + 50_000,
       }],
     });
-    const rows = b.messages.listBySession("a1", "i1", "backend").messages;
-    const promptB = rows.find((m) => m.text === "turn B");
-    const out = rows.find((m) => m.direction === "out");
+    const found = b.messages.listBySession("a1", "i1", "backend").messages;
+    const promptB = found.find((m) => m.text === "turn B");
+    const out = found.find((m) => m.direction === "out");
     expect(promptB).toBeDefined();
     expect(out?.text).toBe("B reply");
     expect(out?.slotAfterId).toBe(promptB!.id);
@@ -271,7 +283,7 @@ test("leftover anchor A is not inherited by finishedOffline B (uses post-reconci
   }
 });
 
-test("legacy empty recoveryId backend+frontend each restore their own slot after hub restart", async () => {
+test("legacy empty recoveryId backend+frontend each slot to their own backfilled prompt", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-legacy-slot-"));
   const dbPath = join(dir, "relay.db");
   try {
@@ -279,16 +291,15 @@ test("legacy empty recoveryId backend+frontend each restore their own slot after
     seedIdentity(a);
     fire(a, { ...receivedCard("be1", STARTED_AT - 1_000), sessionAlias: "backend" });
     fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "be-prompt" });
-    const backendSlot = a.messages.listBySession("a1", "i1", "backend").messages.at(-1)!.id!;
     fire(a, { ...receivedCard("be2", STARTED_AT + 10), sessionAlias: "backend" });
 
     fire(a, { ...receivedCard("fe1", STARTED_AT - 1_000), sessionAlias: "frontend" });
     fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "frontend", prompt: "fe-prompt" });
-    const frontendSlot = a.messages.listBySession("a1", "i1", "frontend").messages.at(-1)!.id!;
     fire(a, { ...receivedCard("fe2", STARTED_AT + 10), sessionAlias: "frontend" });
-    expect(backendSlot).not.toBe(frontendSlot);
     a.close();
 
+    // After a restart each session's restored turn slots to its own backfilled
+    // prompt row (per-boot ids) — never to the other session's row.
     const b = await createRelayRuntime(dbPath);
     sync(b, {
       turns: [
@@ -299,9 +310,14 @@ test("legacy empty recoveryId backend+frontend each restore their own slot after
       commands: [],
       finishedOffline: [],
     });
+    const bePrompt = b.messages.listBySession("a1", "i1", "backend").messages.find((m) => m.text === "be-prompt");
+    const fePrompt = b.messages.listBySession("a1", "i1", "frontend").messages.find((m) => m.text === "fe-prompt");
+    expect(bePrompt).toBeDefined();
+    expect(fePrompt).toBeDefined();
+    expect(bePrompt!.id).not.toBe(fePrompt!.id);
     const turns = Object.fromEntries(b.stateSnapshot("i1").turns.map((t) => [t.sessionAlias, t.slotAfterId]));
-    expect(turns.backend).toBe(backendSlot);
-    expect(turns.frontend).toBe(frontendSlot);
+    expect(turns.backend).toBe(bePrompt!.id);
+    expect(turns.frontend).toBe(fePrompt!.id);
     b.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

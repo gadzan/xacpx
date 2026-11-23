@@ -175,6 +175,8 @@ export default {
     retentionTitle: "历史保留",
     retentionBody: "每个会话保留最新的 {max} 条消息，最多保留 {days} 天。由服务端配置。",
     retentionShort: "{max} 条消息 · {days} 天",
+    retentionClientShort: "仅本设备 · 最近 {max} 条",
+    retentionClientBody: "历史只保留在本设备（每会话最近 {max} 条，{bytes}）。服务端不再存留聊天记录。",
     relayTitle: "Relay",
     relayVersion: "Relay v{version}",
     relayUpdateAvailable: "有可用更新：v{latest} — 运行 `xacpx-relay update`",
@@ -199,6 +201,7 @@ export default {
   chat: {
     emptyStateTitle: "继续上次的工作",
     loadOlder: "加载更早的消息",
+    historyCappedNotice: "本地历史已达上限，仅保留最近 {kept} 条（已清理 {dropped} 条）。",
     resizeComposer: "拖动调整输入框高度",
     browseFiles: "浏览文件",
     viewChanges: "查看改动",

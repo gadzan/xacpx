@@ -5,9 +5,13 @@ import type { SqlDriver } from "../db.js";
  * `turn-finished` (live or offline) with a stable `recoveryId`; once this hub has
  * committed that turn's rows it records a receipt here so a RE-delivered
  * `instance.state.sync` (connector never got the ack, or the hub restarted again and
- * the in-memory fingerprint set died) is deduped instead of re-appended. Rows are
- * written in the SAME transaction as the messages they vouch for — a receipt without
- * its rows (or rows without a receipt) can never exist.
+ * the in-memory fingerprint set died) is deduped instead of re-appended.
+ *
+ * History-retirement note: hub message rows are process-local now, so after a
+ * hub restart a receipt CAN outlive its rows. The sync path treats that as
+ * "already delivered, redelivery dropped" — correct because a real connector
+ * only re-sends entries it never got acked for, and an acked entry was already
+ * shown pre-restart (the connector's own transcript remains the truth source).
  *
  * Growth is bounded by the maintenance loop (`RecoveryReceiptStore.prune`): a
  * receipt is only useful while the connector could still re-deliver the turn, and the

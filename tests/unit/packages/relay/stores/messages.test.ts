@@ -1,22 +1,15 @@
 // tests/unit/packages/relay/stores/messages.test.ts
+// History retirement: the hub transcript is an ephemeral memory ring.
 import { expect, test } from "bun:test";
-import { createSqlDriver, initSchema } from "../../../../../packages/relay/src/db";
-import { MessageStore } from "../../../../../packages/relay/src/stores/messages";
+import { MemoryMessageStore } from "../../../../../packages/relay/src/stores/messages-memory";
 
-async function freshDb() {
-  const db = await createSqlDriver(":memory:");
-  initSchema(db);
-  db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u1", "t"]);
-  db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a2", "u2", "t"]);
-  db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);
-  db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i2", "a2", "pc", "h", "t"]);
-  return db;
+function fresh() {
+  return new MemoryMessageStore();
 }
 
 test("append then listBySession returns rows oldest-first as DTOs", async () => {
-  const db = await freshDb();
   let clock = 1000;
-  const store = new MessageStore(db, () => new Date(clock));
+  const store = new MemoryMessageStore(() => new Date(clock));
   store.append("i1", "backend", "in", "hello");
   clock = 2000;
   store.append("i1", "backend", "out", "world");
@@ -26,25 +19,23 @@ test("append then listBySession returns rows oldest-first as DTOs", async () => 
   expect(rows[0]?.createdAt).toBe(new Date(1000).toISOString());
 });
 
-test("listBySession is account-scoped: foreign account sees nothing", async () => {
-  const db = await freshDb();
-  const store = new MessageStore(db);
+test("listBySession isolates sessions (ownership is enforced by the caller)", async () => {
+  const store = fresh();
   store.append("i1", "backend", "in", "secret");
-  expect(store.listBySession("a2", "i1", "backend").messages).toEqual([]);
+  expect(store.listBySession("a1", "i1", "other").messages).toEqual([]);
+  expect(store.listBySession("a1", "i1", "backend").messages).toHaveLength(1);
 });
 
 test("listBySession honors the limit, keeping the most recent", async () => {
-  const db = await freshDb();
   let clock = 0;
-  const store = new MessageStore(db, () => new Date((clock += 1000)));
+  const store = new MemoryMessageStore(() => new Date((clock += 1000)));
   for (let i = 0; i < 5; i++) store.append("i1", "backend", "in", `m${i}`);
   const rows = store.listBySession("a1", "i1", "backend", { limit: 2 }).messages;
   expect(rows.map((r) => r.text)).toEqual(["m3", "m4"]);
 });
 
 test("deleteBySession removes only the targeted instance and alias history", async () => {
-  const db = await freshDb();
-  const store = new MessageStore(db);
+  const store = fresh();
   store.append("i1", "backend", "in", "old question");
   store.append("i1", "backend", "out", "old answer");
   store.append("i1", "other", "in", "keep alias");
@@ -57,8 +48,7 @@ test("deleteBySession removes only the targeted instance and alias history", asy
 });
 
 test("append stores structured agentMessage metadata and custom createdAt", async () => {
-  const db = await freshDb();
-  const store = new MessageStore(db);
+  const store = fresh();
   const agentMsg = {
     kind: "agent_message" as const,
     direction: "sent" as const,
@@ -85,8 +75,7 @@ test("append stores structured agentMessage metadata and custom createdAt", asyn
 });
 
 test("append persists startedAt and slotAfterId on an assistant out row", async () => {
-  const db = await freshDb();
-  const store = new MessageStore(db);
+  const store = fresh();
   store.append("i1", "backend", "out", "reply", undefined, undefined, undefined, undefined, 1_700_000_000_000, 4, 2);
   const rows = store.listBySession("a1", "i1", "backend").messages;
   expect(rows[0]?.startedAt).toBe(1_700_000_000_000);

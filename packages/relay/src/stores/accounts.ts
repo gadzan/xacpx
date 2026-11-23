@@ -229,10 +229,9 @@ export class AccountStore {
   deleteAccountCascade(accountId: string): void {
     this.db.exec("BEGIN");
     try {
-      this.db.run(
-        "DELETE FROM messages WHERE instance_id IN (SELECT id FROM instances WHERE account_id = ?)",
-        [accountId],
-      );
+      // NOTE (history-retirement): no `messages` table anymore — hub rows are
+      // process-local (MemoryMessageStore) and die with the process. Instance
+      // removal is still surfaced to the runtime so it can drop memory rows.
       this.db.run(
         "DELETE FROM turn_slot_anchors WHERE instance_id IN (SELECT id FROM instances WHERE account_id = ?)",
         [accountId],

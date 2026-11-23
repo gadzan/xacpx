@@ -19,7 +19,7 @@ import {
 
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
-import type { MessageStore } from "../stores/messages.js";
+import type { MessageHistoryStore } from "../stores/messages.js";
 import type { TurnSlotAnchorStore } from "../stores/turn-slot-anchors.js";
 import type { InteractionRegistry } from "../interaction-registry.js";
 import type { PushSubscriptionStore } from "../stores/push-subscriptions.js";
@@ -55,7 +55,7 @@ export interface AppDeps {
   accounts: AccountStore;
   instances: InstanceStore;
   gateway: GatewayForApp;
-  messages: MessageStore;
+  messages: MessageHistoryStore; // ephemeral (MemoryMessageStore): hub keeps no durable transcript
   /** Live-slot anchors; cleared when a session or instance is deleted. */
   turnSlotAnchors?: TurnSlotAnchorStore;
   /** Snapshot the in-flight turns for an instance (for the active-turns endpoint). */
@@ -69,7 +69,15 @@ export interface AppDeps {
   webRoot?: string;
   sessionTtlMs?: number;
   pairingTtlMs?: number;
+  /**
+   * @deprecated Retired with server-side history: accepted so old
+   * `createApp` call sites keep compiling, but never read — the memory
+   * store self-caps and `/api/config` reports `client-side`.
+   */
   historyRetentionDays?: number;
+  /**
+   * @deprecated Same as `historyRetentionDays`: accepted, never read.
+   */
   maxMessagesPerSession?: number;
   /** Returns the hub's current version + whether a newer one is published. Injected
    *  by server.ts (cached). When omitted, /api/version reports current-only. */
@@ -505,10 +513,16 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   });
 
   app.get("/api/config", (c) => {
+    // History retirement: the hub keeps no durable transcript — message rows
+    // are process-local and relay-web IndexedDB is the durable client copy.
+    // Old clients only render `days`/`maxPerSession` (they would show
+    // "0 days · 0 messages" on zeroes), so keep reporting the last
+    // server-side defaults there; new clients key off `mode`.
     return c.json({
       historyRetention: {
-        days: deps.historyRetentionDays ?? 30,
-        maxPerSession: deps.maxMessagesPerSession ?? 2000,
+        mode: "client-side",
+        days: 30,
+        maxPerSession: 2000,
       },
     });
   });
@@ -609,7 +623,10 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const account = c.get("account");
     const instanceId = c.req.param("id");
     const removed = deps.instances.remove(instanceId, account.id);
-    if (removed) deps.turnSlotAnchors?.deleteByInstance(instanceId);
+    if (removed) {
+      deps.turnSlotAnchors?.deleteByInstance(instanceId);
+      deps.messages.deleteByInstance(instanceId);
+    }
     return removed ? c.json({ ok: true }) : c.json({ error: "not-found" }, 404);
   });
   app.get("/api/agent-directory", (c) => {

@@ -183,9 +183,12 @@ Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任�
 
 服务端为 Web 看板新增的接缝（见 docs/relay-web-module.md）：
 
-- **`messages` 缓存表（§5）+ `MessageStore`**：聊天回显缓存
+- **transcript（§5）+ `MessageHistoryStore`（历史退休，2026-11，详见 docs/relay-history-retirement.md）**：聊天回显缓存
   （`instance_id, session_alias, direction, text, created_at`）。`append()` 写入，
-  `listBySession(accountId, ...)` 按 account 隔离、oldest-first 取最近若干条。
+  hub 不再落盘消息正文。`MemoryMessageStore`（进程内内存环，每会话 500 行/全局 10000 行，
+  id 为随机 boot 前缀 + boot 内递增计数器）实现与 SQLite `MessageStore` 相同的 `MessageHistoryStore` 接口；
+  `initSchema` 不再建 `messages` 表，启动时 `retireMessageTables()` 删除遗留表并 VACUUM。
+  持久历史只留两端：daemon 自身 transcript（真相源）+ 看板 IndexedDB。
 - **`WebGateway` 按账号扇出，并按 socket 的实例订阅过滤 `control-event`**：跟踪每个账号
   已鉴权的浏览器 socket，把 `WebServerEvent` 编码为 `web.event` 信封
   `broadcast(accountId, event)`。**订阅路由**（`subscribe` 帧 → `setSubscription`）：
@@ -202,30 +205,30 @@ Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任�
 - **cookie 鉴权的 `/ws` web 扇出端点**：挂在 HTTP server 的 upgrade 上，按路径与实例网关分流
   （默认单端口时实例网关合并在同一 upgrade handler 的根 `/`；传 `--ws-port` 时网关另起专用端口），
   校验 `xrelay_session` cookie → 账号后 `webGateway.register(accountId, ws)`。
-- **`GET /api/instances/:id/sessions/:alias/messages`**：按登录账号返回该会话的缓存历史。默认返回完整 `structured`（旧看板兼容）。新看板带 `view=compact`：去掉 `parts` 已覆盖的重复 `toolSteps`，并剥掉折叠卡片用不到的工具正文（diff / 命令输出 / 文件预览），只留标题、状态和短 snippet；展开时再 `GET .../messages/:messageId` 拉该行全文。
+- **`GET /api/instances/:id/sessions/:alias/messages`**：按登录账号返回该会话**本 boot**的内存行（oldest-first 分页 + `before` 游标 + `hasMore`）。默认返回完整 `structured`（旧看板兼容）。新看板带 `view=compact`：去掉 `parts` 已覆盖的重复 `toolSteps`，并剥掉折叠卡片用不到的工具正文（diff / 命令输出 / 文件预览），只留标题、状态和短 snippet；展开时再 `GET .../messages/:messageId` 拉该行全文。
 - **`GET /api/instances/:id/sessions/:alias/messages/:messageId`**：同一所有权校验下返回单条完整历史（含未压缩的 `structured`），供 compact 列表在用户展开工具卡时补全。
 - **真实删除同步清历史**：`control.sessions.remove` 经 connector 成功确认后，Hub 删除对应
-  `(instance_id, session_alias)` 的缓存消息；归档不删除，因此恢复归档会话仍能看到历史。
-- **prompt 回显历史**：`control.prompt` 经 RPC 代理时，把 prompt 文本 append 为一条 `in` 历史消息；
+  `(instance_id, session_alias)` 的内存行；实例删除（DELETE `/api/instances/:id`）清该实例全部内存行；归档不删除。
+- **prompt 回显历史**：`control.prompt` 经 RPC 代理时，把 prompt 文本 append 为一条 `in` 内存行；
   若返回 `queued + queueItemId`，Hub 在对应出队 `turn-started` 到达时把同一行移动到真实执行点，
-  因而刷新后的历史仍按“上一轮回复 → 出队 prompt”排列。
+  跨 hub 重启排队条丢失（与 daemon 侧内存队列行为一致），running turn 靠 `state.sync` 回填。
 - **command 回显历史（阶段四）**：`control.command.execute` 经 RPC 代理时，把输入文本 append 为 `in`、
-  把返回 `output` append 为 `out`（与 `control.prompt` 的 `in` 回显并列），使 `/命令` 结果也能跨 reload 存活。
+  把返回 `output` append 为 `out`（与 `control.prompt` 的 `in` 回显并列）。
 - **`--web-root` 静态托管**：`createRelayRuntime({ webRoot })` → Hono `serveStatic` 托管 SPA
   构建产物（含 index.html SPA fallback）；CLI `xacpx-relay start --web-root <dir>`。
 
 ## 阶段四服务端接缝（维护循环与配置）
 
-- **`GET /api/config`（authed）**：返回 `{ historyRetention: { days, maxPerSession } }` 供设置页展示；
-  历史保留是服务端配置（只读），v1 不在 Web 端可改。
+- **`GET /api/config`（authed）**：返回 `{ historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 } }`
+  供设置页展示；数字是旧服务端默认值（老客户端不显示“0 条·0 天”），新客户端只看 `mode`。历史保留已退休为客户端配置（本设备每会话最近 1000 行/8MB，只读展示）。
 - **`GET /api/version`（authed）**：返回 `{ current, latest, updateAvailable }` 供设置页展示 hub 版本与「有可用更新」提示。`current` 读自 hub 自身的 `package.json`（`readRelayVersion`）；`latest` 经 `npm view @ganglion/xacpx-relay version` 查询，结果缓存 ~1h 且失败/超时容错（失败时返回 `latest:null`、`updateAvailable:false`，绝不阻塞设置页）。版本读取、npm 查询、语义化比较与缓存检查器集中在 `packages/relay/src/version.ts`，由本端点与 `xacpx-relay update` CLI 共用。
 - **维护子系统 `src/maintenance.ts`**：`runMaintenance(stores, opts)` 跑一遍清理，
   `startMaintenanceLoop(...)` 每小时一次（`setInterval` 并 `unref`，不挡进程退出）：
-  - 按账龄裁剪 `messages`（`--history-retention-days`，默认 30 天）+ 每会话硬上限
-    `MAX_MESSAGES_PER_SESSION = 2000`（保最新）——`MessageStore.prune({ maxAgeMs?, maxPerSession? })`；
+  - 内存 transcript 自限（环上限写入时强制；`prune()` 同口径保底）；
   - GC 过期的 `web_sessions`（`AccountStore.pruneExpired(now)`）与
     `pairing_tokens`（`InstanceStore.prunePairingTokens(now)`）。
-- **CLI**：`xacpx-relay start --history-retention-days <n>`（透传给维护循环）。
+- **CLI**：`--history-retention-days` 已退休（接受但忽略并提示）；slot anchors 启动时清空
+  （旧 boot id 已无意义），recovery receipts 保留（无正文的去重 key）。
 
 ## 阶段五加固（审计修复）
 

@@ -9,7 +9,7 @@ import type { WebServerEvent } from "../../../../packages/relay-protocol/src/ind
 import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
 import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
-import { MessageStore } from "../../../../packages/relay/src/stores/messages";
+import { MemoryMessageStore } from "../../../../packages/relay/src/stores/messages-memory";
 import { createApp } from "../../../../packages/relay/src/http/app";
 import {
   InstanceGateway,
@@ -131,7 +131,7 @@ async function makeHub(): Promise<Hub> {
   const app = createApp({
     accounts,
     instances,
-    messages: new MessageStore(db),
+    messages: new MemoryMessageStore(),
     interactions,
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
     gateway: {

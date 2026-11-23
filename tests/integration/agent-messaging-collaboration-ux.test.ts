@@ -15,7 +15,7 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { InstanceStore } from "../../packages/relay/src/stores/instances";
-import { MessageStore } from "../../packages/relay/src/stores/messages";
+import type { MessageHistoryStore } from "../../packages/relay/src/stores/messages";
 import { InstanceGateway } from "../../packages/relay/src/gateway/instance-gateway";
 import { RelayChannel } from "../../packages/channel-relay/src/channel";
 import { CredentialStore } from "../../packages/channel-relay/src/credential-store";
@@ -34,7 +34,7 @@ const ACPX = resolveAcpxCommand({});
 interface HubHarness {
   gateway: InstanceGateway;
   instances: InstanceStore;
-  messages: MessageStore;
+  messages: MessageHistoryStore;
   accounts: AccountStore;
   account: { id: string; username: string };
   hubUrl: string;
@@ -411,7 +411,7 @@ test(
       expect(sentReplyOnB!.structured?.agentMessage?.content).toBe("Yes, legacy_id is deprecated and safe to drop.");
       expect(sentReplyOnB!.structured?.agentMessage?.replyTo).toBe(receiptA.messageId);
 
-      // Gate C: Timeline Purity — No raw <xacpx-message> user row exists in SQLite messages table
+      // Gate C: Timeline Purity — No raw <xacpx-message> user row exists in the hub transcript
       const rawInboundUserRowB = messagesB.find(
         (m) => m.direction === "in" && m.text.includes("<xacpx-message") && !m.structured?.agentMessage,
       );

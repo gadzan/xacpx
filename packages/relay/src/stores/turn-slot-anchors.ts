@@ -24,9 +24,14 @@ export function canonicalRecoveryId(sessionAlias: string, recoveryId?: string): 
 }
 
 /**
- * Durable live-slot identity for an in-flight turn. Written at Hub `turn-started`
- * (last persisted `messages.id` for the session) so a Hub restart can flush the
- * `out` row into the same slot without guessing from peer/hub/browser clocks.
+ * Live-slot identity for an in-flight turn. Written at Hub `turn-started`
+ * (last hub transcript id for the session) so the `out` row flushes into the
+ * same slot without guessing from peer/hub/browser clocks.
+ *
+ * Boot-scoped (history-retirement, 2026-11): hub message ids restart every
+ * boot (MemoryMessageStore), so anchors from a previous boot would point at
+ * dead ids — `createRelayRuntime` clears the table on startup. Within a boot
+ * the anchor still bridges turn-started → turn-finished/state.sync.
  *
  * Keyed by `(instance_id, recovery_id)`:
  * - Non-empty `recoveryId` is the real recovery identity (exact match only).
@@ -114,6 +119,17 @@ export class TurnSlotAnchorStore {
 
   deleteByInstance(instanceId: string): void {
     this.db.run("DELETE FROM turn_slot_anchors WHERE instance_id = ?", [instanceId]);
+  }
+
+  /**
+   * Drop every anchor. Called once at hub startup: anchors reference hub
+   * transcript ids, which are per-boot now, so anything left by a previous
+   * boot is stale by construction. Returns rows cleared.
+   */
+  clearAll(): number {
+    const before = this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM turn_slot_anchors")?.n ?? 0;
+    this.db.run("DELETE FROM turn_slot_anchors");
+    return before;
   }
 
   private toAnchor(row: {
