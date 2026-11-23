@@ -39,9 +39,12 @@ export type SessionForkNodeResolution =
  *
  * The node is located by its prompt digest, never by position: the acpx record
  * can gain turns (growth) or lose its head (its bounded window), and neither
- * may silently move a fork onto a different turn. A duplicated prompt text is
- * ambiguous unless the recorded turn ordinal still points at one of the
- * matches. A recorded anchor (a replay) must match the prefix exactly.
+ * may silently move a fork onto a different turn. `sequence` is the 0-based
+ * order among *recorded* prompt turns (media and pre-ledger user turns occupy
+ * history slots but not sequence numbers), so a duplicated prompt is matched
+ * by rank among same-digest recorded nodes vs same-digest history turns. If
+ * those counts differ the fork fails closed rather than guessing. A recorded
+ * anchor (a replay) must match the prefix exactly.
  */
 export function resolveSessionForkNode(input: {
   history: readonly NativeHistoryMessage[];
@@ -70,14 +73,22 @@ export function resolveSessionForkNode(input: {
   if (matches.length === 1) {
     userTurnIndex = userIndexes.indexOf(matches[0]!);
   } else {
-    // Two prompts with identical text are indistinguishable by content. The
-    // recorded ordinal disambiguates only when it still indexes one of them;
-    // otherwise the caller must fail closed rather than pick a guess.
-    const hinted = target.sequence < userIndexes.length ? target.sequence : -1;
-    if (hinted < 0 || !matches.includes(userIndexes[hinted]!)) {
+    // Two prompts with identical text are indistinguishable by content.
+    // `sequence` numbers recorded nodes only, so it cannot index `userIndexes`
+    // whenever an unrecorded user turn (pre-ledger history, media) sits
+    // earlier in the acpx record. Rank the target among same-digest recorded
+    // nodes and pick the same rank among same-digest history matches; if the
+    // two lists differ in length, an unrecorded duplicate makes the cut a
+    // guess and the caller must fail closed.
+    const sameDigestNodes = input.nodes
+      .filter((node) => node.promptDigest === target.promptDigest)
+      .sort((left, right) => left.sequence - right.sequence);
+    const rank = sameDigestNodes.findIndex((node) => node.nodeId === target.nodeId);
+    if (rank < 0 || sameDigestNodes.length !== matches.length) {
       return { ok: false, reason: "node-ambiguous" };
     }
-    userTurnIndex = hinted;
+    userTurnIndex = userIndexes.indexOf(matches[rank]!);
+    if (userTurnIndex < 0) return { ok: false, reason: "node-ambiguous" };
   }
 
   const nodeIndex = userIndexes[userTurnIndex]!;
