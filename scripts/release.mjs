@@ -979,8 +979,12 @@ function buildPublishPlan() {
   const releases = [];
   for (const pkg of PACKAGE_REGISTRY) {
     const version = String(readJson(pkg.manifestPath).version ?? "");
+    // Ask about this exact tag instead of comparing against the newest one.
+    // `git tag --sort=-v:refname` ranks `0.6.4-beta.14` above `0.6.4`, so a
+    // graduated beta line never drops out of the resume set and `publish` then
+    // refuses its own tag ("tag already exists") on every retry.
+    if (git(["tag", "--list", tagFor(pkg.id, version)])) continue; // already released
     const lastTag = lastTagFor(pkg.id);
-    if (lastTag === tagFor(pkg.id, version)) continue; // already released
     const from = lastTag ? lastTag.slice(pkg.tagPrefix.length) : "";
     if (from === version) continue; // tag exists under a different prefix shape
     releases.push({ id: pkg.id, from, to: version, tag: tagFor(pkg.id, version) });

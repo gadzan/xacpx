@@ -61,8 +61,11 @@ function seedInstance(opts: { sessions?: number } = {}) {
   useGroupsStore().groupsByInstance = { i1: [group("conversation_g", "Release Team")] };
 }
 
+/** Sheets teleport to <body> in the app; stub Teleport so this suite can keep
+ *  asserting through the wrapper. The teleport target itself is covered by the
+ *  mobile-sheet/dropdown suites. */
 function mountDash(): VueWrapper {
-  return mount(DashboardView, { global: { stubs } });
+  return mount(DashboardView, { global: { stubs: { ...stubs, teleport: true } } });
 }
 
 /** The conversation page's title is the quick-switch trigger. */
@@ -213,7 +216,9 @@ test("a section with more than eight rows grows a filter field that narrows the 
   expect(document.activeElement).not.toBe(field.element);
 
   await field.setValue("extra-3");
-  const rows = sheet.findAll('[data-test="quick-switch-session-row"]');
+  // Re-find after the update: a VTU Teleport stub swaps the rendered subtree, so
+  // a wrapper captured before the re-render holds the pre-filter DOM.
+  const rows = wrapper.findAll('[data-test="quick-switch-session-row"]');
   expect(rows).toHaveLength(1);
   expect(rows[0]!.attributes("data-alias")).toBe("extra-3");
 });

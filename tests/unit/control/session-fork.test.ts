@@ -662,6 +662,44 @@ test("a fresh node fork after source growth still stops at the node", async () =
   store.close();
 });
 
+test("a node fork of a later duplicate prompt keeps that turn when earlier history was never ledgered", async () => {
+  const history = [
+    { role: "user" as const, text: "old question" },
+    { role: "agent" as const, text: "old answer" },
+    { role: "user" as const, text: "continue" },
+    { role: "agent" as const, text: "first continue" },
+    { role: "user" as const, text: "continue" },
+    { role: "agent" as const, text: "second continue" },
+  ];
+  const store = await SessionForkStore.openInMemory();
+  const digest = sessionForkPromptDigest("continue");
+  store.recordTurnNode({
+    nodeId: "first-continue",
+    sessionId: "logical-src",
+    promptDigest: digest,
+    createdAt: "2026-11-16T00:00:00.000Z",
+  });
+  store.recordTurnNode({
+    nodeId: "clicked-continue",
+    sessionId: "logical-src",
+    promptDigest: digest,
+    createdAt: "2026-11-16T00:00:01.000Z",
+  });
+  const input = forkInput(store, history);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-unrecorded-prefix",
+    sourcePoint: { type: "node", nodeId: "clicked-continue" },
+  });
+  const handoff = store.getHandoff(store.getByRequestId("req-unrecorded-prefix")!.id)!.text;
+  expect(handoff).toContain("second continue");
+  store.close();
+});
+
 test("a pending node replay uses the stored source point and anchor", async () => {
   const store = await SessionForkStore.openInMemory();
   const input = forkInput(store, [...TURN_HISTORY]);

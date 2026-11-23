@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { ArrowLeft, Info, LogOut } from "lucide-vue-next";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { ArrowLeft, Info, LogOut, Plus } from "lucide-vue-next";
 import { useRouter } from "vue-router";
 import { api } from "../api/client";
 import { useAuthStore } from "../stores/auth";
@@ -22,6 +22,8 @@ import AddInstanceDialog from "../components/AddInstanceDialog.vue";
 import { TRANSCRIPT_MAX_BYTES, TRANSCRIPT_MAX_ROWS } from "../lib/session-tail-cache";
 import Tooltip from "../components/Tooltip.vue";
 import UiButton from "../components/UiButton.vue";
+import UiSwitch from "../components/UiSwitch.vue";
+
 const auth = useAuthStore();
 const theme = useThemeStore();
 const router = useRouter();
@@ -95,7 +97,10 @@ async function toggleNotifications(): Promise<void> {
   if (notifBusy.value) return;
   notifBusy.value = true;
   try {
-    if (notifState.value === "subscribed" || isDesktopNotificationsEnabled()) {
+    // The off path is "the switch is visibly on". App intent written without a
+    // granted permission still reads Off, so that tap must ask again rather than
+    // silently disable a preference the user never saw enabled.
+    if (notifSwitchOn.value) {
       await disableDesktopNotifications();
       notifState.value = "idle";
     } else {
@@ -115,12 +120,23 @@ async function toggleNotifications(): Promise<void> {
   }
 }
 
+// A switch means "this preference is on". It is on only when BOTH the browser
+// permission is granted and the app intent is enabled — an app flag alone must
+// never paint a success the browser will not honour.
+const notifSwitchOn = computed(() =>
+  notifState.value === "subscribed"
+  && typeof Notification !== "undefined"
+  && Notification.permission === "granted",
+);
+/** Unsupported has no switch at all; server-disabled cannot be turned on. */
+const notifSwitchShown = computed(() => notifState.value !== "unsupported");
+
 const notifStateLabel = computed(() => ({
   unsupported: t("settings.notifUnsupported"),
   "server-disabled": t("settings.notifServerDisabled"),
   denied: t("settings.notifDenied"),
   idle: t("settings.notifOff"),
-  subscribed: t("settings.notifOn"),
+  subscribed: notifSwitchOn.value ? t("settings.notifOn") : t("settings.notifOff"),
 }[notifState.value]));
 
 /** The explanations that used to stack under the notification row, now behind one ⓘ. */
@@ -131,7 +147,39 @@ const notifHint = computed(() => {
   return parts.join(" ");
 });
 
-void onMounted(() => { void probeNotifications(); });
+/** Switch activation. Off means "stop app notifications" — never claim the
+ *  browser permission was revoked. On runs inside this click, so the permission
+ *  prompt is user-gesture initiated. A denied permission is re-probed first: the
+ *  user may have unblocked the site in browser settings since the last read. */
+async function onNotifSwitch(): Promise<void> {
+  if (notifBusy.value) return;
+  if (notifState.value === "unsupported" || notifState.value === "server-disabled") return;
+  if (notifState.value === "denied") {
+    await probeNotifications();
+    if (notifState.value === "denied" || notifState.value === "unsupported") return;
+    // The permission now grants what the switch was missing, so this tap already
+    // means "on"; falling through would run the off branch and undo the preference.
+    if (notifSwitchOn.value) return;
+  }
+  await toggleNotifications();
+}
+
+// Browser permission can change outside this page (site settings, OS prompt in
+// another tab). Re-probe on that change so a denied row recovers without a reload.
+let permissionStatus: PermissionStatus | null = null;
+function onPermissionChange(): void { void probeNotifications(); }
+
+void onMounted(async () => {
+  await probeNotifications();
+  try {
+    permissionStatus = (await navigator.permissions?.query({ name: "notifications" })) ?? null;
+    permissionStatus?.addEventListener("change", onPermissionChange);
+  } catch { /* older browsers: no query support, no live re-probe */ }
+});
+onBeforeUnmount(() => {
+  permissionStatus?.removeEventListener("change", onPermissionChange);
+  permissionStatus = null;
+});
 </script>
 
 <template>
@@ -149,43 +197,60 @@ void onMounted(() => { void probeNotifications(); });
     </header>
 
     <div class="overflow-hidden rounded-card border border-hairline bg-raised">
+      <!-- Segmented control: a 32px rail whose selected pill is 28px (2px inset,
+           same arithmetic as the sidebar track). On a coarse pointer the button
+           grows to a 44px hit box, but the paint stays on the 28px pill — the
+           44 never gets a background and never covers the neighbouring row. -->
       <section data-test="theme-setting" class="flex min-h-11 flex-wrap items-center justify-between gap-3 px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.appearance") }}</h2>
-        <div class="inline-flex gap-1 rounded-btn bg-bg p-1">
+        <div class="inline-flex h-8 items-center gap-0.5 rounded-btn bg-bg p-0.5">
           <button
             data-test="theme-dark"
-            class="rounded-sm px-3 py-1 text-sm [@media(pointer:coarse)]:min-h-11"
-            :class="theme.mode === 'dark' ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fg/5'"
+            class="group flex h-7 items-center justify-center rounded-sm text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:min-w-11"
+            :aria-pressed="theme.mode === 'dark'"
             @click="theme.set('dark')"
-          >{{ $t("settings.dark") }}</button>
+          >
+            <span class="grid h-7 place-items-center rounded-sm px-3"
+                  :class="theme.mode === 'dark' ? 'bg-accent-soft text-accent-text' : 'text-fg-muted group-hover:bg-fg/5'">{{ $t("settings.dark") }}</span>
+          </button>
           <button
             data-test="theme-light"
-            class="rounded-sm px-3 py-1 text-sm [@media(pointer:coarse)]:min-h-11"
-            :class="theme.mode === 'light' ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fg/5'"
+            class="group flex h-7 items-center justify-center rounded-sm text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:min-w-11"
+            :aria-pressed="theme.mode === 'light'"
             @click="theme.set('light')"
-          >{{ $t("settings.light") }}</button>
+          >
+            <span class="grid h-7 place-items-center rounded-sm px-3"
+                  :class="theme.mode === 'light' ? 'bg-accent-soft text-accent-text' : 'text-fg-muted group-hover:bg-fg/5'">{{ $t("settings.light") }}</span>
+          </button>
         </div>
       </section>
 
       <section data-test="language-setting" class="flex min-h-11 flex-wrap items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.language") }}</h2>
-        <div class="inline-flex gap-1 rounded-btn bg-bg p-1">
+        <div class="inline-flex h-8 items-center gap-0.5 rounded-btn bg-bg p-0.5">
           <button
             v-for="loc in SUPPORTED_LOCALES"
             :key="loc"
             :data-test="`lang-${loc}`"
-            class="rounded-sm px-3 py-1 text-sm [@media(pointer:coarse)]:min-h-11"
-            :class="locale.locale === loc ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fg/5'"
+            class="group flex h-7 items-center justify-center rounded-sm text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:min-w-11"
+            :aria-pressed="locale.locale === loc"
             @click="locale.set(loc)"
-          >{{ localeLabels[loc] }}</button>
+          >
+            <span class="grid h-7 place-items-center rounded-sm px-3"
+                  :class="locale.locale === loc ? 'bg-accent-soft text-accent-text' : 'text-fg-muted group-hover:bg-fg/5'">{{ localeLabels[loc] }}</span>
+          </button>
         </div>
       </section>
 
       <section class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.addInstance") }}</h2>
-        <UiButton data-test="open-add-instance" @click="showAddInstance = true">
+        <!-- Light text action: the 44px target is transport, not paint. -->
+        <button type="button" data-test="open-add-instance"
+                class="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-sm px-2 text-sm font-medium text-accent-text transition-colors hover:bg-accent-soft/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                @click="showAddInstance = true">
+          <Plus :size="14" class="shrink-0" />
           {{ $t("settings.addInstance") }}
-        </UiButton>
+        </button>
       </section>
 
       <section class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
@@ -223,13 +288,21 @@ void onMounted(() => { void probeNotifications(); });
       <section data-test="notif-setting" class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.notifTitle") }}</h2>
         <div class="flex items-center gap-1.5">
+          <!-- The state text carries the honesty: Off/On is the app preference,
+               Denied/Unsupported explain why a tap cannot turn it on. Turning the
+               switch off stops app notifications and never claims the browser
+               permission was revoked. -->
           <span data-test="notif-state" class="text-sm text-fg-muted">{{ notifStateLabel }}</span>
-          <UiButton
-            v-if="notifState === 'subscribed' || notifState === 'idle' || notifState === 'server-disabled'"
-            data-test="notif-toggle"
-            :disabled="notifBusy"
-            @click="toggleNotifications"
-          >{{ notifState === "subscribed" ? $t("settings.notifDisable") : $t("settings.notifEnable") }}</UiButton>
+          <UiSwitch
+            v-if="notifSwitchShown"
+            test-id="notif-toggle"
+            :checked="notifSwitchOn"
+            :label="$t('settings.notifTitle')"
+            :busy="notifBusy"
+            :disabled="notifBusy || notifState === 'server-disabled'"
+            :muted="notifBusy || notifState === 'denied'"
+            @toggle="onNotifSwitch"
+          />
           <Tooltip v-if="notifHint" :text="notifHint">
             <button type="button" data-test="notif-info" :aria-label="$t('settings.moreInfo')" :title="$t('settings.moreInfo')"
                     class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0">

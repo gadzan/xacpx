@@ -110,12 +110,16 @@ describe("InstanceTree agent switch entry", () => {
     await openMenu(w);
     await w.find('[data-test="action-switch-agent-claude"]').trigger("click");
     expect(switchTo).toHaveBeenCalledTimes(1);
+    expect(useToasts().value[0]).toMatchObject({ tone: "loading", key: "instance.switchAgentPending" });
+    expect(w.find('[data-test="session-action-pending"]').exists()).toBe(true);
     expect(switchTo).toHaveBeenCalledWith("i1", "backend", "claude");
 
     created.resolve({ alias: "backend-claude-fork" });
     await flushPromises();
     expect(w.emitted("select")).toEqual([["i1", "backend-claude-fork"]]);
     expect(useToasts().value[0]).toMatchObject({ tone: "success", key: "instance.switchAgentCreated" });
+    expect(useToasts().value.some((toast) => toast.tone === "loading")).toBe(false);
+    expect(w.find('[data-test="session-action-pending"]').exists()).toBe(false);
   });
 
   it("toasts a failed switch and keeps the current selection", async () => {
@@ -130,6 +134,8 @@ describe("InstanceTree agent switch entry", () => {
     await flushPromises();
 
     expect(w.emitted("select")).toBeUndefined();
+    expect(useToasts().value.some((toast) => toast.tone === "loading")).toBe(false);
+    expect(w.find('[data-test="session-action-pending"]').exists()).toBe(false);
     expect(useToasts().value[0]).toMatchObject({ tone: "error", key: "instance.switchAgentFailed" });
   });
 });

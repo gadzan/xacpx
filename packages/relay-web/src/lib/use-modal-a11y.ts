@@ -1,5 +1,5 @@
 import { nextTick, onBeforeUnmount, onMounted, type Ref } from "vue";
-import { modalLayers, navigateBack, pushModal } from "./mobile-back";
+import { lockBodyScroll, modalLayers, navigateBack, pushModal, unlockBodyScroll } from "./mobile-back";
 
 /** Modal-dialog accessibility trio, shared by the overlay dialogs (ManageInstanceDialog,
  *  NewSessionDialog): trap Tab focus inside the dialog, close on Escape, and restore focus
@@ -73,6 +73,10 @@ export function useModalA11y(
       mobileOnly: options.mobileOnly,
     });
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // The scrim already blocks pointer input; the lock stops the page behind
+    // from scrolling (touch drag, wheel, keyboard) while any modal is up. The
+    // count — not a boolean — keeps a nested dialog from unlocking early.
+    lockBodyScroll();
     document.addEventListener("keydown", onKeydown);
     void nextTick(() => {
       (options.initialFocus?.() ?? focusables()[0] ?? dialogEl.value)?.focus();
@@ -81,6 +85,7 @@ export function useModalA11y(
   onBeforeUnmount(() => {
     unregister?.();
     unregister = null;
+    unlockBodyScroll();
     document.removeEventListener("keydown", onKeydown);
     previouslyFocused?.focus?.();
   });

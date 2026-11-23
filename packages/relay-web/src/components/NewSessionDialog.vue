@@ -85,29 +85,46 @@ const extraDrivers = computed(() =>
   (inst.value?.agentCatalog ?? []).filter((c) => !c.configured),
 );
 
-// Agent picker groups: configured agents first, then un-configured catalog drivers
-// (an undetected CLI is shown but disabled). Mirrors the old <optgroup> layout.
+// Agent picker groups: configured agents first, then un-configured catalog drivers.
+// Mirrors the old <optgroup> layout. Display collapses a name that equals its
+// driver (`codex · codex` reads twice), and an undetected CLI is only a WEAK
+// second-line hint — never a disable. The catalog carries no eligibility signal
+// beyond `installed`, so removing the driver from the list would hide choices a
+// remote/configured setup can still honour.
 const agentGroups = computed<SelectGroup[]>(() => {
   const groups: SelectGroup[] = [];
   const configured = inst.value?.agents ?? [];
   if (configured.length) {
-    groups.push({ label: t("session.configured"), options: configured.map((a) => ({ value: a.name, label: `${a.name} · ${a.driver}` })) });
+    groups.push({
+      label: t("session.configured"),
+      options: configured.map((a) => ({
+        value: a.name,
+        label: a.name === a.driver ? a.name : `${a.name} · ${a.driver}`,
+      })),
+    });
   }
   if (extraDrivers.value.length) {
     groups.push({
       label: t("session.availableDrivers"),
       options: extraDrivers.value.map((c) => ({
         value: c.driver,
-        label: c.installed === "unknown" ? t("session.cliNotDetected", { driver: c.driver }) : c.driver,
-        disabled: c.installed === "unknown",
+        label: c.driver,
+        sub: c.installed === "unknown" ? t("agents.cliNotDetected") : undefined,
       })),
     });
   }
   return groups;
 });
+// Workspace rows are two lines: the name, then the path (kept whole for the
+// row's title, middle-ellipsized on screen so the differing tail survives).
 const workspaceGroups = computed<SelectGroup[]>(() => [
-  { options: (inst.value?.workspaces ?? []).map((w) => ({ value: w.name, label: `${w.name} — ${w.cwd}` })) },
+  { options: (inst.value?.workspaces ?? []).map((w) => ({ value: w.name, label: w.name, sub: w.cwd })) },
 ]);
+// The row ellipsizes a long path, so the chosen workspace's cwd is also shown in
+// full under the picker: a phone has no hover for the row's `title`.
+const selectedWorkspacePath = computed(
+  () => (inst.value?.workspaces ?? []).find((w) => w.name === workspaceSel.value)?.cwd ?? "",
+);
 
 const resolvedWorkspaceName = computed(() =>
   wsMode.value === "path"
@@ -407,6 +424,8 @@ async function submit(): Promise<void> {
                       class="grid h-[38px] w-[38px] shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-fg/5 hover:text-fg"
                       @click="browsing = true"><FolderOpen :size="16" /></button>
             </div>
+            <p v-if="wsMode === 'existing' && selectedWorkspacePath" data-test="ns-workspace-path"
+               class="mt-1 break-all font-mono text-xs text-fg-muted">{{ selectedWorkspacePath }}</p>
           </div>
           <DirectoryPicker v-if="browsing" :instance-id="instanceId" :initial-path="workspacePath.trim() || undefined"
                            @confirm="onBrowseConfirm" @close="browsing = false" />

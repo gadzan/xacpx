@@ -123,6 +123,59 @@ test("identical prompt text is disambiguated by the recorded ordinal or fails cl
   });
 });
 
+test("an unrecorded earlier turn does not move a duplicate-prompt node onto the previous match", () => {
+  // Pre-ledger (or media) user turns occupy history slots but not sequence
+  // numbers. `sequence` is "among recorded nodes", so treating it as an index
+  // into every history user turn silently cuts at the earlier "continue".
+  const history = [
+    { role: "user" as const, text: "old question" },
+    { role: "agent" as const, text: "old answer" },
+    { role: "user" as const, text: "continue" },
+    { role: "agent" as const, text: "first continue" },
+    { role: "user" as const, text: "continue" },
+    { role: "agent" as const, text: "second continue" },
+  ];
+  const digest = sessionForkPromptDigest("continue");
+  const nodes: SessionForkTurnNode[] = [
+    { nodeId: "first-continue", sessionId: "s", sequence: 0, promptDigest: digest, createdAt: "t" },
+    { nodeId: "clicked-continue", sessionId: "s", sequence: 1, promptDigest: digest, createdAt: "t" },
+  ];
+  const resolved = resolveSessionForkNode({ history, nodes, nodeId: "clicked-continue" });
+  expect(resolved.ok).toBe(true);
+  if (!resolved.ok) return;
+  expect(resolved.prefix.map((message) => message.text)).toEqual([
+    "old question",
+    "old answer",
+    "continue",
+    "first continue",
+    "continue",
+    "second continue",
+  ]);
+});
+
+test("a pre-ledger duplicate of the clicked prompt fails closed instead of handing off the old prefix", () => {
+  const history = [
+    { role: "user" as const, text: "fix the login bug" },
+    { role: "agent" as const, text: "old diagnosis" },
+    { role: "user" as const, text: "fix the login bug" },
+    { role: "agent" as const, text: "new diagnosis with the fix" },
+  ];
+  const digest = sessionForkPromptDigest("fix the login bug");
+  const nodes: SessionForkTurnNode[] = [
+    {
+      nodeId: "ui-clicked-node",
+      sessionId: "s",
+      sequence: 0,
+      promptDigest: digest,
+      createdAt: "t",
+    },
+  ];
+  expect(resolveSessionForkNode({ history, nodes, nodeId: "ui-clicked-node" })).toEqual({
+    ok: false,
+    reason: "node-ambiguous",
+  });
+});
+
 test("the prefix anchor ignores rows after the cut", () => {
   const prefix = HISTORY.slice(0, 4);
   expect(sessionForkPrefixAnchor(prefix)).toBe(sessionForkPrefixAnchor([...prefix]));

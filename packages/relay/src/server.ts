@@ -967,8 +967,21 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // so the reconcile that ran then had no row to stamp. The turn's
               // buffer still holds the core's node id: stamp the row now or the Web
               // never offers a fork on the prompt that triggered this turn.
+              //
+              // Gate on peerTriggerMessageId: a BUSY target writes the card at
+              // delivery time while SOME OTHER turn's buffer is live. Stamping
+              // from that unrelated buffer paints the card with the live turn's
+              // node id — the Web then offers a per-message fork that forks at
+              // the wrong prompt. The busy/queued path is stamped later by
+              // reconcileInboundPrompt once THIS turn's turn-started arrives
+              // (findByPeerMessage). Only stamp here when the live buffer is
+              // actually the turn that this card triggered.
               const pending = turnBuffers.get(key(instanceId, event.sessionAlias));
-              if (pending?.nodeId && direction === "in") {
+              if (
+                pending?.nodeId
+                && direction === "in"
+                && pending.peerTriggerMessageId === event.message.messageId
+              ) {
                 messages.attachNodeId(instanceId, event.sessionAlias, pending.nodeId, {
                   peerMessageId: event.message.messageId,
                 });

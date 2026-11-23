@@ -1318,16 +1318,21 @@ describe("Group Components", () => {
       groups.topicsByConversation["i1:conversation_g"]!.push({ id: "topic_2", conversationId: "conversation_g", title: "Release", status: "active", createdAt: "now", updatedAt: "now" });
       const switchTopic = vi.spyOn(groups, "switchTopic").mockResolvedValue();
       window.innerWidth = 500;
-      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] }, attachTo: document.body });
       await flushPromises();
       await wrapper.find('[data-test="group-topic-pill"]').trigger("click");
-      const sheet = wrapper.find('[data-test="group-topic-sheet"]');
-      expect(sheet.exists()).toBe(true);
-      expect(sheet.findAll('[data-test="topic-row"]')).toHaveLength(2);
-      expect(sheet.find('[data-test="group-new-topic-button"]').exists()).toBe(true);
-      await sheet.findAll('[data-test="topic-row"]')[1]!.find("button").trigger("click");
+      // The app is mounted into the document, so the sheet is read from there.
+      const sheet = document.querySelector<HTMLElement>('[data-test="group-topic-sheet"]');
+      expect(sheet).not.toBeNull();
+      const rows = Array.from(sheet!.querySelectorAll<HTMLElement>('[data-test="topic-row"]'));
+      expect(rows).toHaveLength(2);
+      expect(sheet!.querySelector('[data-test="group-new-topic-button"]')).not.toBeNull();
+      rows[1]!.querySelector("button")!.click();
+      await flushPromises();
       expect(switchTopic).toHaveBeenCalledWith("topic_2");
-      expect(wrapper.find('[data-test="group-topic-sheet"]').exists()).toBe(false);
+      expect(document.querySelector('[data-test="group-topic-sheet"]')).toBeNull();
+      window.innerWidth = 1024;
+      wrapper.unmount();
     });
 
     it("desktop popover switches topics and keeps new-topic inside the panel", async () => {

@@ -1,6 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, test, expect } from "vitest";
+import { beforeEach, test, expect, vi } from "vitest";
 import DialogShell from "../components/DialogShell.vue";
 import { modalLayers } from "../lib/mobile-back";
 
@@ -83,4 +83,69 @@ test("focusChild moves focus inside the panel", async () => {
   wrapper.vm.focusChild('[data-test="last"]');
   expect(document.activeElement?.getAttribute("data-test")).toBe("last");
   wrapper.unmount();
+});
+
+test("a scrim pointer sequence closes only on the completed click, never on pointerdown", async () => {
+  const covered = document.createElement("button");
+  covered.setAttribute("data-test", "covered-new");
+  const onCovered = vi.fn();
+  covered.addEventListener("click", onCovered);
+  document.body.appendChild(covered);
+
+  const wrapper = mountShell();
+  await flushPromises();
+  const overlay = document.querySelector('[data-test="shell-panel"]')!.parentElement as HTMLElement;
+  const seq = (type: string) =>
+    overlay.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+
+  // Isolation holds: the sequence's pointerdown must not tear the scrim down,
+  // or the click that follows would land on whatever it uncovered.
+  seq("pointerdown");
+  await flushPromises();
+  expect(wrapper.emitted("close")).toBeUndefined();
+  seq("pointerup");
+  await flushPromises();
+  expect(wrapper.emitted("close")).toBeUndefined();
+  seq("click");
+  await flushPromises();
+
+  expect(wrapper.emitted("close")).toHaveLength(1);
+  expect(onCovered).toHaveBeenCalledTimes(0);
+  wrapper.unmount();
+  covered.remove();
+});
+
+test("a pointerdown inside the panel never starts a close", async () => {
+  const wrapper = mountShell();
+  await flushPromises();
+  const panel = document.querySelector('[data-test="shell-panel"]') as HTMLElement;
+  for (const type of ["pointerdown", "pointerup", "click"]) {
+    panel.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+  }
+  await flushPromises();
+  expect(wrapper.emitted("close")).toBeUndefined();
+  wrapper.unmount();
+});
+
+test("nested shells each own a rung; the top scrim closes one layer and the lock is ref-counted", async () => {
+  const parent = mountShell({ testId: "parent-panel" });
+  await flushPromises();
+  expect(document.body.style.overflow).toBe("hidden");
+  const child = mountShell({ testId: "child-panel", level: "nested" });
+  await flushPromises();
+  expect(document.body.style.overflow).toBe("hidden");
+  expect(modalLayers.value.map((l) => l.id)).toEqual(["parent-panel", "child-panel"]);
+
+  const childOverlay = document.querySelector('[data-test="child-panel"]')!.parentElement as HTMLElement;
+  childOverlay.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await flushPromises();
+  expect(child.emitted("close")).toHaveLength(1);
+  expect(parent.emitted("close")).toBeUndefined();
+  expect(modalLayers.value.map((l) => l.id)).toEqual(["parent-panel", "child-panel"]);
+
+  // Child unmounts (popstate close) → the parent's lock still holds the page.
+  child.unmount();
+  expect(document.body.style.overflow).toBe("hidden");
+  parent.unmount();
+  expect(document.body.style.overflow).toBe("");
 });

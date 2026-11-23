@@ -145,3 +145,39 @@ test("the retention and relay blocks render the server values", async () => {
   expect(wrapper.get('[data-test="relay-version"]').text())
     .toBe(i18n.global.t("settings.relayVersion", { version: VERSION.current }));
 });
+
+test("segments paint a 28px pill on a 32px rail while the coarse hit box stays 44 and unpainted", async () => {
+  stubHub();
+  const wrapper = mountSettings();
+  await flushPromises();
+
+  const track = wrapper.get('[data-test="theme-setting"] div.inline-flex');
+  // 32px rail = 2px + 28px + 2px; the padding is the pill's inset.
+  expect(track.classes()).toEqual(expect.arrayContaining(["h-8", "p-0.5"]));
+  for (const testId of ["theme-dark", "theme-light"]) {
+    const button = wrapper.get(`[data-test="${testId}"]`);
+    expect(button.classes()).toContain("h-7");
+    expect(button.classes()).toEqual(expect.arrayContaining([
+      "[@media(pointer:coarse)]:h-11",
+      "[@media(pointer:coarse)]:min-w-11",
+    ]));
+    // The 44px hit box never carries the selected fill; the 28px child does.
+    expect(button.classes()).not.toContain("bg-accent-soft");
+    expect(button.find("span").classes()).toContain("h-7");
+  }
+  expect(wrapper.get('[data-test="theme-dark"] span').classes()).toContain("bg-accent-soft");
+  expect(wrapper.get('[data-test="theme-light"] span').classes()).not.toContain("bg-accent-soft");
+  // The language rail follows the same arithmetic.
+  expect(wrapper.get('[data-test="language-setting"] div.inline-flex').classes())
+    .toEqual(expect.arrayContaining(["h-8", "p-0.5"]));
+  expect(wrapper.get('[data-test="lang-en"]').classes()).toContain("h-7");
+
+  // Add-instance is a light text action (no filled blue block), logout stays red.
+  const add = wrapper.get('[data-test="open-add-instance"]');
+  expect(add.element.tagName).toBe("BUTTON");
+  expect(add.classes()).toContain("text-accent-text");
+  expect(add.classes()).toContain("min-h-11");
+  expect(add.classes()).not.toContain("bg-accent");
+  expect(add.find("svg").exists()).toBe(true);
+  expect(wrapper.get('[data-test="logout"]').classes()).toContain("text-danger-text");
+});

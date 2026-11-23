@@ -224,6 +224,13 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   （自带 `login-btn` 形态）、以及分段控件 / 芯片（它们是切换态，不是按钮：主题、语言、source、
   workspace 模式、分组模式）。
 
+## 开关（`UiSwitch.vue`）
+
+全站唯一的开关：44×26 轨道放在 44×44 透明命中盘里，圆点在两个状态都距轨道边 3px
+（`44 - 2*3 - 20 = 18` 的行程），所以拇指不会偏向一侧。设置页的桌面通知与「管理实例」
+里的自动协作 / 终端 / 文件三个开关共用它；此前两处各写一份，管理弹窗那份开启态右边
+只剩 4px、关闭态左边 2px，肉眼就是「圆点没对齐」。新增开关一律用它，不要再手写轨道。
+
 ## 玻璃三档（`style.css`）
 
 全站只有三套玻璃配方，定义在 `style.css` 顶部，按角色命名：
@@ -531,7 +538,7 @@ Direct 页复用同一个 `ForkTopicDialog`，入口和能力各自独立：公�
 Group 作曲器里的“自动协作”只在两者同时成立时出现：`control.conversations.router.get` 为 `ready`，且 `control.jev.get` 报告 `keyConfigured: true`。否则（包括读取未返回、旧 daemon 不支持 Jev RPC）该选项完全隐藏，不显示禁用项或原因；默认的负责人模式不变。自动 Run 由路由行承载，行内只显示气泡状态、`waitingQuestion` 和人能处理的原因：Router 自己的 `routingReason`（置信度、回退说明）不再平铺在转录里。执行过程浮层只保留成员自己的过程与需要用户处理的信息（`waitingQuestion`、`blockedReason`、成句的失败原因——裸 token 形式的内核原因码不显示）；派发指令（任务、期望输出）默认折叠，指派 ID、依赖 ID、预算、路由状态、工作区说明和轨迹的 `completenessReason` 都不进浮层。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
 
 实例管理弹层（会话 tab 的齿轮）General 面板提供群组自动协作、Relay 终端和文件写入三个开关。群组自动协作分区显示 daemon 解析出的状态，不暴露 Router 命令、鉴权环境变量或配置路径。开关绑定持久化的 `config.enabled`，不来自可用性状态：探测失败的实例照样显示已开启，并给出修复说明。打开弹层走 `control.conversations.router.update` 的空补丁（纯读，不写盘不探测），切换走同一个 RPC 的非空补丁。开启时若实例没有配置 `conversations.router.command`，daemon 自动写入仓库自带的默认 Router 并运行探测。旧 daemon 对 `update` 答 `unknown-type` 时，store 回落到 `control.conversations.router.get`，面板显示只读状态和升级提示。`conversation-router-changed` 事件触发重读。
-Jev 路由配置收拢在“Jev 路由”折叠区，包含 endpoint、API key（只显示掩码，输入即替换，可清除）、可选代理、只读模型 `jev-1.13.0`、保存和连接测试。API key 保存在实例 daemon 侧，不会回传 dashboard。
+Jev 路由配置收拢在群组自动协作分区内的“Jev 路由”折叠区，包含 endpoint、API key（只显示掩码，输入即替换，可清除）、可选代理、只读模型 `jev-1.13.0`、保存和连接测试。API key 保存在实例 daemon 侧，不会回传 dashboard。
 终端开关读取及更新实例 `channels[id=relay].options.terminal.enabled`，默认关闭；RPC 返回需重启标记，因为 RMUX runtime 与已公布能力在 Relay channel 启动时建立。设置保存后重启该实例的 Relay channel 才会改变实际终端能力。该开关不控制 legacy root `terminal.enabled`。旧 connector 对新 RPC 返回 `unknown-type` 时显示升级提示。
 
 终端不是热切换，和文件写入开关不同，原因在启动期建立的三个不变量：能力集 `terminal.rmux.recovery.v1` / `terminal.multi-view.v1` 只在握手时上报（hub 按 socket 身份落库，改能力必须重连并重新握手）；`bootstrapTerminal()` 一次完成 registry → RMUX sidecar → reconcile，`onRequest` 的路由判断读的是启动期赋值的 `this.terminal` / `terminalReady`；关闭方向还要求 durable registry 先 reaping 再销毁 sidecar（`retireRelayTerminals`），中途打断会留下 tombstone。要热切换就得让 channel 在同一进程内重建 sidecar 并重发能力，而 hub 侧握手的实例记录只在连接时更新，等于变相重启 channel——所以维持「保存即持久化、重启 channel 生效」。
@@ -1159,7 +1166,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - **Bot / Group 管理弹层的移动端布局**：`BotDialog.vue` 与 `GroupDialog.vue` 使用 Teleport 挂到 `body`，避免实例侧栏的 `transform` 把 fixed 遮罩限制在侧栏内。遮罩按动态视口高度和设备安全区留白；标题与操作栏不收缩，仅表单内容滚动。Group 的 fieldset 显式允许收缩，长成员名称和说明不会撑宽窄屏表单。
 
 - **侧栏模式切换**：左栏顶部一行 `Sessions | Bots | Groups` 模式切换，全侧栏共用一行，切一次同时切换所有实例卡片（见上文「侧栏导航 tab」），采用分段控件（segmented control）样式：凹槽轨道 `bg-fill-track rounded-btn p-0.5`，分段 `h-6 rounded-sm`，选中段 `bg-raised shadow-press font-semibold text-fg`，未选中段 `text-fg-muted hover:bg-fill-hover`（`data-test="instance-nav-track"`）。切到 Bots 时展示 Bot 列表（头像、名称、角色；禁用的 Bot 以弱化头像和名称呈现，不再单独画启用状态圆点），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
-- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。新建时工作区默认选择「新建专属工作区」，由所选实例的 daemon 在 `~/.xacpx/bots/` 下创建并注册，也可选择实例已有工作区；自动选项在请求中省略 `workspace`。没有已注册工作区时仍可创建 Bot。编辑时工作区下拉以已注册工作区为底，另按状态叠加最多两项：Bot 当前工作区即使未注册也保持可见（`removeWorkspace` 只校验会话与 `dedicated` 标记、不校验 Bot 引用，Bot 可能活过它的注册），而该专属槽位只有在 daemon 通过 `dedicatedWorkspace` 暴露 marker 时才以「专属工作区」标注、不再以裸名作为普通选项（旧 core 没有 marker，仍按裸名显示当前值），实例声明 `bots.dedicated-workspace-update.v1` 且该 Bot 尚无专属工作区时另有「新建专属工作区」，提交 `dedicatedWorkspace: true` 交给 daemon 分配。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
+- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。表单借鉴 OpenBot 的分组：Identity / Brain / Knows / Does / Rules，只重排现有字段，并给每组一行说明；OpenBot 的权限、文件夹、备用模型、通知等页面没有 per-Bot 后端，因此不提供空入口。新建时工作区默认选择「新建专属工作区」，由所选实例的 daemon 在 `~/.xacpx/bots/` 下创建并注册，也可选择实例已有工作区；自动选项在请求中省略 `workspace`。没有已注册工作区时仍可创建 Bot。编辑时工作区下拉以已注册工作区为底，另按状态叠加最多两项：Bot 当前工作区即使未注册也保持可见（`removeWorkspace` 只校验会话与 `dedicated` 标记、不校验 Bot 引用，Bot 可能活过它的注册），而该专属槽位只有在 daemon 通过 `dedicatedWorkspace` 暴露 marker 时才以「专属工作区」标注、不再以裸名作为普通选项（旧 core 没有 marker，仍按裸名显示当前值），实例声明 `bots.dedicated-workspace-update.v1` 且该 Bot 尚无专属工作区时另有「新建专属工作区」，提交 `dedicatedWorkspace: true` 交给 daemon 分配。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
 - **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatarQuickView.vue` / `BotAvatar.vue`）**：Bot 弹层不再有「基本设置 / 头像外观」标签页；基本设置表单顶部直接展示头像。点击头像打开放大查看浮层（`BotAvatarQuickView.vue`，只读，不改变草稿）；该浮层是独立注册的一层（`useModalA11y`），Esc 或移动端返回只关闭浮层而不关弹层，焦点回到头像入口。头像右下角角标切到头像外观视图，标题栏返回按钮回到基本设置。外观视图支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，两个视图间切换不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。新建 Bot 时每次打开弹层随机生成一个角色头像（形状 / 颜色 / 表情），编辑沿用已保存配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
 - **头像状态与资源**：侧栏只展示身份，不聚合全局忙碌。Direct 按当前 Conversation / Topic / Run，Group 按精确 MemberTurn 与交互归属展示；完成动作只由已观察到的同任务完成事件授权，恢复快照与重连不回放。历史消息、选项、成员选择器和交接双头像静态渲染；可见动态头像共用一个帧时钟，离屏、隐藏、减少动态效果与卸载释放或暂停相应资源。普通 Session 与 Agent 品牌图标仍使用 `AgentIcon`。
 - **受控移除（`BotRemovalDialog.vue`）**：侧栏、Direct 页面和 Bot 对话框都能打开。先调用 `control.bots.remove.preview`，再由用户确认 `control.bots.remove`。文案说明群组历史保留，私聊历史是单独勾选。两人组成员关系会挡住确认，不会自动删群或踢掉另一名成员。清理失败或结果不确定时用同一个 `requestId` 重试。`lifecycle.operations.get` 可在刷新后查看这次清理。已移除 Bot 在列表和群组记录里显示为 removed bot，composer 不再发送。预览里带 `dedicatedWorkspace` 时，实例声明 `bots.dedicated-workspace-cleanup.v1` 才会多出一个「同时删除专属工作目录」的勾选；目录仍在使用（`inUse`）时不提供该勾选，只说明它会被保留。

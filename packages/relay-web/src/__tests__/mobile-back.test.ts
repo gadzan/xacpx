@@ -78,11 +78,19 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   captured.onEvent = undefined;
+  // Mounts attach to <body> (that is where the app runs), so clear the DOM between
+  // tests instead of letting one test's sheets answer the next test's queries.
+  document.body.innerHTML = "";
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [capableInstance] }), { status: 200 })));
 });
 
 function mountDash() {
-  return mount(DashboardView, { global: { stubs } });
+  return mount(DashboardView, { global: { stubs }, attachTo: document.body });
+}
+/** The app is mounted into the document, so a sheet is read from there rather than
+ *  from the wrapper. */
+function sheetEl(testId: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-test="${testId}"]`);
 }
 
 async function selectSession(alias = "demo") {
@@ -134,12 +142,12 @@ describe("mobile back navigation", () => {
     for (let i = 0; i < 3; i++) {
       await wrapper.find('[data-test="mobile-more"]').trigger("click");
       await flushPromises();
-      expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(true);
+      expect(sheetEl("mobile-more-sheet")).not.toBeNull();
       expect(tag()?.layer).toBe("modal");
       const depth = tag()!.depth;
       // Close through the sheet's own X: the entry is popped, not left behind.
-      await backAndSettle(() => wrapper.find('[data-test="sheet-close"]').trigger("click"));
-      expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
+      await backAndSettle(() => sheetEl("sheet-close")!.click());
+      expect(sheetEl("mobile-more-sheet")).toBeNull();
       expect(tag()).toEqual({ layer: "pane", id: "chat:i1::demo", depth: 1 });
       expect(depth).toBe(2);
     }
@@ -157,7 +165,7 @@ describe("mobile back navigation", () => {
     // Full-screen layer: the files drawer opened from the ⋯ sheet.
     await wrapper.find('[data-test="mobile-more"]').trigger("click");
     await flushPromises();
-    await wrapper.find('[data-test="sheet-files"]').trigger("click");
+    sheetEl("sheet-files")!.click();
     await flushPromises();
     expect(wrapper.find('[data-drawer="right"]').classes()).toContain("translate-x-0");
     expect(tag()).toEqual({ layer: "full", id: "right", depth: 2 });
@@ -169,7 +177,7 @@ describe("mobile back navigation", () => {
     expect(tag()?.depth).toBe(3);
 
     await systemBack();
-    expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
+    expect(sheetEl("mobile-more-sheet")).toBeNull();
     expect(wrapper.find('[data-drawer="right"]').classes()).toContain("translate-x-0");
     expect(tag()).toEqual({ layer: "full", id: "right", depth: 2 });
 
@@ -189,15 +197,15 @@ describe("mobile back navigation", () => {
 
     await wrapper.find('[data-test="mobile-more"]').trigger("click");
     await flushPromises();
-    await wrapper.find('[data-test="sheet-open-tabs"]').trigger("click");
+    sheetEl("sheet-open-tabs")!.click();
     await flushPromises();
     // The tabs sheet REPLACED the ⋯ sheet (same kind): still one entry.
-    expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
-    expect(wrapper.find('[data-test="open-tabs-sheet"]').exists()).toBe(true);
+    expect(sheetEl("mobile-more-sheet")).toBeNull();
+    expect(sheetEl("open-tabs-sheet")).not.toBeNull();
     expect(tag()).toEqual({ layer: "modal", id: "open-tabs-sheet", depth: 2 });
 
     await systemBack();
-    expect(wrapper.find('[data-test="open-tabs-sheet"]').exists()).toBe(false);
+    expect(sheetEl("open-tabs-sheet")).toBeNull();
     expect(tag()).toEqual({ layer: "pane", id: "chat:i1::demo", depth: 1 });
   });
 
@@ -270,7 +278,7 @@ describe("mobile back navigation", () => {
     await selectSession();
     await wrapper.find('[data-test="mobile-more"]').trigger("click");
     await flushPromises();
-    expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(true);
+    expect(sheetEl("mobile-more-sheet")).not.toBeNull();
     expect(tag()).toBeNull();
     vi.unstubAllGlobals();
   });
@@ -337,6 +345,7 @@ describe("mobile back navigation", () => {
     const counting = { name: "ChatPane", setup() { mounts++; }, template: "<div/>" };
     const wrapper = mount(DashboardView, {
       global: { stubs: { ...stubs, ChatPane: counting } },
+      attachTo: document.body,
     });
     await flushPromises();
     await selectSession();

@@ -82,8 +82,11 @@ pending write and the resolve can still verify the prefix on retry.
 1. Locate the node's ledger entry; missing → `session-fork-node-unavailable`.
 2. Find history user turns whose prompt digest equals the entry's digest.
    None → `session-fork-source-changed` (reset, clear, or rewrite).
-3. One match → that turn. Several identical prompts → the recorded ordinal
-   picks the turn only when it still indexes one of them, otherwise
+3. One match → that turn. Several identical prompts → rank the node among
+   same-digest *recorded* turns and pick the same rank among same-digest
+   history matches. `sequence` is not an index into every history user turn
+   (media and pre-ledger turns occupy history slots but not sequence
+   numbers). If the two same-digest lists differ in length →
    `session-fork-node-ambiguous`; the fork never guesses.
 4. The prefix is every row up to the next user turn (so the node's own reply is
    included) and nothing after it.

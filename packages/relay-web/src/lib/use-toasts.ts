@@ -6,7 +6,7 @@ import { ref } from "vue";
 // auto-dismiss and can be closed by hand. Toast text is carried as an i18n key +
 // params so the store layer stays i18n-free; ToastHost translates at render time.
 
-export type ToastTone = "success" | "error" | "info";
+export type ToastTone = "success" | "error" | "info" | "loading";
 export interface ToastItem {
   id: number;
   tone: ToastTone;
@@ -23,14 +23,15 @@ let seq = 0;
 
 export function useToasts() { return items; }
 
-/** Queue a toast (newest first); auto-dismisses after `ms`. Returns its id. */
+/** Queue a toast (newest first); auto-dismisses after `ms`. `ms = 0` keeps it
+ *  until `dismissToast`, for work that must show progress the whole time. */
 export function pushToast(tone: ToastTone, key: string, params?: Record<string, unknown>, ms = DEFAULT_MS): number {
   const id = ++seq;
   const next = [{ id, tone, key, params }, ...items.value];
   // Drop + clear timers for anything past the cap so background timers don't leak.
   for (const overflow of next.slice(MAX)) clearTimerFor(overflow.id);
   items.value = next.slice(0, MAX);
-  timers.set(id, setTimeout(() => dismissToast(id), ms));
+  if (ms > 0) timers.set(id, setTimeout(() => dismissToast(id), ms));
   return id;
 }
 

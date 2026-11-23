@@ -5,7 +5,7 @@
 // search (auto above 7 rows) and a MobileSheet below lg.
 // Types live in this plain <script> block so consumers can import them (a
 // <script setup> block cannot `export`).
-export interface SelectOption { value: string; label: string; disabled?: boolean; hint?: string; testId?: string }
+export interface SelectOption { value: string; label: string; sub?: string; disabled?: boolean; hint?: string; testId?: string }
 export interface SelectGroup { label?: string; options: SelectOption[] }
 </script>
 
@@ -44,6 +44,7 @@ const dropdownGroups = computed<DropdownGroup[]>(() => {
     rows: g.options.map((o) => ({
       value: o.value,
       label: o.label,
+      sub: o.sub,
       disabled: o.disabled,
       hint: o.hint,
       testId: o.testId,
