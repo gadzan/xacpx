@@ -7,7 +7,7 @@ import { MSG } from "../../../../packages/relay-protocol/src/index";
 import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
 import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
-import { MessageStore } from "../../../../packages/relay/src/stores/messages";
+import { MemoryMessageStore } from "../../../../packages/relay/src/stores/messages-memory";
 import { createApp, GLOBAL_MAX_FAILURES, LOGIN_MAX_FAILURES } from "../../../../packages/relay/src/http/app";
 import { PushSubscriptionStore } from "../../../../packages/relay/src/stores/push-subscriptions";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
@@ -55,7 +55,7 @@ async function makeApp(opts: {
       return await (opts.sendRequest?.(instanceId, type, payload) ?? Promise.resolve({ sessions: [] }));
     },
   };
-  const messages = new MessageStore(db);
+  const messages = new MemoryMessageStore();
   const app = createApp({
     accounts, instances, gateway, messages,
     trustProxy: opts.trustProxy,
@@ -106,7 +106,7 @@ test("login rejected (invalid token) logs relay.login.rejected with reason, neve
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const messages = new MessageStore(db);
+  const messages = new MemoryMessageStore();
   const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
   const { logger, logs } = makeFakeLogger();
   const app = createApp({ accounts, instances, gateway, messages, logger });
@@ -130,7 +130,7 @@ test("login rejected (rate-limited) logs relay.login.rejected with reason 'rate-
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const messages = new MessageStore(db);
+  const messages = new MemoryMessageStore();
   const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
   const { logger, logs } = makeFakeLogger();
   const app = createApp({ accounts, instances, gateway, messages, logger });
@@ -767,6 +767,22 @@ test("PATCH /api/instances/:id renames an owned instance", async () => {
   expect(instances.getOwned(instanceId, accountId)?.name).toBe("renamed");
 });
 
+test("DELETE /api/instances/:id clears the instance's memory transcript rows", async () => {
+  const { app, instances, messages, loginToken, login, admin } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const { instanceId } = instances.redeemPairingToken(token)!;
+  messages.append(instanceId, "backend", "in", "old question");
+  messages.append(instanceId, "backend", "out", "old answer");
+
+  const res = await app.request(`/api/instances/${instanceId}`, { method: "DELETE", headers: { cookie } });
+  expect(res.status).toBe(200);
+  expect(messages.listBySession(admin.id, instanceId, "backend").messages).toEqual([]);
+});
+
 test("PATCH /api/instances/:id with an empty/whitespace name → 400 invalid-name", async () => {
   const { app, instances, loginToken, login } = await makeApp();
   const { cookie } = await login(loginToken);
@@ -929,14 +945,14 @@ test("rpc prompt strips an oversized or non-image previewUrl but still stores th
   expect(byId.evil?.previewUrl).toBeUndefined();
 });
 
-test("GET /api/config returns the retention policy from deps", async () => {
+test("GET /api/config reports client-side retention (server keeps no transcript)", async () => {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
   const admin = accounts.createAccount("admin");
   const { token: loginToken } = accounts.createLoginToken(admin.id);
-  const messages = new MessageStore(db);
+  const messages = new MemoryMessageStore();
   const gateway = {
     isOnline: () => true,
     sendRequest: async () => ({}),
@@ -953,7 +969,9 @@ test("GET /api/config returns the retention policy from deps", async () => {
   const cookie = loginRes.headers.get("set-cookie")?.split(";")[0] ?? "";
   const res = await app.request("/api/config", { headers: { cookie } });
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ historyRetention: { days: 14, maxPerSession: 500 } });
+  // Legacy fields are accepted but ignored; old clients render the last
+  // server-side defaults (30/2000) instead of "0 days · 0 messages".
+  expect(await res.json()).toEqual({ historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 } });
 });
 
 test("pairing-token rejects non-JSON bodies with 415", async () => {
@@ -970,7 +988,7 @@ test("login rate-limiter: per-IP window expires and IP is no longer throttled", 
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const messages = new MessageStore(db);
+  const messages = new MemoryMessageStore();
   const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
   let clock = 0;
   // trustProxy:true so we can control the IP via XFF header
@@ -1106,7 +1124,7 @@ test("GET /api/version returns the injected update check (auth required)", async
   const instances = new InstanceStore(db);
   const admin = accounts.createAccount("admin");
   const { token } = accounts.createLoginToken(admin.id, "test");
-  const messages = new MessageStore(db);
+  const messages = new MemoryMessageStore();
   const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
   const app = createApp({
     accounts, instances, gateway, messages,
@@ -1206,7 +1224,7 @@ test("invite tombstone POST /api/invites still 404; redeem logs never contain th
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const messages = new MessageStore(db);
+  const messages = new MemoryMessageStore();
   const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
   const { logger, logs } = makeFakeLogger();
   const app = createApp({ accounts, instances, gateway, messages, logger });
@@ -1240,7 +1258,7 @@ test("web-push: vapid key endpoint reflects config; subscriptions require auth +
   const pushSubscriptions = new PushSubscriptionStore(db);
   const app = createApp({
     accounts, instances: new InstanceStore(db), gateway: { isOnline: () => true, sendRequest: async () => ({}) },
-    messages: new MessageStore(db),
+    messages: new MemoryMessageStore(),
     vapidPublicKey: () => "PK",
     pushSubscriptions,
   });
@@ -1320,7 +1338,7 @@ test("web-push: PUT rejects non-push-service endpoints (SSRF allowlist)", async 
   const pushSubscriptions = new PushSubscriptionStore(db);
   const app = createApp({
     accounts, instances: new InstanceStore(db), gateway: { isOnline: () => true, sendRequest: async () => ({}) },
-    messages: new MessageStore(db),
+    messages: new MemoryMessageStore(),
     vapidPublicKey: () => "PK",
     pushSubscriptions,
   });

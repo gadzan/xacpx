@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
+import { createSqlDriver, initSchema, retireMessageTables } from "../../../../packages/relay/src/db";
 
 test("driver run/get/all/exec roundtrip on :memory:", async () => {
   const db = await createSqlDriver(":memory:");
@@ -100,11 +100,44 @@ test("fresh DB: idx_web_sessions_login_token index exists", async () => {
   db.close();
 });
 
-test("messages table has a structured column after initSchema", async () => {
+// History retirement: initSchema no longer creates a `messages` table — hub
+// transcripts are process-local (MemoryMessageStore) and durable only on the
+// client. These tests pin that contract: fresh DBs have no messages table, and
+// a legacy table left by an older hub is dropped on startup.
+test("initSchema does not create a messages table", async () => {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
-  const cols = db.all<{ name: string }>("PRAGMA table_info(messages)").map((c) => c.name);
-  expect(cols).toContain("structured");
+  const table = db.get<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+  );
+  expect(table).toBeUndefined();
+  db.close();
+});
+
+test("retireMessageTables drops a legacy messages table and reports row count", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  db.exec(`
+    CREATE TABLE messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      instance_id TEXT NOT NULL,
+      session_alias TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    INSERT INTO messages (instance_id, session_alias, direction, text, created_at)
+    VALUES ('i1', 's', 'in', 'legacy', '2026-01-01T00:00:00.000Z');
+  `);
+  let reported = -1;
+  retireMessageTables(db, (n) => { reported = n; });
+  expect(reported).toBe(1);
+  expect(
+    db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"),
+  ).toBeUndefined();
+  // Idempotent: a second run on a retired DB is a no-op reporting 0.
+  retireMessageTables(db, (n) => { reported = n; });
+  expect(reported).toBe(0);
   db.close();
 });
 
@@ -115,9 +148,10 @@ test("idempotency: running initSchema 2× on a fresh DB is stable", async () => 
   const tables = db
     .all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     .map((row) => row.name);
-  for (const expected of ["accounts", "instances", "login_tokens", "messages", "pairing_tokens", "web_sessions"]) {
+  for (const expected of ["accounts", "instances", "login_tokens", "pairing_tokens", "web_sessions"]) {
     expect(tables).toContain(expected);
   }
+  expect(tables).not.toContain("messages");
   expect(tables).not.toContain("invites");
   const idx = db.get<{ name: string }>(
     "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_web_sessions_login_token'"
@@ -126,11 +160,10 @@ test("idempotency: running initSchema 2× on a fresh DB is stable", async () => 
   db.close();
 });
 
-test("initSchema migrates a pre-origin_queue_item_id messages table without failing", async () => {
+test("initSchema leaves a legacy messages table alone (retireMessageTables owns it)", async () => {
   const db = await createSqlDriver(":memory:");
-  // Simulate a DB created by an earlier relay version: messages lacks
-  // origin_queue_item_id (the index for it must be created AFTER the ALTER, or
-  // initSchema fails with "no such column" before the migration ever runs).
+  // Simulate a DB written by an older hub: initSchema must neither fail on it
+  // nor migrate it — the retirement path drops it explicitly at startup.
   db.exec(`
     CREATE TABLE messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,12 +179,11 @@ test("initSchema migrates a pre-origin_queue_item_id messages table without fail
     );
   `);
   initSchema(db); // must not throw
-  const cols = db.all<{ name: string }>("PRAGMA table_info(messages)").map((c) => c.name);
-  expect(cols).toContain("origin_queue_item_id");
-  const idx = db.get<{ name: string }>(
-    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_origin_queue'"
-  );
-  expect(idx).toBeDefined();
+  expect(
+    db.get<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+    ),
+  ).toBeDefined();
   db.close();
 });
 

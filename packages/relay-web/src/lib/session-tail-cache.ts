@@ -28,6 +28,23 @@ const GLOBAL_BUDGET_BYTES = 64 * 1024 * 1024;
 // retention window are gone server-side anyway.
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+// ── Full-transcript retention (history-retirement, 2026-11) ─────────────────
+// The hub no longer keeps a durable transcript, so relay-web IndexedDB is the
+// durable client copy. Caps (per session, newest kept, oldest-first eviction):
+export const TRANSCRIPT_MAX_ROWS = 1000;
+export const TRANSCRIPT_MAX_BYTES = 8 * 1024 * 1024;
+
+export interface TranscriptPage {
+  /** Oldest-first. Newest `limit` rows of the cached transcript. */
+  rows: MessageRecordDto[];
+  /** More cached rows exist beyond this page (older, or newer than shown). */
+  hasMore: boolean;
+  /** Total cached rows for the session (before the page limit). */
+  total: number;
+  /** Cumulative rows evicted by caps for this session — drives the UI banner. */
+  droppedTotal: number;
+}
+
 type TailRecord = {
   user: string;
   instanceId: string;
@@ -35,6 +52,10 @@ type TailRecord = {
   rows: MessageRecordDto[];
   lastAccess: number;
   bytes: number;
+  /** Full cached transcript (newest TRANSCRIPT_MAX_ROWS); absent on pre-retirement records. */
+  full?: MessageRecordDto[];
+  /** Cumulative rows evicted by caps for this session. */
+  droppedTotal?: number;
   /** Transport incarnation at write time; "" when unknown (matches anything).
    *  Always a string so the identity index covers every record. */
   incarnation: string;
@@ -156,11 +177,20 @@ export async function read(user: string, instanceId: string, alias: string, inca
       }
       return null;
     }
-    // LRU touch in its own transaction: under real quota pressure the put can
-    // fail, and that must not nullify a hit whose rows are already in hand.
+    // LRU touch, as a read-modify-write INSIDE one readwrite transaction: a
+    // touch that re-puts the snapshot read above would clobber a concurrent
+    // writeTranscript that committed in between (the transcript write-back is
+    // async, so a seed-read racing it is normal). Re-reading inside the tx makes
+    // the touch a no-op on the data and only refresh lastAccess. Under real
+    // quota pressure the put can fail; that must not nullify a hit whose rows are
+    // already in hand.
     try {
       const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put({ ...record, lastAccess: now });
+      const store = tx.objectStore(STORE);
+      const fresh = await asPromise<TailRecord | undefined>(
+        store.get(key) as IDBRequest<TailRecord | undefined>,
+      );
+      if (fresh) store.put({ ...fresh, lastAccess: now });
       await txDone(tx);
     } catch { /* touch is best-effort */ }
     return (rows as MessageRecordDto[]).slice(-TAIL_ROWS);
@@ -250,7 +280,11 @@ async function putAndEvict(db: IDBDatabase, record: TailRecord, now: number): Pr
 export async function write(user: string, instanceId: string, alias: string, rows: MessageRecordDto[], incarnation = ""): Promise<void> {
   try {
     // Snapshot synchronously — the caller's `rows` may mutate while IDB awaits.
-    const tail = rows.filter((r) => typeof r.id === "number").slice(-TAIL_ROWS).map(toCachedRow);
+    const tail = rows
+      .filter((r) => typeof r.id === "number")
+      .slice(-TAIL_ROWS)
+      .map(toCachedRow)
+      .map(stripOversizedPreviews);
     const key = keyOf(user, instanceId, alias);
     const db = await openDb();
     if (tail.length === 0) {
@@ -260,8 +294,9 @@ export async function write(user: string, instanceId: string, alias: string, row
       return;
     }
     const now = Date.now();
-    // Serialized length ≈ UTF-16 code units; ×2 approximates the storage bytes.
-    const bytes = JSON.stringify(tail).length * 2;
+    // Sum of per-row estimates (no full serialization — same estimator that
+    // trims the transcript, so budget accounting matches eviction).
+    const bytes = tail.reduce((sum, r) => sum + estimateRowBytes(r), 0);
     const record: TailRecord = { user, instanceId, alias, rows: tail, lastAccess: now, bytes, incarnation };
     try {
       await putAndEvict(db, record, now);
@@ -286,6 +321,283 @@ export async function write(user: string, instanceId: string, alias: string, row
     // DataCloneError on a reactive row did exactly that), so leave a trace.
     console.debug("[relay-web] tail-cache write failed", err);
   }
+}
+
+/** Merge `incoming` (the currently displayed window — usually NOT the full
+ *  history) into `existing` by row id; incoming wins on conflict (it is the
+ *  authoritative fresher copy). Both inputs are oldest-first. */
+function unionById(existing: MessageRecordDto[], incoming: MessageRecordDto[]): MessageRecordDto[] {
+  const byId = new Map<number, MessageRecordDto>();
+  for (const r of existing) if (typeof r.id === "number") byId.set(r.id, r);
+  for (const r of incoming) if (typeof r.id === "number") byId.set(r.id, r);
+  return [...byId.values()].sort((a, b) => (a.id as number) - (b.id as number));
+}
+
+const fullOf = (record: TailRecord | undefined): MessageRecordDto[] =>
+  Array.isArray(record?.full) ? record.full as MessageRecordDto[] : (record?.rows ?? []);
+
+/** Estimate a row's persisted weight in bytes without serializing it.
+ *  JSON.stringify costs O(row) CPU AND allocates the full string; a session
+ *  window merged from 50 rows can hold multi-hundred-KB previewUrl payloads, so a
+ *  `while (JSON.stringify(kept))` halving loop serializes tens of MB per
+ *  write-back and freezes the UI thread. Field-wise estimate: text/ids at
+ *  face value, structured by its heavy parts, attachments by their persisted
+ *  metadata + capped preview (oversized previewUrls are dropped at cache time).
+ *  The estimate must track REAL persisted bytes: over-estimating by orders of
+ *  magnitude does not "fail safe" — it evicts the user's real history. */
+const ATTACHMENT_BYTES_CAP = 256 * 1024;
+function estimateRowBytes(r: MessageRecordDto): number {
+  let n = (r.text?.length ?? 0) * 2 + 64;
+  n += (r.createdAt?.length ?? 0) * 2;
+  const s = r.structured;
+  if (s) {
+    // Heavy parts only: tool steps (title/output/diff), reasoning, parts text.
+    // Cheap scalars (ids, status, counts) are noise next to payload strings.
+    const steps = s.toolSteps;
+    if (steps) {
+      for (const st of steps) {
+        n += ((st.title?.length ?? 0) + (st.error?.length ?? 0)) * 2 + 64;
+        const d = st.detail;
+        if (d) {
+          if (d.type === "text") n += ((d.text?.length ?? 0) + (d.output?.length ?? 0)) * 2;
+          else if (d.type === "command") n += (d.output?.length ?? 0) * 2 + d.command.length * 2;
+          else if (d.type === "search") n += (d.output?.length ?? 0) * 2 + d.query.length * 2;
+          else if (d.type === "read") n += ((d.preview?.length ?? 0) + (d.path?.length ?? 0)) * 2;
+          else if (d.type === "fields") for (const f of d.fields) n += (f.value?.length ?? 0) * 2;
+          else if (d.type === "diff") n += ((d.oldText?.length ?? 0) + (d.newText?.length ?? 0)) * 2;
+        }
+      }
+    }
+    if (s.reasoning) n += s.reasoning.length * 2;
+    if (s.parts) {
+      for (const p of s.parts) {
+        if (p.type === "text" || p.type === "reasoning") n += p.text.length * 2;
+        // Tool parts duplicate toolSteps — counted above, skip.
+      }
+    }
+    const am = s.agentMessage;
+    if (am) n += ((am.content?.length ?? 0) + (am.messageId?.length ?? 0)) * 2 + 64;
+  }
+  if (r.attachments) {
+    for (const a of r.attachments) {
+      // A base64 previewUrl dominates the persisted bytes: cap per attachment
+      // (at the relay's own 256KB preview admission bound, so everything the
+      // hub legitimately holds also survives in cache) so one giant image
+      // cannot starve an entire session. `size` is the ORIGINAL file size —
+      // the file body is never cached, only metadata
+      // (id/filename/mimeType/size/kind) — so it must not count toward the
+      // byte budget: counting it over-estimates by orders of magnitude and
+      // evicts the user's real history.
+      const previewLen = a.previewUrl && a.previewUrl.startsWith("data:image/") ? Math.min(a.previewUrl.length, ATTACHMENT_BYTES_CAP) : 0;
+      n += ((a.filename?.length ?? 0) + (a.mimeType?.length ?? 0)) * 2 + previewLen;
+    }
+  }
+  return n;
+}
+
+/** Strip oversized attachment previewUrls before caching: a single huge data
+ *  URL would eat the whole session byte budget on the next write-back. Metadata
+ *  (filename/size/kind) stays; the stripped preview is metadata-only from then
+ *  on — there is no hub re-hydration path for attachments (`ensureFullMessage`
+ *  only hydrates compact structured tool cards), and after a hub restart the hub
+ *  no longer holds the row at all. Same-boot hub rows still carry their preview,
+ *  so `loadHistory`'s union restores it while the hub is alive. The cap matches
+ *  the relay's preview admission bound, so legitimate rows are never stripped. */
+export function stripOversizedPreviews(row: MessageRecordDto): MessageRecordDto {
+  if (!row.attachments) return row;
+  let changed = false;
+  const attachments = row.attachments.map((a) => {
+    const preview = (a as { previewUrl?: unknown }).previewUrl;
+    if (typeof preview === "string" && preview.startsWith("data:image/") && preview.length > ATTACHMENT_BYTES_CAP) {
+      changed = true;
+      const copy = { ...a } as Record<string, unknown>;
+      delete copy.previewUrl;
+      return copy as unknown as typeof a;
+    }
+    return a;
+  });
+  return changed ? { ...row, attachments } : row;
+}
+
+/** Trim oldest-first to the per-session row + byte budgets. Returns the kept rows.
+ *  Uses the field-wise estimator (no full serialization); one halving pass from
+ *  the oldest end, so a pathological session costs O(n) estimates, not O(n·MB). */
+function trimTranscript(rows: MessageRecordDto[]): { kept: MessageRecordDto[]; evicted: number } {
+  let kept = rows.length > TRANSCRIPT_MAX_ROWS ? rows.slice(rows.length - TRANSCRIPT_MAX_ROWS) : rows;
+  let evicted = rows.length - kept.length;
+  // Byte budget: halve from the oldest end until it fits (log iterations on
+  // cached per-row estimates — no JSON.stringify of the window at all).
+  let sizes = kept.map(estimateRowBytes);
+  let total = sizes.reduce((a, b) => a + b, 0);
+  while (kept.length > 1 && total > TRANSCRIPT_MAX_BYTES) {
+    const drop = Math.max(1, Math.floor(kept.length / 2));
+    kept = kept.slice(drop);
+    sizes = sizes.slice(drop);
+    total = sizes.reduce((a, b) => a + b, 0);
+    evicted += drop;
+  }
+  return { kept, evicted };
+}
+
+/**
+ * Persist the currently displayed window into the full client transcript.
+ *
+ * Read-modify-write: `window` is only the loaded working set (newest ~50),
+ * so it is UNIONED with the cached transcript by id instead of replacing it —
+ * a blind replace would amputate everything the user has not scrolled to on
+ * every flush. Rows without an id (optimistic / live-flushed) are skipped;
+ * they enter the cache once the authoritative row lands. An empty window never
+ * deletes (selection switches and empty sessions flush nothing); deletion is
+ * explicit via drop()/dropAll().
+ *
+ * Returns this write's eviction count (`dropped`) for the cap banner.
+ */
+export async function writeTranscript(
+  user: string,
+  instanceId: string,
+  alias: string,
+  window: MessageRecordDto[],
+  incarnation = "",
+): Promise<{ stored: number; dropped: number }> {
+  try {
+    const incoming = window
+      .filter((r) => typeof r.id === "number")
+      .map(toCachedRow)
+      .map(stripOversizedPreviews);
+    if (incoming.length === 0) return { stored: 0, dropped: 0 };
+    const db = await openDb();
+    const key = keyOf(user, instanceId, alias);
+    const prev = await asPromise<TailRecord | undefined>(
+      db.transaction(STORE, "readonly").objectStore(STORE).get(key) as IDBRequest<TailRecord | undefined>,
+    );
+    // Incarnation mismatch (same-alias recreation) must not merge the
+    // predecessor's transcript with the new session's rows — start over.
+    const mismatch = prev !== undefined
+      && incarnationMismatch(typeof prev.incarnation === "string" ? prev.incarnation : "", incarnation);
+    const base = mismatch ? [] : fullOf(prev);
+    const merged = unionById(base, incoming);
+    const { kept, evicted } = trimTranscript(merged);
+    const now = Date.now();
+    // Persisted weight: sum of per-row estimates, re-checked on the KEPT
+    // tail (not the pre-trim window) so lruEntries accounting matches.
+    const bytes = kept.reduce((sum, r) => sum + estimateRowBytes(r), 0);
+    const record: TailRecord = {
+      user,
+      instanceId,
+      alias,
+      rows: kept.slice(-TAIL_ROWS),
+      lastAccess: now,
+      bytes,
+      full: kept,
+      droppedTotal: (mismatch ? 0 : (prev?.droppedTotal ?? 0)) + evicted,
+      incarnation: incarnation !== "" ? incarnation : (prev?.incarnation ?? ""),
+    };
+    await putAndEvict(db, record, now);
+    return { stored: kept.length, dropped: evicted };
+  } catch (err) {
+    console.debug("[relay-web] tail-cache writeTranscript failed", err);
+    return { stored: 0, dropped: 0 };
+  }
+}
+
+/** Validate + resolve a record to its transcript, or null on miss/expiry/corruption. */
+async function loadTranscript(
+  db: IDBDatabase,
+  key: [string, string, string],
+  incarnation: string,
+): Promise<{ record: TailRecord; full: MessageRecordDto[] } | null> {
+  const record = await asPromise<TailRecord | undefined>(
+    db.transaction(STORE, "readonly").objectStore(STORE).get(key) as IDBRequest<TailRecord | undefined>,
+  );
+  const now = Date.now();
+  const full = fullOf(record);
+  const valid = record !== undefined
+    && now - record.lastAccess <= TTL_MS
+    && !incarnationMismatch(typeof record.incarnation === "string" ? record.incarnation : "", incarnation)
+    && full.length > 0
+    && !full.some((r) => typeof r !== "object" || r === null);
+  if (!valid) {
+    if (record) {
+      try {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).delete(key);
+        await txDone(tx);
+      } catch { /* best-effort cleanup */ }
+    }
+    return null;
+  }
+  try {
+    // Same read-modify-write touch as read(): re-read inside the write tx so a
+    // concurrent writeTranscript is never rolled back to the snapshot above.
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    const fresh = await asPromise<TailRecord | undefined>(
+      store.get(key) as IDBRequest<TailRecord | undefined>,
+    );
+    if (fresh) store.put({ ...fresh, lastAccess: now });
+    await txDone(tx);
+  } catch { /* touch is best-effort */ }
+  return { record, full };
+}
+
+export async function readTranscript(
+  user: string,
+  instanceId: string,
+  alias: string,
+  incarnation = "",
+  limit = TRANSCRIPT_MAX_ROWS,
+): Promise<TranscriptPage | null> {
+  try {
+    const db = await openDb();
+    const loaded = await loadTranscript(db, keyOf(user, instanceId, alias), incarnation);
+    if (!loaded) return null;
+    const { record, full } = loaded;
+    const rows = full.slice(-limit);
+    return {
+      rows,
+      hasMore: full.length > rows.length,
+      total: full.length,
+      droppedTotal: record.droppedTotal ?? 0,
+    };
+  } catch { return null; }
+}
+
+export async function readOlder(
+  user: string,
+  instanceId: string,
+  alias: string,
+  beforeId: number,
+  limit: number,
+  incarnation = "",
+): Promise<TranscriptPage | null> {
+  try {
+    const db = await openDb();
+    const loaded = await loadTranscript(db, keyOf(user, instanceId, alias), incarnation);
+    if (!loaded) return null;
+    const { record, full } = loaded;
+    const older = full.filter((r) => typeof r.id === "number" && (r.id as number) < beforeId);
+    const rows = older.slice(-limit);
+    return {
+      rows,
+      hasMore: older.length > rows.length,
+      total: full.length,
+      droppedTotal: record.droppedTotal ?? 0,
+    };
+  } catch { return null; }
+}
+
+export async function readRow(
+  user: string,
+  instanceId: string,
+  alias: string,
+  id: number,
+  incarnation = "",
+): Promise<MessageRecordDto | null> {
+  try {
+    const db = await openDb();
+    const loaded = await loadTranscript(db, keyOf(user, instanceId, alias), incarnation);
+    return loaded?.full.find((r) => r.id === id) ?? null;
+  } catch { return null; }
 }
 
 /** Purge one session's cache — the remove hook (sleeping sessions KEEP their

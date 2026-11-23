@@ -179,6 +179,8 @@ export default {
     retentionTitle: "History retention",
     retentionBody: "Keeps the newest {max} messages per session, for up to {days} days. Configured server-side.",
     retentionShort: "{max} messages · {days} days",
+    retentionClientShort: "On this device · newest {max}",
+    retentionClientBody: "History is kept on this device only (newest {max} messages per session, {bytes}). The hub keeps no transcript.",
     relayTitle: "Relay",
     relayVersion: "Relay v{version}",
     relayUpdateAvailable: "Update available: v{latest} — run `xacpx-relay update`",
@@ -201,6 +203,7 @@ export default {
   chat: {
     emptyStateTitle: "Continue where you left off",
     loadOlder: "Load earlier messages",
+    historyCappedNotice: "Local history reached its limit — keeping the newest {kept} (trimmed {dropped}).",
     resizeComposer: "Drag to resize input height",
     browseFiles: "Browse files",
     viewChanges: "View changes",

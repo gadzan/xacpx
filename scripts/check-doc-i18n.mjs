@@ -36,6 +36,7 @@ export const ZH_EXEMPT = [
   "docs/feishu-cardactions-deployment.md",
   "docs/peer-delegation.md",
   "docs/relay-deployment.md",
+  "docs/relay-history-retirement.md",
   "docs/relay-interaction-deployment.md",
   "docs/relay-module.md",
   "docs/relay-release.md",

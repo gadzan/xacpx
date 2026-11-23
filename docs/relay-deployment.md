@@ -55,7 +55,7 @@ xacpx-relay add token --db /var/lib/xacpx-relay/relay.db
 xacpx-relay start \
   --db /var/lib/xacpx-relay/relay.db \
   --host 0.0.0.0 --http-port 8787 \
-  --history-retention-days 30 --request-timeout-ms 120000 --trust-proxy
+  --request-timeout-ms 120000 --trust-proxy
 ```
 
 ## 关键事实
@@ -65,7 +65,7 @@ xacpx-relay start \
 - **`xacpx-relay update`**：自更新 hub 包（`npm i -g @ganglion/xacpx-relay@latest`；`PACKAGE_MANAGER=bun` 时改用 `bun add -g`）。`--check` 只比对当前与 npm 最新版本、打印结果而不安装。当前运行版本与「有可用更新」提示也会显示在看板设置页（见 [relay-module.md](relay-module.md) 的 `GET /api/version`）。更新后需自行重启 hub 进程（systemd/pm2/Docker 重启即可）。
 - **持久化**：全部在单个 SQLite 文件（`--db`）。默认 `~/.xacpx-relay/relay.db`（固定绝对路径，父目录自动创建）。备份即停机/静默期 `cp` 该文件。
 - **凭证**：访问令牌（access token）一令两用——既用于 Web 登录，也用于连接器首连（无需单独铸造配对令牌）。首连后实例换取长期凭证，写入 `<xacpx-home>/relay/credential.json`（0600），不进 `config.json`。
-- **自动 GC**：每小时清理超 `--history-retention-days`（默认 30，另每会话硬上限 2000 条）的缓存消息，以及过期的 web 会话和配对令牌。
+- **自动 GC**：每小时清理过期的 web 会话和配对令牌（消息历史已是客户端留存：本设备每会话最近 1000 条/8MB，由看板 IndexedDB 裁剪）。
 - **RPC 超时**：`--request-timeout-ms`（默认 120000）限定网关 RPC 请求超时；agent 冷启动慢 / 长 prompt 时可调大。
 - **多租户**：账号只见自己的实例/会话；服务端盖戳身份；登录令牌和凭证一律哈希存储。
 - **看板可安装为 PWA**：看板是 PWA，可「添加到主屏 / 安装为独立窗口」并预缓存应用壳加速二次加载（实时数据仍走 `/ws`，不做离线数据）。**前提是安全上下文**：必须经反代终结 TLS 用 `https://` 访问；纯 `http://`（局域网 IP 直连）下浏览器**不会注册 Service Worker、也不显示安装入口**。模块细节见 [relay-web-module.md](relay-web-module.md) 的「PWA」段。

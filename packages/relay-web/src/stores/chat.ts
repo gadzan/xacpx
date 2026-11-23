@@ -267,8 +267,33 @@ export const useChatStore = defineStore("chat", () => {
   }
   // Cursor pagination for "load older" on scroll-up. `hasMoreOlder` = older rows exist
   // beyond what's loaded; `loadingOlder` guards against overlapping fetches.
-  // First screen is the newest 10 rows (~5 exchanges). Compact view omits bulky
+  // First screen is the newest 10 hub rows (~5 exchanges). Compact view omits bulky
   // tool details; expand hydrates the full row via ensureFullMessage().
+  // History-retirement: the hub page is only this boot's rows — the working
+  // set is the UNION of the hub page and the client IndexedDB transcript.
+  // TRANSCRIPT_SHOW/PAGE bound how much of that union we display / page in.
+  const TRANSCRIPT_SHOW = 50;
+  const TRANSCRIPT_PAGE = 50;
+  /** Merge two oldest-first row lists by id (incoming wins); result oldest-first.
+   *  Rows WITHOUT a numeric id cannot be deduped by key, so they are never dropped:
+   *  an older hub may omit ids, and silently deleting a row the server did return
+   *  is worse than a possible repeat. They keep arrival order at the end (the
+   *  callers slice the tail, so that reads as "newest"). */
+  function unionRows(a: MessageRecordDto[], b: MessageRecordDto[]): MessageRecordDto[] {
+    const byId = new Map<number, MessageRecordDto>();
+    for (const r of a) if (typeof r.id === "number") byId.set(r.id, r);
+    for (const r of b) if (typeof r.id === "number") byId.set(r.id, r);
+    const keyed = [...byId.values()].sort((x, y) => (x.id as number) - (y.id as number));
+    const unkeyed = [...a, ...b].filter((r) => typeof r.id !== "number");
+    return unkeyed.length === 0 ? keyed : [...keyed, ...unkeyed];
+  }
+  // Upper-bound notice: cumulative rows evicted by the client transcript caps
+  // (per-session 1000 rows / 8 MB, global 64 MB, 30-day TTL). Non-null → the
+  // MessageList banner tells the user older history was trimmed locally.
+  const historyCapped = ref<{ kept: number; dropped: number } | null>(null);
+  const setHistoryCapped = (total: number, droppedTotal: number): void => {
+    historyCapped.value = droppedTotal > 0 ? { kept: total, dropped: droppedTotal } : null;
+  };
   const HISTORY_PAGE = 10;
   const historyPath = (id: string, alias: string, before?: number): string => {
     const qs = before === undefined
@@ -407,7 +432,24 @@ export const useChatStore = defineStore("chat", () => {
   const cacheWrite = createDebouncedFlush(() => {
     const user = useAuthStore().account?.username;
     if (!user || !instanceId.value || !sessionAlias.value) return;
-    void tailCache.write(user, instanceId.value, sessionAlias.value, messages.value, incarnationOf(instanceId.value, sessionAlias.value));
+    // An empty window must never wipe the cached transcript (selection
+    // switches and empty sessions flush nothing; deletion is explicit).
+    if (messages.value.length === 0) return;
+    // While a live turn streams for this session the transcript mutates every
+    // chunk; the turn-finished convergence schedules another write — persist
+    // the settled transcript instead of the hot path.
+    if (liveTurns.value[bufKey(instanceId.value, sessionAlias.value)]) return;
+    const id = instanceId.value;
+    const alias = sessionAlias.value;
+    const snapshot = messages.value;
+    void tailCache.writeTranscript(user, id, alias, snapshot, incarnationOf(id, alias)).then((r) => {
+      // Caps evicted rows on this write — refresh the banner totals.
+      if (r.dropped > 0 && id === instanceId.value && alias === sessionAlias.value) {
+        void tailCache.readTranscript(user, id, alias, incarnationOf(id, alias), 1).then((t) => {
+          if (t && id === instanceId.value && alias === sessionAlias.value) setHistoryCapped(t.total, t.droppedTotal);
+        });
+      }
+    });
   }, 500);
   // Best-effort: an IDB write started during unload may not commit (unlike the
   // old synchronous localStorage flush); loadHistory converges on the next visit.
@@ -542,6 +584,7 @@ export const useChatStore = defineStore("chat", () => {
     hasMoreOlder.value = false;
     loadingOlder.value = false;
     loadingHistory.value = false;
+    historyCapped.value = null;
     // Stale-while-revalidate: seed the transcript from the cached tail so the first
     // screen renders near-instantly (an IndexedDB read is ms-scale; loadHistory
     // awaits pendingSeed before its guards/fetch so a hit still suppresses the
@@ -566,14 +609,18 @@ export const useChatStore = defineStore("chat", () => {
    *  while the read was in flight — those must never be clobbered by a seed. */
   async function seedFromCache(user: string, id: string, alias: string): Promise<void> {
     const revision = transcriptRevision;
-    const cached = await tailCache.read(user, id, alias, incarnationOf(id, alias));
-    if (!cached || cached.length === 0) return;
+    // Seed the newest working set from the client transcript (the hub only
+    // holds this boot's rows — without the cache a refresh would blank history).
+    const page = await tailCache.readTranscript(user, id, alias, incarnationOf(id, alias), TRANSCRIPT_SHOW);
+    if (!page || page.rows.length === 0) return;
     if (id !== instanceId.value || alias !== sessionAlias.value) return;
     if (messages.value.length > 0 || revision !== transcriptRevision) return;
-    messages.value = placeTurnsInSlots(cached.map(rawStructured));
+    messages.value = placeTurnsInSlots(page.rows.map(rawStructured));
     touchTranscript();
     seededFromCache = true;
     seedRowsPresent = true;
+    hasMoreOlder.value = page.hasMore;
+    setHistoryCapped(page.total, page.droppedTotal);
     if (instanceId.value && sessionAlias.value) syncLiveSlot(bufKey(instanceId.value, sessionAlias.value));
   }
 
@@ -595,6 +642,7 @@ export const useChatStore = defineStore("chat", () => {
     hasMoreOlder.value = false;
     loadingOlder.value = false;
     loadingHistory.value = false;
+    historyCapped.value = null;
   }
 
   async function loadHistory(): Promise<void> {
@@ -652,15 +700,25 @@ export const useChatStore = defineStore("chat", () => {
       // would leave the pane with only the live turn. Retry against the same
       // selection so persisted history and the current turn converge.
       if (revision !== transcriptRevision) return loadHistory();
-      messages.value = placeTurnsInSlots(keepRicherStructured(rows, messages.value).map(rawStructured));
+      // Union the hub page (this boot's rows) with the client transcript: hub
+      // ids are boot-epoch based, so no cross-boot id collision; the working
+      // set is the newest TRANSCRIPT_SHOW of the union.
+      const cacheUser = useAuthStore().account?.username;
+      const cached = cacheUser
+        ? await tailCache.readTranscript(cacheUser, id, alias, incarnationOf(id, alias), TRANSCRIPT_SHOW + 1)
+        : null;
+      const union = unionRows(cached?.rows ?? [], rows);
+      const shown = union.slice(-TRANSCRIPT_SHOW);
+      messages.value = placeTurnsInSlots(keepRicherStructured(shown, messages.value).map(rawStructured));
       // Server-authoritative pending snapshot wins over the send()-time fallback
       // chip (local clock/preview); a live queue-updated later replaces again.
       queues.value[historyKey] = pending.items;
       touchTranscript();
       seededFromCache = false;
       seedRowsPresent = false;
-      hasMoreOlder.value = hasMore ?? false;
-      // Authoritative rows landed — refresh this session's cached tail (debounced).
+      hasMoreOlder.value = (hasMore ?? false) || (cached?.hasMore ?? false) || union.length > shown.length;
+      if (cached) setHistoryCapped(cached.total, cached.droppedTotal);
+      // Authoritative rows landed — refresh this session's client transcript (debounced).
       cacheWrite.schedule();
       syncLiveSlot(historyKey);
     } finally {
@@ -672,7 +730,9 @@ export const useChatStore = defineStore("chat", () => {
 
   /** Fetch the page of history immediately older than the oldest row we hold and PREPEND
    *  it (cursor = oldest persisted id). The caller (MessageList) preserves scroll position
-   *  across the prepend. No-op while another page is in flight or when none remain. */
+   *  across the prepend. No-op while another page is in flight or when none remain.
+   *  Pages the union of the hub (this boot) and the client transcript, so scrolling
+   *  past the boot boundary keeps working after a hub restart. */
   async function loadOlder(): Promise<void> {
     if (!instanceId.value || !sessionAlias.value || loadingOlder.value || !hasMoreOlder.value) return;
     const oldestId = messages.value.find((m) => typeof m.id === "number")?.id;
@@ -681,19 +741,28 @@ export const useChatStore = defineStore("chat", () => {
     const alias = sessionAlias.value;
     loadingOlder.value = true;
     try {
-      const { messages: older, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
-        historyPath(id, alias, oldestId),
-      );
+      const cacheUser = useAuthStore().account?.username;
+      const [hubPage, cachedOlder] = await Promise.all([
+        api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
+          historyPath(id, alias, oldestId),
+        ),
+        cacheUser
+          ? tailCache.readOlder(cacheUser, id, alias, oldestId, TRANSCRIPT_PAGE, incarnationOf(id, alias))
+          : null,
+      ]);
       // The session may have changed while awaiting; only apply if still selected.
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
-      if (older.length > 0) {
-        messages.value = placeTurnsInSlots([...older.map(rawStructured), ...messages.value]);
+      const have = new Set(messages.value.map((m) => m.id));
+      const merged = unionRows(cachedOlder?.rows ?? [], hubPage.messages).filter((m) => !have.has(m.id));
+      if (merged.length > 0) {
+        messages.value = placeTurnsInSlots([...merged.map(rawStructured), ...messages.value]);
         touchTranscript();
         const live = liveTurns.value[bufKey(id, alias)];
-        if (live) live.slotAfterIndex = (live.slotAfterIndex ?? 0) + older.length;
+        if (live) live.slotAfterIndex = (live.slotAfterIndex ?? 0) + merged.length;
         syncLiveSlot(bufKey(id, alias));
       }
-      hasMoreOlder.value = hasMore ?? false;
+      hasMoreOlder.value = (hubPage.hasMore ?? false) || (cachedOlder?.hasMore ?? false);
+      if (cachedOlder) setHistoryCapped(cachedOlder.total, cachedOlder.droppedTotal);
     } catch {
       // Best-effort: leave hasMoreOlder set so a later scroll retries.
     } finally {
@@ -1353,9 +1422,26 @@ export const useChatStore = defineStore("chat", () => {
     const id = instanceId.value;
     const alias = sessionAlias.value;
     const work = (async () => {
-      const { message } = await api.get<{ message: MessageRecordDto }>(
-        `/api/instances/${id}/sessions/${alias}/messages/${messageId}`,
-      );
+      // Client transcript first: the hub only holds this boot's rows, so an
+      // older row 404s there but may hydrate fine locally.
+      const cacheUser = useAuthStore().account?.username;
+      const cachedRow = cacheUser
+        ? await tailCache.readRow(cacheUser, id, alias, messageId, incarnationOf(id, alias))
+        : null;
+      let message: MessageRecordDto;
+      if (cachedRow?.structured && cachedRow.structured.compact !== true) {
+        message = cachedRow;
+      } else {
+        try {
+          ({ message } = await api.get<{ message: MessageRecordDto }>(
+            `/api/instances/${id}/sessions/${alias}/messages/${messageId}`,
+          ));
+        } catch {
+          // Best-effort (e.g. pre-restart row on a rebooted hub): leave the
+          // compact card rather than surfacing a fetch error.
+          return;
+        }
+      }
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
       const idx = messages.value.findIndex((m) => m.id === messageId);
       if (idx < 0) return;
@@ -1375,5 +1461,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem, purgeTailCache, reconcileTailCache };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, historyCapped, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem, purgeTailCache, reconcileTailCache };
 });

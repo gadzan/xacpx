@@ -23,7 +23,7 @@ import {
 } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../lib/turn-layout";
 import { expandedTraces } from "../lib/trace-expansion";
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void>; forkNode?: (message: ChatMessage) => void }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void>; forkNode?: (message: ChatMessage) => void; historyCapped?: { kept: number; dropped: number } | null }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
 // While a turn is in progress the live row body renders the ThinkingDots bubble
@@ -628,6 +628,13 @@ watch(
         </template>
       </div>
       <div v-else class="mx-auto max-w-3xl space-y-5" :class="{ 'enter-hold': enterPhase === 'hold' }">
+        <!-- Client-retention cap notice: the local IndexedDB transcript hit its
+             per-session budget and trimmed the oldest rows (hub keeps no history
+             anymore). Newest-first working set below is unaffected. -->
+        <div v-if="historyCapped" data-test="history-capped"
+             class="flex justify-center px-2 py-1 text-center text-xs text-fg-muted">
+          <span>{{ $t("chat.historyCappedNotice", { kept: historyCapped.kept, dropped: historyCapped.dropped }) }}</span>
+        </div>
         <!-- Older-history affordance: a spinner while a page loads, else a hint that more
              exists. Prepending older rows keeps the scroll position pinned (see watcher). -->
         <div v-if="loadingOlder" data-test="loading-older" class="flex justify-center py-1 text-xs text-fg-muted">

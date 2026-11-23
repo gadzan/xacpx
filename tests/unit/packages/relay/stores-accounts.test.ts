@@ -329,14 +329,11 @@ test("deleteAccountCascade removes all related rows", async () => {
     [hashToken(pairingRaw), account.id, "2026-12-31T00:00:00.000Z"]
   );
 
-  // Seed instance + message
+  // Seed instance (+ slot anchor). Hub message rows are process-local now
+  // (MemoryMessageStore) — there is no messages table for the cascade to touch.
   db.run(
     "INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?, ?, ?, ?, ?)",
     ["inst-1", account.id, "box", "fakehash", "2026-06-13T10:00:00.000Z"]
-  );
-  db.run(
-    "INSERT INTO messages (instance_id, session_alias, direction, text, created_at) VALUES (?, ?, ?, ?, ?)",
-    ["inst-1", "alias1", "in", "hello", "2026-06-13T10:00:00.000Z"]
   );
   db.run(
     "INSERT INTO turn_slot_anchors (instance_id, session_alias, recovery_id, slot_after_id) VALUES (?, ?, ?, ?)",
@@ -350,7 +347,6 @@ test("deleteAccountCascade removes all related rows", async () => {
   expect(store.findAccountByLoginToken(token)).toBeNull();
   expect(store.getSessionAccount(sessionToken)).toBeNull();
   expect(db.get("SELECT 1 FROM instances WHERE account_id = ?", [account.id])).toBeUndefined();
-  expect(db.get("SELECT 1 FROM messages WHERE instance_id = ?", ["inst-1"])).toBeUndefined();
   expect(db.get("SELECT 1 FROM turn_slot_anchors WHERE instance_id = ?", ["inst-1"])).toBeUndefined();
   expect(db.get("SELECT 1 FROM pairing_tokens WHERE account_id = ?", [account.id])).toBeUndefined();
   expect(db.get("SELECT 1 FROM login_tokens WHERE account_id = ?", [account.id])).toBeUndefined();

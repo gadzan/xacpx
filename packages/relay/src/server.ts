@@ -14,10 +14,11 @@ import {
   validControlEvent, validInstanceStateSync,
 } from "@ganglion/xacpx-relay-protocol";
 
-import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
+import { createSqlDriver, initSchema, retireMessageTables, type SqlDriver } from "./db.js";
 import { AccountStore } from "./stores/accounts.js";
 import { InstanceStore } from "./stores/instances.js";
-import { MessageStore } from "./stores/messages.js";
+import type { MessageHistoryStore } from "./stores/messages.js";
+import { MEMORY_GLOBAL_MAX_ROWS, MemoryMessageStore } from "./stores/messages-memory.js";
 import { PendingCompletionRouteStore } from "./stores/pending-completion-routes.js";
 import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { TurnSlotAnchorStore, canonicalRecoveryId } from "./stores/turn-slot-anchors.js";
@@ -34,7 +35,6 @@ import { startMaintenanceLoop } from "./maintenance.js";
 import { createNoopRelayLogger, type RelayLogger } from "./logging.js";
 import { InteractionRegistry } from "./interaction-registry.js";
 
-const MAX_MESSAGES_PER_SESSION = 2000;
 const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
 // Per-string bound on tool-step / seeded-history content entering the turn buffer. Full
 // file diffs or command output can reach megabytes; everything buffered is broadcast,
@@ -116,7 +116,7 @@ export interface RelayRuntime {
   db: SqlDriver;
   accounts: AccountStore;
   instances: InstanceStore;
-  messages: MessageStore;
+  messages: MessageHistoryStore;
   recoveryReceipts: RecoveryReceiptStore;
   slotAnchors: TurnSlotAnchorStore;
   pushSubscriptions: PushSubscriptionStore;
@@ -151,9 +151,22 @@ export interface RelayRuntime {
 
 export interface CreateRuntimeOptions {
   webRoot?: string;
+  /**
+   * @deprecated Retired with server-side history: accepted so old callers
+   * keep compiling, but never read — the hub no longer prunes by age.
+   */
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
   trustProxy?: boolean;
+  /**
+   * True when the runtime backs a SERVING hub (`startRelayServer`). Only then
+   * may the constructor perform destructive startup cleanup (dropping the
+   * legacy `messages` table, clearing stale slot anchors). Management commands
+   * (`ls`, `add token`, `rm token`, …) open the same `--db` against a possibly
+   * RUNNING hub and must stay side-effect free — clearing anchors out from
+   * under an in-flight turn would misorder its queued prompts and peer cards.
+   */
+  serving?: boolean;
   /** Web push VAPID config; omitted = resolve from env, null = force-disable. */
   vapid?: VapidConfig | null;
   logger?: RelayLogger;
@@ -165,10 +178,35 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const db = await createSqlDriver(dbPath);
   initSchema(db);
   const logger = options.logger ?? createNoopRelayLogger();
+  // History retirement: message CONTENT must never touch SQLite again. Only a
+  // SERVING hub drops a legacy `messages` table (and its rows) left by an
+  // older hub — management commands share this constructor against a possibly
+  // running hub and must not destroy anything. IRREVERSIBLE without a
+  // pre-upgrade `cp relay.db` backup — the upgrade notes require one, and the
+  // drop is logged loudly here for the same reason.
+  if (options.serving) {
+    retireMessageTables(db, (dropped) => {
+      if (dropped > 0) {
+        logger.warn("relay.history.retired", `dropped legacy messages table and VACUUMed (${dropped} rows, unrecoverable without a pre-upgrade backup); transcripts are client-side now`, {});
+      }
+    });
+  }
   const nowMs = () => (options.now ? options.now().getTime() : Date.now());
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const messages = new MessageStore(db);
+  const messages: MessageHistoryStore = new MemoryMessageStore(options.now);
+  const slotAnchors = new TurnSlotAnchorStore(db);
+  // Slot anchors reference hub transcript ids, which restart every boot —
+  // anything left by a previous boot is stale by construction. Recovery
+  // receipts are boot-independent dedup keys and are kept. The clear runs only
+  // for a SERVING hub: management commands must not pull anchors out from
+  // under a running hub's in-flight turns.
+  if (options.serving) {
+    const clearedAnchors = slotAnchors.clearAll();
+    if (clearedAnchors > 0) {
+      logger.warn("relay.slots.retired", `dropped ${clearedAnchors} stale slot anchor(s) from a previous boot`, {});
+    }
+  }
   let gatewayRef: InstanceGateway | null = null;
   // Desktop streams bind to the requesting control socket's viewerId for their
   // whole lifetime (pending prepare AND the paired binary session): a
@@ -350,10 +388,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     }
   };
   // Cross-restart dedup for recoveryId-carrying finishedOffline entries (see the
-  // store's doc comment). Written in the SAME transaction as the message rows it
-  // vouches for, so a receipt can never outlive its rows or vice versa.
+  // store's doc comment). Receipts are SQLite (boot-independent); message rows
+  // are process-local memory, so a receipt may outlive its rows after a hub
+  // restart — the sync path treats "receipt exists, no rows" as already
+  // delivered and drops the redelivery (the daemon is the truth source).
   const recoveryReceipts = new RecoveryReceiptStore(db);
-  const slotAnchors = new TurnSlotAnchorStore(db);
   // Latest context-usage meter per (instance, session). Unlike turnBuffers this is
   // session-scoped — it survives turn-finished (replace-latest) so a (re)connecting web
   // client can restore the usage bar after a refresh (see GET /api/active-turns). Cleared
@@ -625,7 +664,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       const appendAssistantOut = (
         sessionAlias: string,
         text: string,
-        structured: Parameters<MessageStore["append"]>[4],
+        structured: Parameters<MessageHistoryStore["append"]>[4],
         slot: OutSlot,
       ): void => {
         messages.append(
@@ -642,7 +681,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           slot.startedAfterSeq,
         );
       };
-      // Wraps the whole handler (not just messages.append): a throwing DB write must be
+      // Wraps the whole handler (not just messages.append): a throwing store write must be
       // attributed to this instance's event persistence, not surface as the gateway's
       // generic relay.instance.message_failed (see instance-gateway's outer message guard).
       try {
@@ -1250,8 +1289,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   gatewayRef = gateway;
   const app = createApp({
     accounts, instances, messages, gateway, webRoot: options.webRoot,
-    historyRetentionDays: options.historyRetentionDays ?? 30,
-    maxMessagesPerSession: MAX_MESSAGES_PER_SESSION,
+    // NOTE: no historyRetentionDays / maxMessagesPerSession — both are
+    // @deprecated on AppDeps and unread. Kept out so a future reader does
+    // not mistake them for live config.
     activeTurns: listActiveTurns,
     sessionUsage: listSessionUsage,
     sessionCommands: listSessionCommands,
@@ -1332,6 +1372,11 @@ export interface StartRelayOptions {
   wsPort?: number;
   host?: string;
   webRoot?: string;
+  /**
+   * @deprecated Retired with server-side history: accepted so old callers
+   * keep compiling, but never read — the hub no longer prunes by age.
+   * Not forwarded to the runtime.
+   */
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
   trustProxy?: boolean;
@@ -1351,7 +1396,7 @@ export interface RunningRelay {
 export async function startRelayServer(options: StartRelayOptions): Promise<RunningRelay> {
   const runtime = await createRelayRuntime(options.dbPath, {
     webRoot: options.webRoot,
-    historyRetentionDays: options.historyRetentionDays,
+    serving: true,
     requestTimeoutMs: options.requestTimeoutMs,
     vapid: options.vapid,
     trustProxy: options.trustProxy,
@@ -1359,7 +1404,10 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
   });
   const host = options.host ?? "0.0.0.0";
 
-  const retention = { historyRetentionDays: options.historyRetentionDays ?? 30, maxPerSession: MAX_MESSAGES_PER_SESSION };
+  // Memory store self-caps on write (per-session ring + global budget);
+  // the hourly pass only enforces the global count cap — no age prune
+  // (an age of 0 would wipe everything older than this instant).
+  const retention = { maxPerSession: MEMORY_GLOBAL_MAX_ROWS };
   const stopMaintenance = startMaintenanceLoop(
     { accounts: runtime.accounts, instances: runtime.instances, messages: runtime.messages, recoveryReceipts: runtime.recoveryReceipts },
     retention,

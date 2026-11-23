@@ -2,7 +2,7 @@ import { RECOVERY_RETENTION_MS } from "@ganglion/xacpx-relay-protocol";
 
 import type { AccountStore } from "./stores/accounts.js";
 import type { InstanceStore } from "./stores/instances.js";
-import type { MessageStore } from "./stores/messages.js";
+import type { MessageHistoryStore } from "./stores/messages.js";
 import type { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 
 /** Clock-skew grace on top of the shared retention horizon: the connector evicts a
@@ -15,13 +15,18 @@ export const RECOVERY_RECEIPT_TTL_MS = RECOVERY_RETENTION_MS + 24 * 60 * 60 * 10
 export interface MaintenanceStores {
   accounts: AccountStore;
   instances: InstanceStore;
-  messages: MessageStore;
+  messages: MessageHistoryStore;
   recoveryReceipts: RecoveryReceiptStore;
 }
 
 export interface MaintenanceOptions {
-  historyRetentionDays: number;
-  maxPerSession: number;
+  /**
+   * @deprecated Retired with server-side history: omit it. When present it
+   * still drives an age prune, but production no longer passes it — the
+   * memory store self-caps on write.
+   */
+  historyRetentionDays?: number;
+  maxPerSession?: number;
   /** TTL for recovery_receipts rows; defaults to RECOVERY_RECEIPT_TTL_MS. */
   recoveryReceiptTtlMs?: number;
   now?: () => Date;
@@ -35,12 +40,17 @@ export interface MaintenanceSummary {
   receiptsDeleted: number;
 }
 
-/** Runs one maintenance pass: prune old/excess messages, GC expired sessions/pairing tokens/invite codes. */
+/** Runs one maintenance pass: GC expired sessions/pairing tokens/invite codes.
+ *  Message pruning is a bounded in-memory trim now (the memory store self-caps
+ *  on write); the call is kept so one pass still enforces every store's budget. */
 export function runMaintenance(stores: MaintenanceStores, opts: MaintenanceOptions): MaintenanceSummary {
   const now = (opts.now ?? (() => new Date()))();
+  // Age prune only when a retention window is explicitly given (callers may
+  // omit it — the memory store self-caps on write). Passing 0 here would
+  // wipe everything older than this instant, so it must never mean "no age limit".
   const messagesDeleted = stores.messages.prune({
-    maxAgeMs: opts.historyRetentionDays * 24 * 60 * 60 * 1000,
-    maxPerSession: opts.maxPerSession,
+    ...(opts.historyRetentionDays !== undefined ? { maxAgeMs: opts.historyRetentionDays * 24 * 60 * 60 * 1000 } : {}),
+    ...(opts.maxPerSession !== undefined ? { maxPerSession: opts.maxPerSession } : {}),
   });
   const sessionsDeleted = stores.accounts.pruneExpired(now);
   const pairingTokensDeleted = stores.instances.prunePairingTokens(now);

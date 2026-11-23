@@ -158,25 +158,14 @@ export function initSchema(db: SqlDriver): void {
       last_seen_at TEXT,
       created_at TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      instance_id TEXT NOT NULL REFERENCES instances(id),
-      session_alias TEXT NOT NULL,
-      direction TEXT NOT NULL CHECK (direction IN ('in','out')),
-      text TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      structured TEXT,
-      attachments TEXT,
-      queue_item_id TEXT,
-      queue_fallback INTEGER NOT NULL DEFAULT 0,
-      origin_queue_item_id TEXT,
-      prompt_request_id TEXT,
-      node_id TEXT,
-      started_at INTEGER,
-      slot_after_id INTEGER,
-      started_after_seq INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
+    -- NOTE (history-retirement, 2026-11): the hub no longer persists message
+    -- CONTENT anywhere on disk. The legacy messages table is NOT created for
+    -- new DBs, and retireMessageTables() below drops it (with its rows) from
+    -- DBs written by older hubs on startup. Transcripts live process-locally
+    -- (MemoryMessageStore) and durably only on the client (relay-web IndexedDB)
+    -- plus the daemon's own transcript. Recovery receipts / slot anchors stay:
+    -- they carry no message text (ids only) and still dedup cross-restart
+    -- redelivery.
     CREATE TABLE IF NOT EXISTS recovery_receipts (
       instance_id TEXT NOT NULL,
       recovery_id TEXT NOT NULL,
@@ -218,47 +207,42 @@ export function initSchema(db: SqlDriver): void {
   `);
 
   // Idempotent column add for pre-existing local dev DBs (create-only schema otherwise).
-  // NOTE: the origin_queue_item_id INDEX must be created AFTER the ALTER below — a
-  // pre-existing DB lacks the column, so creating the index up front would fail with
-  // "no such column" before the migration ever runs.
-  const messageCols = db.all<{ name: string }>("PRAGMA table_info(messages)");
-  if (!messageCols.some((c) => c.name === "attachments")) {
-    db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
-  }
-  if (!messageCols.some((c) => c.name === "queue_item_id")) {
-    db.exec("ALTER TABLE messages ADD COLUMN queue_item_id TEXT");
-  }
   const routeCols = db.all<{ name: string }>("PRAGMA table_info(pending_completion_routes)");
   if (!routeCols.some((c) => c.name === "state")) {
     db.exec("ALTER TABLE pending_completion_routes ADD COLUMN state TEXT NOT NULL DEFAULT 'pending'");
-  }
-  if (!messageCols.some((c) => c.name === "queue_fallback")) {
-    db.exec("ALTER TABLE messages ADD COLUMN queue_fallback INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!messageCols.some((c) => c.name === "origin_queue_item_id")) {
-    db.exec("ALTER TABLE messages ADD COLUMN origin_queue_item_id TEXT");
-  }
-  if (!messageCols.some((c) => c.name === "prompt_request_id")) {
-    db.exec("ALTER TABLE messages ADD COLUMN prompt_request_id TEXT");
-  }
-  if (!messageCols.some((c) => c.name === "node_id")) {
-    db.exec("ALTER TABLE messages ADD COLUMN node_id TEXT");
-  }
-  if (!messageCols.some((c) => c.name === "started_at")) {
-    db.exec("ALTER TABLE messages ADD COLUMN started_at INTEGER");
-  }
-  if (!messageCols.some((c) => c.name === "slot_after_id")) {
-    db.exec("ALTER TABLE messages ADD COLUMN slot_after_id INTEGER");
-  }
-  if (!messageCols.some((c) => c.name === "started_after_seq")) {
-    db.exec("ALTER TABLE messages ADD COLUMN started_after_seq INTEGER");
   }
   const instanceCols = db.all<{ name: string }>("PRAGMA table_info(instances)");
   if (!instanceCols.some((c) => c.name === "capabilities_json")) {
     db.exec("ALTER TABLE instances ADD COLUMN capabilities_json TEXT");
   }
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_messages_origin_queue ON messages (instance_id, session_alias, origin_queue_item_id);
-    CREATE INDEX IF NOT EXISTS idx_messages_prompt_request ON messages (prompt_request_id);
-  `);
+}
+
+/**
+ * History retirement: drop the legacy `messages` table (message CONTENT written
+ * by older hubs) if it exists. No-op for new DBs, which never create it.
+ * Recovery receipts, slot anchors, accounts, instances and push subscriptions
+ * are untouched — they carry no message text. Reports dropped row count via
+ * `onRetired` (0 when the table is absent) so startup can log the cutover.
+ *
+ * IRREVERSIBLE: the dropped rows are unrecoverable unless the operator backed
+ * up relay.db first — the upgrade notes require `cp relay.db relay.db.bak`
+ * before starting the new hub. Follows up with VACUUM so the freed pages are
+ * returned to the OS instead of lingering in the file.
+ *
+ * Kept as DROP (not rename): leaving a `messages_backup` table with full
+ * plaintext transcripts on disk would defeat the retirement goal (no message
+ * content on the hub). The backup belongs outside the DB file, not beside it.
+ */
+export function retireMessageTables(db: SqlDriver, onRetired?: (droppedRows: number) => void): void {
+  const exists = db.get<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+  );
+  if (!exists) {
+    onRetired?.(0);
+    return;
+  }
+  const count = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM messages")?.n ?? 0;
+  db.exec("DROP TABLE IF EXISTS messages");
+  db.exec("VACUUM");
+  onRetired?.(count);
 }
