@@ -34,10 +34,10 @@ it is to CI). Commit or merge first.
 | Step | How |
 |---|---|
 | Which packages changed | `git diff <pkg's own last tag>..HEAD`, classified by the path table in `release-lib.mjs` |
-| Publish order | Static waves: `relay-protocol` first, then `relay` + `channel-relay`, then the independent packages |
+| Publish order | Static waves: `relay-protocol`, then `web`, then `relay` + `channel-relay`, then the independent packages |
 | Next version | The beta/stable policy below |
 | Derived metadata | The edit table below, printed by `plan` and applied by `apply` |
-| Protocol ranges | Rewritten in `relay`, `relay-web`, `channel-relay` whenever protocol ships |
+| Protocol ranges | Rewritten in `relay`, `web` (devDependency), `channel-relay` whenever protocol ships |
 | `minXacpxVersion` + peer floors | Rewritten in the three compatible plugins whenever core ships |
 | rmux-bridge versions | `scripts/sync-rmux-bridge-versions.mjs` when channel-relay ships |
 | Lockfiles | `npm install --package-lock-only`, then `bun install`, then reconcile both |
@@ -48,9 +48,9 @@ is rewritten even when that consumer is not released.** npm semver excludes
 prereleases unless the range names one, so `^0.4.0` does not match a workspace
 `0.4.2-beta.0` — npm then quietly resolves a stale registry copy into
 `packages/<consumer>/node_modules/`. Local builds stay green while `npm ci` or
-`build:packages` fails, or ships against the wrong protocol. `relay-web` is the
-easy one to miss: it is private, but its `vue-tsc` typecheck still needs the
-current protocol.
+`build:packages` fails, or ships against the wrong protocol. `web` is the
+easy one to miss: its published package has no runtime dependencies, but the
+range still lives in `devDependencies` and `vue-tsc` needs the current protocol.
 
 ## Version policy
 
@@ -84,8 +84,8 @@ mid-flight, which is exactly the case that deserves a human.
 A package ships when a file it owns changed since its own last tag. Two
 propagations are not obvious:
 
-- **`packages/relay-web/**` → `relay`.** relay-web is private and bundled into
-  relay at build time.
+- **`packages/web/**` → `web`.** The dashboard publishes as `@ganglion/xacpx-web`.
+  A UI-only change no longer releases `relay`; relay depends on the package.
 - **A core release republishes `channel-relay`, `channel-feishu`, and
   `channel-discord` even with no source change.** Those plugins statically
   import runtime named exports from `xacpx/plugin-api`, which ESM resolves
@@ -120,8 +120,9 @@ packages resolve from the registry, or its smoke steps fail with
 `ETARGET No matching version found`.
 
 1. wave 1 — `relay-protocol`
-2. wave 2 — `relay`, `channel-relay`
-3. wave 3 — `core`, `channel-feishu`, `channel-discord`, `channel-yuanbao`
+2. wave 2 — `web`
+3. wave 3 — `relay`, `channel-relay`
+4. wave 4 — `core`, `channel-feishu`, `channel-discord`, `channel-yuanbao`
 
 Tags are pushed one at a time even inside a wave: `relay` and `channel-relay`
 are both heavy ubuntu jobs, and dispatching them together invites
@@ -315,8 +316,9 @@ builds mark the protocol `--external`, so a removed or renamed export surfaces
 when a consumer is compiled rather than when it is bundled; and the root `tsc
 --noEmit` does not cover it, because its `include` lists `src` only. So a
 protocol release additionally *compiles* every consumer it is not publishing
-(13s + 17s + 117s, measured). A consumer that also ships is skipped: its build
-compiles it, and relay's build compiles relay-web, which it bundles.
+(13s + 17s + 117s, measured). A consumer that also ships is skipped: its own
+build compiles it. `web` is compiled with `vue-tsc` even when only the protocol
+ships, because its range lives in `devDependencies`.
 
 Scoping does not weaken what ships. The publish workflow runs the *unscoped*
 `bun run verify:publish` before `npm publish`, so no artifact reaches npm on the

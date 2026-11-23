@@ -135,13 +135,12 @@ test("a protocol release compiles the consumers whose range it rewrites", () => 
   // moves — and a removed export surfaces at compile time, not at bundle time.
   expect(gateScope(["relay-protocol"])?.compiles.map((compile) => compile.id)).toEqual([
     "relay",
-    "relay-web",
+    "web",
     "channel-relay",
   ]);
-  // A consumer that also ships is compiled by its own build, and relay's build
-  // already compiles relay-web, which it bundles.
+  // A consumer that also ships is compiled by its own build.
   expect(gateScope(["relay-protocol", "relay"])?.compiles.map((compile) => compile.id))
-    .toEqual(["channel-relay"]);
+    .toEqual(["web", "channel-relay"]);
   expect(gateScope(["relay"])?.compiles).toEqual([]);
 });
 
@@ -264,8 +263,9 @@ test("precedingBeta walks one counter step back and stops at zero", () => {
   expect(() => precedingBeta("0.24.10")).toThrow(/not a prerelease/);
 });
 
-test("packageForPath maps relay-web onto relay and ignores shipping-neutral paths", () => {
-  expect(packageForPath("packages/relay-web/src/style.css")).toBe("relay");
+test("packageForPath maps the dashboard onto web and ignores shipping-neutral paths", () => {
+  expect(packageForPath("packages/web/src/style.css")).toBe("web");
+  expect(packageForPath("packages/web/index.js")).toBe("web");
   expect(packageForPath("packages/relay/src/server.ts")).toBe("relay");
   expect(packageForPath("src/transport/acpx-cli/acpx-cli-transport.ts")).toBe("core");
   expect(packageForPath("package.json")).toBe("core");
@@ -284,10 +284,10 @@ test("packageForPath maps relay-web onto relay and ignores shipping-neutral path
 test("detectChanged returns registry order, not path order", () => {
   const changed = detectChanged([
     "src/main.ts",
-    "packages/relay-web/src/style.css",
+    "packages/web/src/style.css",
     "packages/relay-protocol/src/dtos.ts",
   ]);
-  expect(changed).toEqual(["relay-protocol", "relay", "core"]);
+  expect(changed).toEqual(["relay-protocol", "web", "core"]);
 });
 
 test("a core release pulls in every floor tracker, listed separately from real changes", () => {
@@ -296,9 +296,9 @@ test("a core release pulls in every floor tracker, listed separately from real c
   expect(floorTrackers).toEqual(["channel-relay", "channel-feishu", "channel-discord"]);
 });
 
-test("a relay-web change releases relay alone", () => {
-  const { releases, floorTrackers } = expandReleaseSet({ changed: ["relay"] });
-  expect(releases).toEqual(["relay"]);
+test("a dashboard change releases web alone", () => {
+  const { releases, floorTrackers } = expandReleaseSet({ changed: ["web"] });
+  expect(releases).toEqual(["web"]);
   expect(floorTrackers).toEqual([]);
 });
 
@@ -313,10 +313,11 @@ test("channel-yuanbao is never pulled in by a core release", () => {
   expect(files.some((file) => file.includes("yuanbao"))).toBe(false);
 });
 
-test("publishWaves orders protocol before relay/channel-relay before the independent packages", () => {
-  const waves = publishWaves(["core", "relay-protocol", "relay", "channel-relay", "channel-discord"]);
+test("publishWaves orders protocol, then the dashboard, then its dependents", () => {
+  const waves = publishWaves(["core", "relay-protocol", "web", "relay", "channel-relay", "channel-discord"]);
   expect(waves).toEqual([
     ["relay-protocol"],
+    ["web"],
     ["relay", "channel-relay"],
     ["core", "channel-discord"],
   ]);
@@ -353,12 +354,14 @@ test("collectEdits rewrites the protocol range in all three consumers with one v
     versions: { "relay-protocol": "0.6.4-beta.2" },
     previousVersions: { "relay-protocol": "0.6.4-beta.1" },
   });
-  const files = edits.filter((edit) => edit.path?.join(".") === "dependencies.@ganglion/xacpx-relay-protocol");
+  const files = edits.filter((edit) => (edit.path ?? []).at(-1) === "@ganglion/xacpx-relay-protocol");
   expect(files.map((edit) => edit.file).sort()).toEqual([
     "packages/channel-relay/package.json",
-    "packages/relay-web/package.json",
     "packages/relay/package.json",
+    "packages/web/package.json",
   ]);
+  const web = files.find((edit) => edit.file === "packages/web/package.json");
+  expect(web?.path).toEqual(["devDependencies", "@ganglion/xacpx-relay-protocol"]);
   for (const edit of files) expect(edit.to).toBe("^0.6.4-beta.2");
 });
 
@@ -374,7 +377,7 @@ function consistentManifests(core: string) {
     [COMPAT_MANIFEST]: { version: core, dependencies: { "@ganglion/xacpx": `^${core}` } },
     "packages/relay-protocol/package.json": { version: "0.6.4-beta.2" },
     "packages/relay/package.json": { dependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" } },
-    "packages/relay-web/package.json": { dependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" } },
+    "packages/web/package.json": { devDependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" } },
     "packages/channel-relay/package.json": {
       peerDependencies: { xacpx: `>=${core}` },
       dependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" },
@@ -406,11 +409,11 @@ test("collectFloorViolations reports a plugin peer floor that lagged core", () =
 
 test("collectFloorViolations reports a stale protocol range and a stale compat shim", () => {
   const manifests = consistentManifests("0.24.10-beta.3");
-  manifests["packages/relay-web/package.json"].dependencies["@ganglion/xacpx-relay-protocol"] = "^0.6.4-beta.1";
+  manifests["packages/web/package.json"].devDependencies["@ganglion/xacpx-relay-protocol"] = "^0.6.4-beta.1";
   manifests[COMPAT_MANIFEST].dependencies["@ganglion/xacpx"] = "^0.24.10-beta.2";
   const violations = collectFloorViolations({ versions: consistentVersions, manifests });
   expect(violations).toHaveLength(2);
-  expect(violations.join("\n")).toMatch(/relay-web.*\^0\.6\.4-beta\.2/);
+  expect(violations.join("\n")).toMatch(/packages\/web.*\^0\.6\.4-beta\.2/);
   expect(violations.join("\n")).toMatch(/weacpx-compat.*\^0\.24\.10-beta\.3/);
 });
 
@@ -432,7 +435,7 @@ test("every registry entry carries a complete tag prefix and manifest", () => {
     expect(pkg.tagPrefix.endsWith("-v") || pkg.tagPrefix === "v").toBe(true);
     expect(pkg.manifestPath.endsWith("package.json")).toBe(true);
     expect(pkg.sourcePaths.length).toBeGreaterThan(0);
-    expect([1, 2, 3]).toContain(pkg.wave);
+    expect([1, 2, 3, 4]).toContain(pkg.wave);
   }
 });
 

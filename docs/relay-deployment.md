@@ -6,7 +6,7 @@
 
 ## 安装
 
-- **hub**：`npm i -g @ganglion/xacpx-relay` —— 提供 `xacpx-relay` 二进制；看板（`@ganglion/xacpx-relay-web`，private）已**内嵌在该包内**，随包出厂，无需单独安装/构建。
+- **hub**：`npm i -g @ganglion/xacpx-relay` —— 提供 `xacpx-relay` 二进制，并拉取看板包 `@ganglion/xacpx-web`。看板不再内嵌在 hub 里，但仍随依赖一起安装，无需单独构建。
 - **连接器**（实例机）：`xacpx plugin add @ganglion/xacpx-channel-relay` —— 自动拉取 `@ganglion/xacpx-relay-protocol`；实例核心需 `xacpx ≥ 0.24.10-beta.18`（当前 peer 下限，见 `packages/channel-relay/package.json`）。
 - 从源码运行见文档站[自托管 Relay Hub](https://gadzan.github.io/xacpx/zh/guide/relay-self-hosting) 的「从源码运行」details；发布流程见 [relay-release.md](relay-release.md)。
 

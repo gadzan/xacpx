@@ -53,7 +53,8 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 | `bun run build:channel-yuanbao` | 主包 + 元宝插件 |
 | `bun run build:channel-discord` | 主包 + Discord 插件 |
 | `bun run build:relay-protocol` | 线协议包（同时是 `build:plugin-api` 的依赖） |
-| `bun run build:relay` | relay hub；先跑 `build:relay-web`、最后跑 `bundle:relay-web`，看板随 hub 包一起出厂 |
+| `bun run build:web` | 看板包（`@ganglion/xacpx-web`） |
+| `bun run build:relay` | relay hub；先构建看板，再依赖 `@ganglion/xacpx-web`，不再把看板拷进 hub |
 | `bun run build:channel-relay` | 主包 + relay 连接器插件 |
 | `bun run build:packages` | 主包 + 以上全部包 |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs`（每次发布前运行） |
@@ -65,7 +66,7 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 - `bun build --target node --external node-pty` — `node-pty` 不打包进产物，运行时从 `node_modules` 解析。`packages/*` 同样将 `xacpx` 标记为 external。
 - 唯一稳定的公共 API 导出是 `xacpx/plugin-api`。其他路径（`xacpx/dist/*`、`xacpx/src/*`）属于内部路径，随时可能变更。
 - 插件包使用 `tsc -p packages/<name>/tsconfig.json` 单独生成 `.d.ts` 文件，因为 `bun build` 目前不支持生成声明文件。
-- `packages/relay-web` 为 `private: true`，不单独发布：`bun run build:relay` 会把它 的 `dist/` 拷进 `packages/relay/dist/relay-web`，tarball 里缺少 `dist/relay-web/index.html` 时 `verify:publish` 直接失败。
+- `packages/web` 以 `@ganglion/xacpx-web` 单独发布，发布包没有运行时依赖。hub 依赖这个包，不再把 `dist/` 拷进自己；web 包缺 `dist/index.html`，或 hub 丢掉这个依赖时，`verify:publish` 失败。
 - `platform-packages/*`（`@ganglion/xacpx-rmux-bridge-*` 平台二进制）不在 root workspaces 内，由 `scripts/pack-rmux-bridge-platform.mjs` 打包，不走 `build:packages`。
 
 ### 三种本地运行模式
@@ -118,9 +119,9 @@ xacpx/
 │   ├── channel-yuanbao/
 │   ├── channel-discord/
 │   ├── channel-relay/  # relay hub 连接器插件
-│   ├── relay/          # relay hub（bin: xacpx-relay；内嵌 relay-web）
+│   ├── relay/          # relay hub（bin: xacpx-relay；依赖 @ganglion/xacpx-web）
 │   ├── relay-protocol/ # 线协议 + DTO（零依赖）
-│   ├── relay-web/      # 看板 SPA（private；打包进 relay）
+│   ├── web/            # 看板（@ganglion/xacpx-web；无运行时依赖）
 │   └── docs/           # VitePress 文档站（即本站）
 ├── platform-packages/  # @ganglion/xacpx-rmux-bridge-*（不在 root workspaces 内）
 ├── weacpx-compat/      # 已废弃的兼容 shim 包（转发 weacpx/plugin-api）

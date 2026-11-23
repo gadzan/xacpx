@@ -167,7 +167,7 @@ For identity rules, `workingDirectory` semantics, the full tool list, and troubl
 
 ## Relay hub — `xacpx-relay`
 
-A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). Install it with `npm i -g @ganglion/xacpx-relay` — the dashboard (`@ganglion/xacpx-relay-web`) is bundled inside that package, so there is nothing else to install or build.
+A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). Install it with `npm i -g @ganglion/xacpx-relay` — that install also pulls the dashboard package `@ganglion/xacpx-web`, so there is nothing else to install or build.
 
 ```bash
 xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--request-timeout-ms 120000] [--trust-proxy]
@@ -183,7 +183,7 @@ xacpx-relay update [--check]
 
 | Command | Description |
 |---|---|
-| `start` | Run the hub. `--db` defaults to `~/.xacpx-relay/relay.db` (auto-creates the directory). `--web-root` defaults to the bundled `packages/relay-web/dist` — the dashboard is served even if omitted. `--history-retention-days` is retired (accepted but ignored); chat history is kept per-device. No `stop`/`status` — use `SIGTERM`. |
+| `start` | Run the hub. `--db` defaults to `~/.xacpx-relay/relay.db` (auto-creates the directory). `--web-root` defaults to the installed `@ganglion/xacpx-web` package — the dashboard is served even if omitted. `--history-retention-days` is retired (accepted but ignored); chat history is kept per-device. No `stop`/`status` — use `SIGTERM`. |
 | `add token` | Create a user and mint a login token; printed **once**. The same token is used for both the web dashboard login (paste into the "Access token" field) and the connector (`--token`). |
 | `add invite` | Mint a **single-use invite code** and print a redeem link (`/invite/<code>`). The recipient opens the link and clicks redeem to create their own account and receive a token. `--ttl` defaults to `7d`. See [invites](/guide/relay-self-hosting#add-invite-invite-someone-via-a-link). |
 | `ls` | List tokens (short id, label, created date, connected instances) and pending/used invite codes. |

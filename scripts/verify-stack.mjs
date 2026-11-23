@@ -445,7 +445,7 @@ async function up(argv) {
 
   const hubPid = spawnDetached(
     process.execPath,
-    [join("packages", "relay", "dist", "cli.js"), "start", "--db", paths.relayDb, "--http-port", String(port), "--host", "127.0.0.1", "--web-root", join("packages", "relay", "dist", "relay-web")],
+    [join("packages", "relay", "dist", "cli.js"), "start", "--db", paths.relayDb, "--http-port", String(port), "--host", "127.0.0.1", "--web-root", join("packages", "web", "dist")],
     { cwd: repoRoot, env: process.env, logPath: paths.hubLog },
   );
   log(`hub pid ${hubPid} on http://127.0.0.1:${port}`);

@@ -11,7 +11,7 @@
  * under `.github/workflows/publish-*.yml`.
  */
 
-/** @typedef {"core"|"relay-protocol"|"relay"|"channel-relay"|"channel-feishu"|"channel-discord"|"channel-yuanbao"} PackageId */
+/** @typedef {"core"|"relay-protocol"|"web"|"relay"|"channel-relay"|"channel-feishu"|"channel-discord"|"channel-yuanbao"} PackageId */
 
 /**
  * Published packages, in publish-dependency order.
@@ -32,14 +32,22 @@ export const PACKAGE_REGISTRY = [
     wave: 1,
   },
   {
+    id: "web",
+    npmName: "@ganglion/xacpx-web",
+    tagPrefix: "web-v",
+    manifestPath: "packages/web/package.json",
+    // The dashboard is its own package. relay depends on it instead of embedding
+    // a copy, so a UI-only change no longer ships as a relay release.
+    sourcePaths: ["packages/web/src/", "packages/web/public/", "packages/web/assets/", "packages/web/index.js", "packages/web/index.d.ts"],
+    wave: 2,
+  },
+  {
     id: "relay",
     npmName: "@ganglion/xacpx-relay",
     tagPrefix: "relay-v",
     manifestPath: "packages/relay/package.json",
-    // relay-web is private and bundled into relay at build time, so its changes
-    // ship as a relay release.
-    sourcePaths: ["packages/relay/src/", "packages/relay-web/src/", "packages/relay-web/public/", "packages/relay-web/assets/"],
-    wave: 2,
+    sourcePaths: ["packages/relay/src/"],
+    wave: 3,
   },
   {
     id: "channel-relay",
@@ -48,7 +56,7 @@ export const PACKAGE_REGISTRY = [
     manifestPath: "packages/channel-relay/package.json",
     sourcePaths: ["packages/channel-relay/src/"],
     pluginEntryPath: "packages/channel-relay/src/index.ts",
-    wave: 2,
+    wave: 3,
   },
   {
     id: "core",
@@ -56,7 +64,7 @@ export const PACKAGE_REGISTRY = [
     tagPrefix: "v",
     manifestPath: "package.json",
     sourcePaths: ["src/", "patches/"],
-    wave: 3,
+    wave: 4,
   },
   {
     id: "channel-feishu",
@@ -65,7 +73,7 @@ export const PACKAGE_REGISTRY = [
     manifestPath: "packages/channel-feishu/package.json",
     sourcePaths: ["packages/channel-feishu/src/"],
     pluginEntryPath: "packages/channel-feishu/src/index.ts",
-    wave: 3,
+    wave: 4,
   },
   {
     id: "channel-discord",
@@ -74,7 +82,7 @@ export const PACKAGE_REGISTRY = [
     manifestPath: "packages/channel-discord/package.json",
     sourcePaths: ["packages/channel-discord/src/"],
     pluginEntryPath: "packages/channel-discord/src/index.ts",
-    wave: 3,
+    wave: 4,
   },
   {
     id: "channel-yuanbao",
@@ -82,7 +90,7 @@ export const PACKAGE_REGISTRY = [
     tagPrefix: "channel-yuanbao-v",
     manifestPath: "packages/channel-yuanbao/package.json",
     sourcePaths: ["packages/channel-yuanbao/src/"],
-    wave: 3,
+    wave: 4,
   },
 ];
 
@@ -100,6 +108,7 @@ export const PACKAGE_REGISTRY = [
 export const RELEASE_ARTIFACTS = {
   core: { build: "build", verifyId: "root" },
   "relay-protocol": { build: "build:relay-protocol", verifyId: "relay-protocol" },
+  web: { build: "build:web", verifyId: "web" },
   relay: { build: "build:relay", verifyId: "relay" },
   "channel-relay": { build: "build:channel-relay", verifyId: "channel-relay" },
   "channel-feishu": { build: "build:channel-feishu", verifyId: "channel-feishu" },
@@ -118,8 +127,10 @@ export const RELEASE_ARTIFACTS = {
  * The one entry that is not "a package this release ships": a protocol release
  * rewrites the protocol range in consumers it is not publishing, so those
  * consumers are compiled even though their artifacts are not rebuilt. A consumer
- * that also ships is skipped — its own build compiles it, and relay's build
- * compiles relay-web, which is bundled into it.
+ * that also ships is skipped — its own build compiles it. `web` is one of
+ * those consumers even though its protocol range lives in devDependencies:
+ * the published package has no runtime dependencies, and vue-tsc is what
+ * notices a renamed protocol export.
  *
  * @param {string[]} releaseIds
  * @returns {{builds:string[], verifyIds:string[], compiles:Array<{id:string,command:string,args:string[],cwd?:string}>}|null}
@@ -128,7 +139,6 @@ export function gateScope(releaseIds) {
   const specs = releaseIds.map((id) => RELEASE_ARTIFACTS[id]);
   if (specs.some((spec) => spec === undefined)) return null;
   const covered = new Set(releaseIds);
-  if (covered.has("relay")) covered.add("relay-web");
   const compiles = releaseIds.includes("relay-protocol")
     ? PROTOCOL_CONSUMERS
       .filter((id) => !covered.has(id))
@@ -159,7 +169,7 @@ export const CORE_FLOOR_TRACKERS = ["channel-relay", "channel-feishu", "channel-
 export const COMPAT_MANIFEST = "weacpx-compat/package.json";
 
 /** Every consumer whose protocol dependency range must equal the protocol version. */
-export const PROTOCOL_CONSUMERS = ["relay", "relay-web", "channel-relay"];
+export const PROTOCOL_CONSUMERS = ["relay", "web", "channel-relay"];
 
 /**
  * How to compile each protocol consumer, for the gate that runs when the
@@ -173,12 +183,12 @@ export const PROTOCOL_CONSUMERS = ["relay", "relay-web", "channel-relay"];
  * not cover this, because its `include` lists `src` only.
  *
  * Compiling is the cheap half of building. Measured here: 13s (relay), 17s
- * (channel-relay), 117s (relay-web, vue-tsc).
+ * (channel-relay), 117s (web, vue-tsc).
  */
 export const PROTOCOL_CONSUMER_COMPILE = {
   relay: { command: "bun", args: ["x", "tsc", "-p", "packages/relay/tsconfig.json"] },
   "channel-relay": { command: "bun", args: ["x", "tsc", "-p", "packages/channel-relay/tsconfig.json"] },
-  "relay-web": { command: "bun", args: ["x", "vue-tsc", "--noEmit"], cwd: "packages/relay-web" },
+  web: { command: "bun", args: ["x", "vue-tsc", "--noEmit"], cwd: "packages/web" },
 };
 
 /** Files carrying the core-floor literals that must move with a core release. */
@@ -435,7 +445,7 @@ export function expandReleaseSet({ changed }) {
 export function publishWaves(releases) {
   const set = new Set(releases);
   const waves = [];
-  for (const wave of [1, 2, 3]) {
+  for (const wave of [1, 2, 3, 4]) {
     const ids = PACKAGE_REGISTRY.filter((pkg) => pkg.wave === wave && set.has(pkg.id)).map((pkg) => pkg.id);
     if (ids.length > 0) waves.push(ids);
   }
@@ -537,12 +547,13 @@ export function collectFloorViolations({ versions, manifests }) {
   if (protocol) {
     const expected = `^${protocol}`;
     for (const id of PROTOCOL_CONSUMERS) {
-      const entry = id === "relay-web"
-        ? { manifestPath: "packages/relay-web/package.json" }
-        : registryEntry(id);
+      const entry = registryEntry(id);
       const manifest = manifests[entry.manifestPath];
       if (!manifest) continue;
-      const range = manifest.dependencies?.["@ganglion/xacpx-relay-protocol"];
+      // `web` keeps the protocol in devDependencies: the published tarball has
+      // no runtime dependencies, and vite already bundled the types.
+      const deps = id === "web" ? manifest.devDependencies : manifest.dependencies;
+      const range = deps?.["@ganglion/xacpx-relay-protocol"];
       if (range !== expected) {
         violations.push(`${entry.manifestPath}: protocol range ${range} != ${expected}`);
       }
@@ -637,13 +648,10 @@ export function collectEdits({ releases, versions, previousVersions }) {
     const from = `^${previousVersions["relay-protocol"]}`;
     const to = `^${versions["relay-protocol"]}`;
     for (const id of PROTOCOL_CONSUMERS) {
-      const file = id === "relay-web"
-        ? "packages/relay-web/package.json"
-        : registryEntry(id).manifestPath;
       edits.push({
         kind: "json-value",
-        file,
-        path: ["dependencies", "@ganglion/xacpx-relay-protocol"],
+        file: registryEntry(id).manifestPath,
+        path: [id === "web" ? "devDependencies" : "dependencies", "@ganglion/xacpx-relay-protocol"],
         from,
         to,
         reason: "prerelease ranges must name the exact prerelease; `^X.Y.Z` would not match it",

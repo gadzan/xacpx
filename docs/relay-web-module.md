@@ -1,4 +1,4 @@
-# Relay Web 看板模块说明（packages/relay-web）
+# Relay Web 看板模块说明（packages/web，`@ganglion/xacpx-web`）
 
 relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨实例管理 acpx 会话的三栏 IM 界面。
 设计 spec：docs/superpowers/specs/2026-06-13-relay-hub-design.md；服务端见 docs/relay-module.md。

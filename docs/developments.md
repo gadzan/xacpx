@@ -95,9 +95,9 @@ xacpx/
 │   ├── channel-yuanbao/
 │   ├── channel-discord/
 │   ├── channel-relay/  # relay hub connector plugin
-│   ├── relay/          # relay hub (bin: xacpx-relay; bundles relay-web)
+│   ├── relay/          # relay hub (bin: xacpx-relay; depends on @ganglion/xacpx-web)
 │   ├── relay-protocol/ # wire protocol + DTOs (zero deps)
-│   ├── relay-web/      # dashboard SPA (private; bundled into relay)
+│   ├── web/            # dashboard (@ganglion/xacpx-web; no runtime deps)
 │   └── docs/           # VitePress documentation site
 ├── platform-packages/  # @ganglion/xacpx-rmux-bridge-* (NOT in root workspaces)
 ├── weacpx-compat/      # deprecated shim package (forwards weacpx/plugin-api)
@@ -189,7 +189,8 @@ Key scripts in `package.json`:
 | `bun run build:channel-yuanbao` | Main package + yuanbao plugin |
 | `bun run build:channel-discord` | Main package + discord plugin |
 | `bun run build:relay-protocol` | Wire protocol package (also a dependency of `build:plugin-api`) |
-| `bun run build:relay` | relay hub; runs `build:relay-web` first and `bundle:relay-web` last, so the dashboard ships inside the hub package |
+| `bun run build:web` | Dashboard package (`@ganglion/xacpx-web`); static assets only |
+| `bun run build:relay` | relay hub; builds the dashboard first and depends on `@ganglion/xacpx-web` instead of embedding it |
 | `bun run build:channel-relay` | Main package + relay connector plugin |
 | `bun run build:packages` | Main package + all of the above packages |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs` (must run before publishing) |
@@ -202,7 +203,7 @@ Key points:
 - `bun build --target node --external node-pty`: `node-pty` is not bundled; it is resolved from `node_modules` at runtime. `packages/*` likewise use `--external xacpx`.
 - The main package only exports `xacpx/plugin-api` publicly; other paths (`xacpx/dist/*`, `xacpx/src/*`) are **not stable APIs** — don't depend on them externally.
 - Plugin packages emit `.d.ts` separately via `tsc -p packages/<name>/tsconfig.json`, because bun build currently does not emit `.d.ts`.
-- `packages/relay-web` is `private: true` and never published on its own: `bun run build:relay` copies its `dist/` into `packages/relay/dist/relay-web` (`bundle:relay-web`), and `verify:publish` fails if the tarball is missing `dist/relay-web/index.html`.
+- `packages/web` publishes as `@ganglion/xacpx-web` with no runtime dependencies. `bun run build:relay` no longer copies its `dist/` into the hub; the hub resolves the dashboard from that package. `verify:publish` fails if the web tarball is missing `dist/index.html` or if the hub no longer depends on `@ganglion/xacpx-web`.
 - `platform-packages/*` (the `@ganglion/xacpx-rmux-bridge-*` platform binaries) are outside the root workspaces and are packed by `scripts/pack-rmux-bridge-platform.mjs`, not by `build:packages`.
 
 ---

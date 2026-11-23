@@ -27,16 +27,16 @@
 
 ## 1. 获取服务端
 
-全局安装 relay Hub。Web 看板已**内嵌在包内**,所以这一条安装就够了——无需单独构建看板、无需 `--web-root`：
+全局安装 relay Hub。安装时会一并拉取看板包 `@ganglion/xacpx-web`，所以这一条命令就够了——无需单独构建看板、无需 `--web-root`：
 
 ```bash
 npm i -g @ganglion/xacpx-relay
 ```
 
-这会把 `xacpx-relay` 二进制放进你的 `PATH`。内嵌看板会在启动时自动检测；`start` 命令会打印它解析出的路径（见下文）。
+这会把 `xacpx-relay` 二进制放进你的 `PATH`。看板包会在启动时自动解析；`start` 命令会打印它解析出的路径（见下文）。
 
 ::: details 改为从源码运行（开发 / 贡献）
-克隆仓库并构建服务端——`build:relay` 同时会构建看板并把它嵌入到 `packages/relay/dist/relay-web`：
+克隆仓库并构建服务端——`build:relay` 同时会构建 `@ganglion/xacpx-web`，hub 把它当作依赖来提供看板：
 
 ```bash
 git clone https://github.com/gadzan/xacpx
@@ -70,7 +70,7 @@ hint: use this token for web login AND: xacpx channel add relay --url <host> --t
 `start` 会确认运行状态：
 
 ```
-xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path / or /gateway), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
+xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path / or /gateway), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-web/dist
 ```
 
 打开 `http://<host>:8787`，将令牌粘贴到 **Access token** 输入框，即可登录。
@@ -153,7 +153,7 @@ xacpx-relay start \
 | `--http-port <n>` | `8787` | HTTP API **以及**看板的 `/ws` 广播。 |
 | `--ws-port <n>` | _（已合并）_ | 省略则把实例网关合并到 HTTP 端口（单端口默认）。传入一个端口则会启动一个可单独配置防火墙的专用网关监听器。 |
 | `--host <地址>` | `0.0.0.0` | 绑定地址。 |
-| `--web-root <目录>` | _（自动检测）_ | 看板资源目录。自动解析包内嵌入的看板（`cli.js` 旁边的 `dist/relay-web`）；仅在需要覆盖时才传入。 |
+| `--web-root <目录>` | _（自动检测）_ | 看板资源目录。自动解析已安装的 `@ganglion/xacpx-web`；仅在需要覆盖时才传入。 |
 | `--history-retention-days <n>` | _（已退休）_ | 为兼容旧脚本而保留接受，但会被忽略——聊天记录现在保存在各设备上（看板 IndexedDB），不在 Hub 上。 |
 | `--request-timeout-ms <n>` | `120000` | 代理到实例的每次请求超时时间。 |
 | `--trust-proxy` | _（关闭）_ | 信任 `X-Forwarded-For` 用于限速。在反向代理后面运行时传入此参数；**绝不**在直接暴露于公网时使用（否则会导致 IP 伪造）。 |
@@ -501,7 +501,7 @@ module.exports = {
 
 | 现象 | 原因 | 解决办法 |
 |---|---|---|
-| 看板 404 / 空白页 | `start` 打印了 `dashboard: (none)`——没找到内嵌的看板 | 看板随 `@ganglion/xacpx-relay` 一起出厂；重装该包即可。源码检出时用 `bun run build:relay` 重建（它会把看板嵌入 `dist/relay-web`）。 |
+| 看板 404 / 空白页 | `start` 打印了 `dashboard: (none)`——没找到看板包 | 重装 `@ganglion/xacpx-relay`（它依赖 `@ganglion/xacpx-web`）。源码检出时用 `bun run build:relay` 重建，并确认 `packages/web/dist/index.html` 存在。 |
 | 实例始终不变绿 | 网关 URL 错误、令牌被吊销或输入有误 | 把 `--url` 指向**与看板相同的主机**（合并后的网关与 HTTP 端口共用）；仅当你以 `--ws-port` 启动 Hub 时，才使用单独的 `:8788` 主机。如果令牌已被吊销，重新运行 `add token` 并重新配对。 |
 | 自定义 `--db` 未生效 | `--db` 在不同命令间传入不一致 | 在 `add token` 和 `start` 中传入**相同的** `--db` 路径；默认的 `~/.xacpx-relay/relay.db` 是固定的绝对路径，省略 `--db` 是安全的。 |
 | 经过代理后实时更新卡住 | 代理未在 8787 上转发 WebSocket 升级 | 在看板路由上允许 `Upgrade`/`Connection` 请求头。 |

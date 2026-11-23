@@ -87,7 +87,6 @@ const TOOL_OWNED_PATHS = [
   "tests/unit/packages/channel-discord/discord-plugin.test.ts",
   ...PACKAGE_REGISTRY.filter((pkg) => pkg.pluginEntryPath).map((pkg) => pkg.pluginEntryPath),
   "packages/relay-protocol/dist",
-  "packages/relay-web/package.json",
 ];
 
 const REGISTRY_ATTEMPTS = 24;
@@ -437,7 +436,6 @@ function readAllManifests() {
   const manifests = {};
   for (const pkg of PACKAGE_REGISTRY) manifests[pkg.manifestPath] = readJson(pkg.manifestPath);
   manifests[COMPAT_MANIFEST] = readJson(COMPAT_MANIFEST);
-  manifests["packages/relay-web/package.json"] = readJson("packages/relay-web/package.json");
   for (const id of CORE_FLOOR_TRACKERS) {
     const source = readFileSync(join(ROOT, `packages/${id}/src/index.ts`), "utf8");
     manifests[`${id}:minXacpxVersion`] = /minXacpxVersion:\s*"([^"]+)"/.exec(source)?.[1];
@@ -801,8 +799,11 @@ function reconcileBunLock() {
     });
   }
 
-  for (const dir of ["packages/relay", "packages/relay-web", "packages/channel-relay"]) {
-    const range = readJson(`${dir}/package.json`).dependencies?.["@ganglion/xacpx-relay-protocol"];
+  for (const dir of ["packages/relay", "packages/web", "packages/channel-relay"]) {
+    const manifest = readJson(`${dir}/package.json`);
+    // web keeps the protocol in devDependencies (the published package has none).
+    const range = manifest.dependencies?.["@ganglion/xacpx-relay-protocol"]
+      ?? manifest.devDependencies?.["@ganglion/xacpx-relay-protocol"];
     if (!range) continue;
     eachWorkspaceBlock(dir, (block) => {
       const updated = block.replace(

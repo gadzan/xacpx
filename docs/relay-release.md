@@ -9,16 +9,18 @@
 @ganglion/xacpx-relay-protocol   (零依赖；线协议 + DTO)
         ▲                 ▲
         │                 │
+@ganglion/xacpx-web       (看板静态资产；零运行时依赖)
+        ▲
+        │
 @ganglion/xacpx-relay     @ganglion/xacpx-channel-relay
   (hub，bin: xacpx-relay；   (连接器；peerDep xacpx >= minXacpxVersion，
-   已内嵌看板 relay-web)     当前 0.24.10-beta.18，见 channel-relay/src/index.ts)
+   依赖 @ganglion/xacpx-web) 当前 0.24.10，见 channel-relay/src/index.ts)
 
 @ganglion/xacpx           (core；channel-relay 的 peer 依赖，独立发布)
 ```
 
-- **`@ganglion/xacpx-relay-web` 不单独发布**（`private: true`）。它的 `dist/` 在
-  `bun run build:relay` 时被拷进 `@ganglion/xacpx-relay` 的 `dist/relay-web`，随 hub 包一起出厂。
-  因此 `xacpx-relay` 单包安装即自带看板，无需 `--web-root`。
+- **`@ganglion/xacpx-web` 单独发布**（`packages/web`）。hub 依赖它，不再把看板拷进自己的 tarball。
+  `xacpx-relay start` 从这个依赖解析看板；只有要覆盖时才传 `--web-root`。
 
 ## 当前发布状态（快照，发版前重新生成）
 

@@ -45,7 +45,8 @@ _*Monorepo builds (packages/* are Bun workspaces):_*
 
 ```bash
 bun run build:packages       # Build root + all channel/relay packages
-bun run build:relay          # Build relay hub (bundles relay-web dashboard)
+bun run build:web            # Build the dashboard package (@ganglion/xacpx-web)
+bun run build:relay          # Build relay hub (depends on the dashboard package)
 bun run build:channel-relay  # Build relay channel plugin
 ```
 

@@ -345,7 +345,7 @@ async function upStack(paths) {
 
   const hubPid = spawnDetached(
     process.execPath,
-    [join(repoRoot, "packages", "relay", "dist", "cli.js"), "start", "--db", paths.relayDb, "--http-port", String(PORT), "--host", "127.0.0.1", "--web-root", join(repoRoot, "packages", "relay", "dist", "relay-web")],
+    [join(repoRoot, "packages", "relay", "dist", "cli.js"), "start", "--db", paths.relayDb, "--http-port", String(PORT), "--host", "127.0.0.1", "--web-root", join(repoRoot, "packages", "web", "dist")],
     { cwd: repoRoot, env: process.env, logPath: paths.hubLog },
   );
   label(`hub pid ${hubPid} on http://127.0.0.1:${PORT}`);

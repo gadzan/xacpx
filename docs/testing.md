@@ -42,13 +42,13 @@ Holds test helper functions, fixture builders, and test-only utilities.
 
 For now, if a helper is very small, you can inline it in the test file first; only extract it when reuse becomes obvious.
 
-### `packages/relay-web/src/__tests__/` (package exception)
+### `packages/web/src/__tests__/` (package exception)
 
-Relay-web component/store tests live beside that package under `src/__tests__/` because they require
+Dashboard component/store tests live beside that package under `src/__tests__/` because they require
 Vite's Vue transform and the package's jsdom/Vitest setup. Run them with:
 
 ```bash
-bun run --cwd packages/relay-web test
+bun run --cwd packages/web test
 ```
 
 The root `npm test` includes this suite through `test:web`. This is the only supported test-under-`src`
@@ -161,7 +161,7 @@ Prefer `tests/smoke/` over `tests/unit/` in the following cases:
 
 ## Rules After the Migration
 
-- `src/` holds production code only, except `packages/relay-web/src/__tests__/` as documented above
+- `src/` holds production code only, except `packages/web/src/__tests__/` as documented above
 - `tests/` holds test code only
 - `scripts/` holds run scripts only, not test bodies
 

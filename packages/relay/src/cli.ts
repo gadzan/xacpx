@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createRelayRuntime, startRelayServer } from "./server.js";
 import { handleRelayUpdate } from "./cli-update.js";
@@ -21,24 +22,31 @@ export function defaultDbPath(): string {
 }
 
 /**
- * Locates the bundled relay-web dashboard relative to the compiled cli.js.
- * Returns the path only if `index.html` is present there; otherwise undefined.
+ * Locates the dashboard.
  *
- * Resolves against this module's own URL (import.meta.url), NOT process.argv[1]:
- * when invoked via the global `xacpx-relay` bin symlink, argv[1] is the symlink
- * path (…/bin/xacpx-relay), not the real cli.js, so an argv-based path would
- * mis-resolve. The `cliJsPath` param exists only for tests.
+ * 1. `@ganglion/xacpx-web` resolved from this module (the published layout, and
+ *    the workspace link inside the monorepo).
+ * 2. The monorepo sibling `packages/web/dist`, for a `cli.js` that was built
+ *    before that dependency is installed.
+ *
+ * Returns undefined when neither place has `index.html`. `fromUrl` exists so
+ * tests can point resolution at a fixture; production passes this module.
  */
-export function resolveBundledWebRoot(cliJsPath: string = fileURLToPath(import.meta.url)): string | undefined {
-  const here = dirname(cliJsPath);
-  // 1. Embedded copy shipped inside the published package: build:relay copies
-  //    packages/relay-web/dist into dist/relay-web (a sibling of cli.js). This is
-  //    the path that exists after `npm i -g @ganglion/xacpx-relay`.
-  const embedded = resolve(here, "relay-web");
-  if (existsSync(join(embedded, "index.html"))) return embedded;
-  // 2. Monorepo sibling — running cli.js straight from source before the embed
-  //    copy step has run (e.g. `bun run build:relay` partially, or dev tooling).
-  const sibling = resolve(here, "../../relay-web/dist");
+export async function resolveBundledWebRoot(
+  fromUrl: string = import.meta.url,
+): Promise<string | undefined> {
+  try {
+    const require = createRequire(fromUrl);
+    const entry = require.resolve("@ganglion/xacpx-web");
+    const mod = await import(pathToFileURL(entry).href) as {
+      tryResolveWebRoot?: (moduleUrl?: string) => string | undefined;
+    };
+    const root = mod.tryResolveWebRoot?.(pathToFileURL(entry).href);
+    if (root) return root;
+  } catch {
+    // Not installed from this module. Fall through to the source-tree sibling.
+  }
+  const sibling = resolve(dirname(fileURLToPath(fromUrl)), "../../web/dist");
   if (existsSync(join(sibling, "index.html"))) return sibling;
   return undefined;
 }
@@ -56,7 +64,7 @@ const USAGE = [
   "  push-keys generate   (print a VAPID keypair for web push)",
   "  update     [--check]   (self-update @ganglion/xacpx-relay; --check only reports)",
   "",
-  "  Defaults: --db ~/.xacpx-relay/relay.db   --web-root auto-detects the bundled dashboard",
+  "  Defaults: --db ~/.xacpx-relay/relay.db   --web-root auto-detects @ganglion/xacpx-web",
 ].join("\n");
 
 function flag(args: string[], name: string): string | undefined {
@@ -144,7 +152,7 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
       io.print("note: --history-retention-days is retired (message history is client-side now) and ignored.");
     }
     if (!startOpts.webRoot) {
-      startOpts.webRoot = resolveBundledWebRoot();
+      startOpts.webRoot = await resolveBundledWebRoot();
     }
     const logger = createRelayLogger();
     const vapidFlagCount = [startOpts.vapidSubject, startOpts.vapidPublicKey, startOpts.vapidPrivateKey]
