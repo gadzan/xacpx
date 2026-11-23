@@ -9,6 +9,12 @@ import {
   transferSubscriptionOwnership,
   reconcileExistingSubscription,
 } from "../lib/web-push";
+import { useRuntimeStore } from "./runtime";
+
+function pushEnabled(): boolean {
+  const runtime = useRuntimeStore();
+  return !runtime.loaded || runtime.config.capabilities.webPush;
+}
 
 export interface Account {
   username: string;
@@ -27,8 +33,8 @@ export const useAuthStore = defineStore("auth", () => {
       // Ownership transfer is part of the auth contract and MUST complete (or
       // have destroyed the local subscription) before we report success —
       // otherwise a crashed tab's stale binding could leak the previous
-      // account's notifications to this one.
-      await transferSubscriptionOwnership();
+      // account's notifications to this one. A local host has no push service.
+      if (pushEnabled()) await transferSubscriptionOwnership();
       forgetToken();
       return true;
     } catch (e) {
@@ -46,6 +52,11 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   async function fetchMe(): Promise<boolean> {
+    const runtime = useRuntimeStore();
+    if (runtime.loaded && runtime.config.hostMode === "local" && !runtime.config.auth.required) {
+      account.value = { username: "local" };
+      return true;
+    }
     try {
       account.value = await api.get<Account>("/api/me");
     } catch {
@@ -56,6 +67,7 @@ export const useAuthStore = defineStore("auth", () => {
     // downgraded to unauthenticated (redirecting to /login while a 7-day
     // session cookie remains live). Reconcile is same-account maintenance;
     // failures degrade notifications rather than breaking page navigation.
+    if (!pushEnabled()) return true;
     try {
       await reconcileExistingSubscription();
     } catch {
@@ -73,7 +85,7 @@ export const useAuthStore = defineStore("auth", () => {
     // binding is dead it throws, and logout ABORTS (user stays logged in as
     // themselves, which is safe) instead of leaving a live binding on a shared
     // machine for the next account.
-    await releaseSubscriptionOwnership();
+    if (pushEnabled()) await releaseSubscriptionOwnership();
     await api.post("/api/logout").catch(() => {});
     account.value = null;
     // Shared-machine hygiene: the next login must not be able to read cached
