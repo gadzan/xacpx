@@ -1,4 +1,6 @@
-# Relay Web 看板模块说明（packages/relay-web）
+# Relay Web 看板模块说明（packages/web，`@ganglion/xacpx-web`）
+
+源码在 `packages/web`。下文若仍出现 `packages/relay-web/...`，指的是搬迁前的同一棵树，现路径把该前缀换成 `packages/web`。
 
 relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨实例管理 acpx 会话的三栏 IM 界面。
 设计 spec：docs/superpowers/specs/2026-06-13-relay-hub-design.md；服务端见 docs/relay-module.md。
@@ -854,9 +856,9 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
 ## 生产托管与开发
 
 - **生产**：`xacpx-relay start --web-root <dist>` 由 relay 服务静态托管构建产物（SPA fallback）；
-- **开发**：`bun run --cwd packages/relay-web dev` 起 Vite dev server，
-  Vite 代理把 `/api` 与 `/ws` 转发到 `:8787`（见 `packages/relay-web/vite.config.ts`）；
-- **构建**：仓库根 `bun run build:relay-web`（先 build relay-protocol 再 vite build）；
+- **开发**：`bun run --cwd packages/web dev` 起 Vite dev server，
+  Vite 代理把 `/api` 与 `/ws` 转发到 `:8787`（见 `packages/web/vite.config.ts`）；
+- **构建**：仓库根 `bun run build:web`（先 build relay-protocol 再 vite build）；`build:relay-web` 仍是它的别名。
 - **测试**：仓库根 `bun run test:web`（Vitest）。
 
 ## RMUX 共享终端（看板行为）
@@ -898,13 +900,13 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
   - `navigateFallback: "/index.html"` 配 `navigateFallbackDenylist: [/^\/api/, /^\/ws/, /^\/desktop\/(observe|instance)/]`——SPA 路由走缓存 index，但**绝不影响 hub 的 `/api`、`/ws`**，也不能把 HTML 塞给 desktop 二进制升级（那会破坏 noVNC 握手）；
   - SW 在 `src/main.ts` 通过 `virtual:pwa-register` 的 `registerSW({ immediate: true })` 显式注册（`injectRegister: false`）；`devOptions.enabled: false`，`vite dev` 不起 SW（避免开发期缓存困扰）。
 - **图标**：只有一个源文件 `assets/pwa-source.svg`（暗底满铺 + 品牌蓝绿 X，与 `BrandLogo.vue` 同步），manifest **只发 any 图标、没有 maskable**——maskable 会让 iOS 把瓦片当 adaptive 处理、缩进安全区并留一圈白边（图标本身是不透明满铺，任何 launcher 都边缘到边缘渲染，与 HAPI PWA 一致）。生成的 PNG 提交在 `public/`（`pwa-64x64` / `pwa-192x192` / `pwa-512x512`，另有 `apple-touch-icon-180x180` 与 `favicon.ico`）。重新生成：`bun run --cwd packages/relay-web generate-pwa-icons`（`scripts/generate-pwa-icons.mjs`，故 CI 构建不依赖 sharp）。
-- **打包链路**：`vite build` 把 `sw.js`/`workbox-*.js`/`manifest.webmanifest`/图标都输出到 `dist/`，再由 `bundle:relay-web` 整体拷进 `relay/dist/relay-web`；hub 的 hono `serveStatic` 在根作用域服务（`manifest.webmanifest` 命中 hono mime → `application/manifest+json`，`sw.js` 默认作用域 `/`）。
+- **打包链路**：`vite build` 把 `sw.js`/`workbox-*.js`/`manifest.webmanifest`/图标都输出到 `packages/web/dist/`。hub 不再拷贝这份目录，而是从依赖的 `@ganglion/xacpx-web` 解析它，再用 hono `serveStatic` 在根作用域服务（`manifest.webmanifest` 命中 hono mime → `application/manifest+json`，`sw.js` 默认作用域 `/`）。
 - **部署前提（关键）**：Service Worker / 安装能力要求 **安全上下文**——`https://` 或 `localhost`。自托管 hub 走纯 `http://`（局域网 IP）时 SW 不会注册、也不可安装；需在反向代理上挂 TLS。详见 [relay-deployment.md](relay-deployment.md)。
 - **漂移守护**：`src/__tests__/pwa.test.ts` 校验 manifest 引用的每个图标都在 `public/` 存在、`autoUpdate` 未被删、denylist 覆盖 `/api`·`/ws`·`/desktop/(observe|instance)`，且**不存在 maskable 图标**。
 
 ## 阶段六：Turn 状态展示（turn-status display）
 
-### `LiveTurn` 模型与 store getters（packages/relay-web/src/stores/chat.ts）
+### `LiveTurn` 模型与 store getters（packages/web/src/stores/chat.ts）
 
 ```ts
 export type TurnStatus = "working" | "streaming" | "done" | "cancelled" | "error";

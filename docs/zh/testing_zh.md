@@ -42,12 +42,12 @@
 
 当前如果某个 helper 很小，也可以先内联在测试文件里；只有复用明显时再提取。
 
-### `packages/relay-web/src/__tests__/`（包级例外）
+### `packages/web/src/__tests__/`（包级例外）
 
-relay-web 的组件/store 测试放在该包自己的 `src/__tests__/` 下，因为它们需要 Vite 的 Vue 转换以及该包的 jsdom/Vitest 配置。运行方式：
+看板的组件/store 测试放在该包自己的 `src/__tests__/` 下，因为它们需要 Vite 的 Vue 转换以及该包的 jsdom/Vitest 配置。运行方式：
 
 ```bash
-bun run --cwd packages/relay-web test
+bun run --cwd packages/web test
 ```
 
 根目录的 `npm test` 通过 `test:web` 把这套测试包含进来。这是唯一受支持的「测试放在 `src` 下」的例外；Node/核心/各包的测试仍放在 `tests/unit/` 下。
@@ -135,7 +135,7 @@ macOS 的 CI job 使用这个聚焦套件；Ubuntu 继续跑 `npm test`，包含
 
 ## 迁移后的规则
 
-- `src/` 只放生产代码，上文记录的 `packages/relay-web/src/__tests__/` 除外
+- `src/` 只放生产代码，上文记录的 `packages/web/src/__tests__/` 除外
 - `tests/` 只放测试代码
 - `scripts/` 只放运行脚本，不放测试主体
 

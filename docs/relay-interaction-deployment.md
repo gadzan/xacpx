@@ -38,7 +38,7 @@ RelayChannel.requestElicitation()        packages/channel-relay/src/channel.ts
 hub registry                               packages/relay/src/interaction-registry.ts
   │  broadcast interaction-opened          → every subscribed browser on that account
   ▼
-browser (Relay Web / Direct Bots)          packages/relay-web/src/stores/direct-bots.ts
+browser (Relay Web / Direct Bots)          packages/web/src/stores/direct-bots.ts
   │  renders the form, human answers, submits
   ▼
 MSG.interactionRespond  (browser → hub)

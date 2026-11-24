@@ -95,9 +95,9 @@ xacpx/
 │   ├── channel-yuanbao/
 │   ├── channel-discord/
 │   ├── channel-relay/  # relay hub 连接器插件
-│   ├── relay/          # relay hub（bin: xacpx-relay；内嵌 relay-web）
+│   ├── relay/          # relay hub（bin: xacpx-relay；依赖 @ganglion/xacpx-web）
 │   ├── relay-protocol/ # 线协议 + DTO（零依赖）
-│   ├── relay-web/      # 看板 SPA（private；打包进 relay）
+│   ├── web/            # 看板（@ganglion/xacpx-web；无运行时依赖）
 │   └── docs/           # VitePress 文档站
 ├── platform-packages/  # @ganglion/xacpx-rmux-bridge-*（不在 root workspaces 内）
 ├── weacpx-compat/      # 已废弃的兼容 shim 包（转发 weacpx/plugin-api）
@@ -189,7 +189,8 @@ packages/channel-<name>/
 | `bun run build:channel-yuanbao` | 主包 + yuanbao 插件 |
 | `bun run build:channel-discord` | 主包 + discord 插件 |
 | `bun run build:relay-protocol` | 线协议包（同时是 `build:plugin-api` 的依赖） |
-| `bun run build:relay` | relay hub；先跑 `build:relay-web`、最后 `bundle:relay-web`，看板随 hub 包出厂 |
+| `bun run build:web` | 看板包（`@ganglion/xacpx-web`） |
+| `bun run build:relay` | relay hub；先构建看板，再依赖 `@ganglion/xacpx-web`，不再把看板拷进 hub |
 | `bun run build:channel-relay` | 主包 + relay 连接器插件 |
 | `bun run build:packages` | 主包 + 以上全部包 |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs`（发布前必跑） |
@@ -202,7 +203,7 @@ packages/channel-<name>/
 - `bun build --target node --external node-pty`：`node-pty` 不打进 bundle，运行时由 `node_modules` 解析。`packages/*` 同理 `--external xacpx`。
 - 主包对外只导出 `xacpx/plugin-api`；其它路径（`xacpx/dist/*`、`xacpx/src/*`）**不是稳定 API**，别在外部依赖。
 - 插件包用 `tsc -p packages/<name>/tsconfig.json` 单独 emit `.d.ts`，因为 bun build 目前不出 `.d.ts`。
-- `packages/relay-web` 是 `private: true`，不单独发布：`bun run build:relay` 会把它的 `dist/` 拷进 `packages/relay/dist/relay-web`（`bundle:relay-web`），tarball 缺 `dist/relay-web/index.html` 时 `verify:publish` 直接失败。
+- `packages/web` 以 `@ganglion/xacpx-web` 单独发布，发布包没有运行时依赖。`bun run build:relay` 不再把它的 `dist/` 拷进 hub；hub 从这个包解析看板。web 包缺 `dist/index.html`，或 hub 不再依赖 `@ganglion/xacpx-web` 时，`verify:publish` 失败。
 - `platform-packages/*`（`@ganglion/xacpx-rmux-bridge-*` 平台二进制）在 root workspaces 之外，由 `scripts/pack-rmux-bridge-platform.mjs` 打包，不走 `build:packages`。
 
 ---

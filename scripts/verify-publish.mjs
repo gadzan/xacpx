@@ -65,12 +65,20 @@ export const DEFAULT_PACKAGES = [
     requiredFiles: ["dist/index.js", "dist/index.d.ts", "README.md", "package.json"],
   },
   {
+    id: "web",
+    dir: "packages/web",
+    expectedName: "@ganglion/xacpx-web",
+    // The dashboard is its own package. dist/ is the vite build; index.js is the
+    // resolver hosts call. It must not drag Vue (or anything else) in at install.
+    requiredFiles: ["dist/index.html", "index.js", "index.d.ts", "README.md", "package.json"],
+    emptyDependencies: true,
+  },
+  {
     id: "relay",
     dir: "packages/relay",
     expectedName: "@ganglion/xacpx-relay",
-    // dist/relay-web/index.html proves the dashboard was embedded into the hub
-    // package — without it `npm i -g @ganglion/xacpx-relay` ships no web UI.
-    requiredFiles: ["dist/cli.js", "dist/relay-web/index.html", "README.md", "package.json"],
+    requiredFiles: ["dist/cli.js", "README.md", "package.json"],
+    requiredDependency: "@ganglion/xacpx-web",
   },
   {
     id: "channel-relay",
@@ -311,6 +319,26 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
         failures.push('channel-relay: rmux-bridge must pin rmux-sdk = "=0.10.0"');
       }
     }
+  }
+
+  if (pkg.emptyDependencies && Object.keys(packageJson.dependencies ?? {}).length > 0) {
+    failures.push(`${pkg.id}: dependencies must be empty (UI libraries are bundled into dist/)`);
+  }
+  if (pkg.id === "web") {
+    try {
+      const entry = pathToFileURL(join(packageRoot, "index.js")).href;
+      const mod = await import(entry);
+      const root = typeof mod.tryResolveWebRoot === "function" ? mod.tryResolveWebRoot(entry) : undefined;
+      if (!root || !existsSync(join(root, "index.html"))) {
+        failures.push("web: index.js did not resolve a dist directory containing index.html");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(`web: index.js failed to load (${message})`);
+    }
+  }
+  if (pkg.requiredDependency && !(pkg.requiredDependency in (packageJson.dependencies ?? {}))) {
+    failures.push(`${pkg.id}: package.json dependencies must include ${pkg.requiredDependency}`);
   }
 
   for (const file of pkg.requiredFiles) {

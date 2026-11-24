@@ -445,7 +445,8 @@ async function up(argv) {
 
   const hubPid = spawnDetached(
     process.execPath,
-    [join("packages", "relay", "dist", "cli.js"), "start", "--db", paths.relayDb, "--http-port", String(port), "--host", "127.0.0.1", "--web-root", join("packages", "relay", "dist", "relay-web")],
+    // No --web-root: the hub must resolve @ganglion/xacpx-web itself.
+    [join("packages", "relay", "dist", "cli.js"), "start", "--db", paths.relayDb, "--http-port", String(port), "--host", "127.0.0.1"],
     { cwd: repoRoot, env: process.env, logPath: paths.hubLog },
   );
   log(`hub pid ${hubPid} on http://127.0.0.1:${port}`);

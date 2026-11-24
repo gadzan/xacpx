@@ -182,7 +182,7 @@ describe("motion tokens", () => {
   const sources = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
     .filter((f) => /\.(vue|ts|css)$/.test(f) && !f.includes("__tests__"))
     .map((f) => ({ file: f, text: readFileSync(join(srcDir, f), "utf8") }))
-    .filter(({ file }) => file !== "components/ConversationComposer.vue");
+    .filter(({ file }) => file.replaceAll("\\", "/") !== "components/ConversationComposer.vue");
 
   it("declares the three duration tokens plus the shared easing", () => {
     expect(light["--dur-fast"]).toBe("120ms");

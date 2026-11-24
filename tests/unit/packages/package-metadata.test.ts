@@ -75,8 +75,11 @@ const RELAY_PROTOCOL = "@ganglion/xacpx-relay-protocol";
 const RELAY_PROTOCOL_CONSUMERS = [
   "packages/channel-relay",
   "packages/relay",
-  "packages/relay-web",
 ] as const;
+
+// The dashboard bundles the protocol into dist/ and publishes with no runtime
+// dependencies, so its range lives in devDependencies.
+const RELAY_PROTOCOL_DEV_CONSUMERS = ["packages/web"] as const;
 
 function readJsonc(path: string) {
   return Bun.JSONC.parse(readFileSync(path, "utf8"));
@@ -93,6 +96,11 @@ test("relay-protocol workspace version and consumer deps match across manifests 
     const pkg = readJson(`${dir}/package.json`);
     expect(pkg.dependencies[RELAY_PROTOCOL]).toBe(range);
   }
+  for (const dir of RELAY_PROTOCOL_DEV_CONSUMERS) {
+    const pkg = readJson(`${dir}/package.json`);
+    expect(pkg.devDependencies[RELAY_PROTOCOL]).toBe(range);
+    expect(pkg.dependencies ?? {}).not.toHaveProperty(RELAY_PROTOCOL);
+  }
 
   const npmLock = readJson("package-lock.json");
   expect(npmLock.packages["packages/relay-protocol"].name).toBe(RELAY_PROTOCOL);
@@ -100,12 +108,18 @@ test("relay-protocol workspace version and consumer deps match across manifests 
   for (const dir of RELAY_PROTOCOL_CONSUMERS) {
     expect(npmLock.packages[dir].dependencies[RELAY_PROTOCOL]).toBe(range);
   }
+  for (const dir of RELAY_PROTOCOL_DEV_CONSUMERS) {
+    expect(npmLock.packages[dir].devDependencies[RELAY_PROTOCOL]).toBe(range);
+  }
 
   const bunLock = readJsonc("bun.lock");
   expect(bunLock.workspaces["packages/relay-protocol"].name).toBe(RELAY_PROTOCOL);
   expect(bunLock.workspaces["packages/relay-protocol"].version).toBe(version);
   for (const dir of RELAY_PROTOCOL_CONSUMERS) {
     expect(bunLock.workspaces[dir].dependencies[RELAY_PROTOCOL]).toBe(range);
+  }
+  for (const dir of RELAY_PROTOCOL_DEV_CONSUMERS) {
+    expect(bunLock.workspaces[dir].devDependencies[RELAY_PROTOCOL]).toBe(range);
   }
 });
 

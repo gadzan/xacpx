@@ -14,7 +14,7 @@ Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任�
 - 端口（默认单端口）：HTTP API（默认 8787，登录/实例/RPC 代理）。实例 WS 网关**默认合并到 HTTP 端口**——作为 `httpServer.on("upgrade")` 上的 noServer WebSocket upgrade，按路径路由：根 `/`（或显式 `/gateway`）= 实例网关，`/ws` = 看板扇出（两者共用同一 upgrade handler）。`--ws-port <n>` 为**可选** flag：传入则改在独立端口上跑一个专用 `WebSocketServer`（旧的双端口布局，便于单独防火墙网关）。
 - 快速开始：
   1. `xacpx-relay add token`（打印访问令牌，既用于 Web 登录也用于连接器注册；DB 默认 `~/.xacpx-relay/relay.db`，自动建目录）
-  2. `xacpx-relay start`（看板自动检测内置 `packages/relay-web/dist`）
+  2. `xacpx-relay start`（看板从依赖的 `@ganglion/xacpx-web` 解析；源码检出时回退到 `packages/web/dist`）
   3. `xacpx channel add relay --url <host> --token <access-token> --name home-pc`（连接器接入；`--url` 支持裸域名/IP[:端口]）
 - RPC 请求超时：`xacpx-relay start --request-timeout-ms <ms>` 限定网关 RPC 请求超时，默认 `120000`
   （共享常量 `DEFAULT_REQUEST_TIMEOUT_MS = 120s`，位于 packages/relay/src/gateway/instance-gateway.ts，

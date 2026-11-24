@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { runRelayCli, parseStartOptions, parseTtlMs, defaultDbPath, resolveBundledWebRoot } from "../../../../packages/relay/src/cli";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
@@ -497,33 +497,60 @@ test("parseStartOptions: explicit --ws-port → that port (legacy dedicated gate
   expect(parseStartOptions(["start", "--ws-port", "8788"]).wsPort).toBe(8788);
 });
 
-// resolveBundledWebRoot reads process.argv[1], so each test stubs it and restores.
-// resolveBundledWebRoot resolves against its own module URL by default; the
-// cliJsPath param lets these tests point it at a fixture layout.
-test("resolveBundledWebRoot prefers the in-package dist/relay-web embed (published layout)", () => {
+// resolveBundledWebRoot resolves from the module URL it is given, so tests
+// point it at a fixture package rather than this repo's node_modules.
+async function fixtureWebPackage(root: string): Promise<string> {
+  const dir = join(root, "node_modules", "@ganglion", "xacpx-web");
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(join(dir, "dist"), { recursive: true });
+  writeFileSync(join(dir, "dist", "index.html"), "<html></html>");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@ganglion/xacpx-web", type: "module", exports: "./index.js" }));
+  writeFileSync(
+    join(dir, "index.js"),
+    [
+      'import { existsSync } from "node:fs";',
+      'import { dirname, join } from "node:path";',
+      'import { fileURLToPath } from "node:url";',
+      "export function tryResolveWebRoot(moduleUrl = import.meta.url) {",
+      '  const dir = join(dirname(fileURLToPath(moduleUrl)), "dist");',
+      '  return existsSync(join(dir, "index.html")) ? dir : undefined;',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  return pathToFileURL(join(dir, "index.js")).href;
+}
+
+test("resolveBundledWebRoot prefers the installed @ganglion/xacpx-web package", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
-  const dist = join(root, "dist");
-  mkdirSync(join(dist, "relay-web"), { recursive: true });
-  writeFileSync(join(dist, "relay-web", "index.html"), "<html></html>");
-  expect(resolveBundledWebRoot(join(dist, "cli.js"))).toBe(join(dist, "relay-web"));
+  const fromUrl = await fixtureWebPackage(root);
+  expect(await resolveBundledWebRoot(fromUrl)).toBe(join(root, "node_modules", "@ganglion", "xacpx-web", "dist"));
 });
 
-test("resolveBundledWebRoot falls back to the monorepo sibling relay-web/dist", () => {
-  // Layout: <root>/packages/relay/dist/cli.js + <root>/packages/relay-web/dist/index.html
+test("resolveBundledWebRoot falls back to the monorepo sibling packages/web/dist", async () => {
+  // Layout: <root>/packages/relay/dist/cli.js + <root>/packages/web/dist/index.html
   const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
   const relayDist = join(root, "packages", "relay", "dist");
   mkdirSync(relayDist, { recursive: true });
-  const sibling = join(root, "packages", "relay-web", "dist");
+  const sibling = join(root, "packages", "web", "dist");
   mkdirSync(sibling, { recursive: true });
   writeFileSync(join(sibling, "index.html"), "<html></html>");
-  expect(resolveBundledWebRoot(join(relayDist, "cli.js"))).toBe(sibling);
+  expect(await resolveBundledWebRoot(pathToFileURL(join(relayDist, "cli.js")).href)).toBe(sibling);
 });
 
-test("resolveBundledWebRoot returns undefined when neither location has the dashboard", () => {
+test("resolveBundledWebRoot rejects an installed package whose dashboard build is missing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
+  const fromUrl = await fixtureWebPackage(root);
+  const { unlinkSync } = await import("node:fs");
+  unlinkSync(join(root, "node_modules", "@ganglion", "xacpx-web", "dist", "index.html"));
+  await expect(resolveBundledWebRoot(fromUrl)).rejects.toThrow(/dashboard build is missing/);
+});
+
+test("resolveBundledWebRoot returns undefined when neither location has the dashboard", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
   const dist = join(root, "dist");
   mkdirSync(dist, { recursive: true });
-  expect(resolveBundledWebRoot(join(dist, "cli.js"))).toBeUndefined();
+  expect(await resolveBundledWebRoot(pathToFileURL(join(dist, "cli.js")).href)).toBeUndefined();
 });
 
 // Regression for the silent `add token`: npm installs the bin as a symlink whose

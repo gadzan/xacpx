@@ -27,7 +27,7 @@ This guide walks an operator from nothing to a running hub with a paired instanc
 
 ## 1. Get the server
 
-Install the relay hub globally. The web dashboard ships **embedded inside the package**, so this one install is everything you need — no separate dashboard build, no `--web-root`:
+Install the relay hub globally. The install also pulls the dashboard package `@ganglion/xacpx-web`, so this one command is everything you need — no separate dashboard build, no `--web-root`:
 
 ```bash
 npm i -g @ganglion/xacpx-relay
@@ -36,7 +36,7 @@ npm i -g @ganglion/xacpx-relay
 This puts the `xacpx-relay` binary on your `PATH`. The bundled dashboard is auto-detected at startup; the `start` command prints its resolved path (shown below).
 
 ::: details Run from source instead (development / contributing)
-Clone the repo and build the server — `build:relay` also builds the dashboard and embeds it into `packages/relay/dist/relay-web`:
+Clone the repo and build the server — `build:relay` also builds `@ganglion/xacpx-web`, which the hub serves as a dependency:
 
 ```bash
 git clone https://github.com/gadzan/xacpx
@@ -70,7 +70,7 @@ hint: use this token for web login AND: xacpx channel add relay --url <host> --t
 `start` confirms what is running:
 
 ```
-xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path / or /gateway), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
+xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path / or /gateway), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-web/dist
 ```
 
 Open `http://<host>:8787`, paste the token into the **Access token** field, and you are in.
@@ -153,7 +153,7 @@ xacpx-relay start \
 | `--http-port <n>` | `8787` | HTTP API **and** the dashboard's `/ws` fan-out. |
 | `--ws-port <n>` | _(merged)_ | Omit to merge the instance gateway onto the HTTP port (single-port default). Pass a port to run a dedicated gateway listener you can firewall separately. |
 | `--host <addr>` | `0.0.0.0` | Bind address. |
-| `--web-root <dir>` | _(auto-detected)_ | Dashboard assets directory. Auto-resolves the dashboard embedded in the package (`dist/relay-web` next to `cli.js`); only pass this to override. |
+| `--web-root <dir>` | _(auto-detected)_ | Dashboard assets directory. Auto-resolves the installed `@ganglion/xacpx-web` package; only pass this to override. |
 | `--history-retention-days <n>` | _(retired)_ | Accepted for old scripts but ignored — chat history is now kept on each device (dashboard IndexedDB), not on the hub. |
 | `--request-timeout-ms <n>` | `120000` | Per-request timeout for proxied calls to instances. |
 | `--trust-proxy` | _(off)_ | Trust `X-Forwarded-For` for rate limiting. Pass this when behind a reverse proxy; **never** when directly internet-exposed (it would allow IP spoofing). |
@@ -501,7 +501,7 @@ The defaults work out of the box. For a hardened setup, append flags to `start`:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Dashboard 404 / blank page | `start` printed `dashboard: (none)` — the embedded UI wasn't found | The dashboard ships inside `@ganglion/xacpx-relay`; reinstall the package. From a source checkout, rebuild with `bun run build:relay` (it embeds the dashboard into `dist/relay-web`). |
+| Dashboard 404 / blank page | `start` printed `dashboard: (none)` — the dashboard package wasn't found | Reinstall `@ganglion/xacpx-relay` (it depends on `@ganglion/xacpx-web`). From a source checkout, rebuild with `bun run build:relay` and make sure `packages/web/dist/index.html` exists. |
 | Instance never turns green | Wrong gateway URL or revoked/mistyped token | Point `--url` at the **same host as the dashboard** (the merged gateway shares the HTTP port); only use a separate `:8788` host if you started the hub with `--ws-port`. Re-run `add token` and re-pair if the token was revoked. |
 | Custom `--db` not taking effect | `--db` passed inconsistently between commands | Pass the **same** `--db` path to both `add token` and `start`; the default `~/.xacpx-relay/relay.db` is a fixed absolute path so omitting `--db` consistently is safe. |
 | Live updates stall behind a proxy | Proxy not forwarding WebSocket upgrades on 8787 | Allow `Upgrade`/`Connection` headers on the dashboard route. |

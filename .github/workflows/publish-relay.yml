@@ -62,7 +62,7 @@ jobs:
         if: steps.test-gate.outputs.skip != 'true'
         run: npm test
 
-      - name: Build relay hub (builds + embeds the relay-web dashboard)
+      - name: Build relay hub (depends on the built @ganglion/xacpx-web dashboard)
         run: bun run build:relay
 
       - name: Verify publishable artifacts

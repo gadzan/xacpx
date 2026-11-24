@@ -1,8 +1,36 @@
 {
-  "name": "@ganglion/xacpx-relay-web",
+  "name": "@ganglion/xacpx-web",
   "version": "0.1.0",
-  "private": true,
+  "description": "Web dashboard static assets for xacpx, shared by the relay hub and the local web channel.",
+  "license": "MIT",
+  "keywords": [
+    "xacpx",
+    "web",
+    "dashboard"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gadzan/xacpx.git",
+    "directory": "packages/web"
+  },
   "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
@@ -16,7 +44,7 @@
     "test:e2e:desktop": "playwright test --project=chromium-desktop",
     "test:e2e:mobile": "playwright test --project=chromium-mobile"
   },
-  "dependencies": {
+  "devDependencies": {
     "@codemirror/commands": "^6.0.0",
     "@codemirror/lang-css": "^6.0.0",
     "@codemirror/lang-html": "^6.0.0",
@@ -35,35 +63,33 @@
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@ganglion/xacpx-relay-protocol": "^0.6.4",
+    "@intlify/message-compiler": "^9.14.5",
     "@lezer/highlight": "^1.0.0",
     "@lobehub/icons-static-svg": "1.91.0",
     "@novnc/novnc": "1.7.0",
-    "@xterm/xterm": "^6.0.0",
-    "codemirror": "^6.0.0",
-    "dompurify": "^3.4.10",
-    "lucide-vue-next": "^1.0.0",
-    "markdown-it": "^14.2.0",
-    "mermaid": "^11",
-    "pinia": "^2.2.0",
-    "remend": "^1.3.0",
-    "vue": "^3.5.0",
-    "vue-i18n": "^9.14.0",
-    "vue-router": "^4.4.0"
-  },
-  "devDependencies": {
-    "@intlify/message-compiler": "^9.14.5",
     "@playwright/test": "^1.62.1",
     "@types/markdown-it": "^14.1.2",
     "@vitejs/plugin-vue": "^5.1.0",
     "@vue/test-utils": "^2.4.6",
+    "@xterm/xterm": "^6.0.0",
     "autoprefixer": "^10.4.0",
+    "codemirror": "^6.0.0",
+    "dompurify": "^3.4.10",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^25.0.0",
+    "lucide-vue-next": "^1.0.0",
+    "markdown-it": "^14.2.0",
+    "mermaid": "^11",
+    "pinia": "^2.2.0",
     "postcss": "^8.4.0",
+    "remend": "^1.3.0",
     "tailwindcss": "^3.4.0",
     "vite": "^5.4.0",
     "vite-plugin-pwa": "^1.3.0",
     "vitest": "^2.1.0",
+    "vue": "^3.5.0",
+    "vue-i18n": "^9.14.0",
+    "vue-router": "^4.4.0",
     "vue-tsc": "^2.1.0"
   }
 }
