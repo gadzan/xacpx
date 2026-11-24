@@ -29,6 +29,7 @@ import type {
   ChannelElicitationField,
   ChannelElicitationOption,
 } from "xacpx/plugin-api";
+// Type-only: a runtime import from xacpx/plugin-api belongs in CORE_FLOOR_TRACKERS.
 
 /**
  * Project core's normalized fields onto the wire model.

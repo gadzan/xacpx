@@ -1,0 +1,38 @@
+{
+  "name": "@ganglion/xacpx-channel-web",
+  "version": "0.1.0",
+  "description": "Local web console channel plugin for xacpx. Serves the shared dashboard on this machine without a relay hub.",
+  "license": "MIT",
+  "keywords": ["xacpx", "web", "channel", "plugin"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gadzan/xacpx.git",
+    "directory": "packages/channel-web"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "peerDependencies": {
+    "xacpx": ">=0.24.10"
+  },
+  "peerDependenciesMeta": {
+    "xacpx": { "optional": true }
+  },
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@ganglion/xacpx-channel-relay": "^0.7.8",
+    "@ganglion/xacpx-control-bridge": "^0.1.0",
+    "@ganglion/xacpx-relay-protocol": "^0.6.4",
+    "@ganglion/xacpx-web": "^0.1.0",
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.6.0",
+    "ws": "^8.20.0"
+  }
+}

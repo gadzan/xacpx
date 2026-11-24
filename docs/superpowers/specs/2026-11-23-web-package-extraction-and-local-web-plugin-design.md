@@ -299,7 +299,7 @@ const LEGACY_RELAY_FALLBACK: WebRuntimeConfig = {
   export interface WebChannelConfig {
     /** 监听地址，默认 "127.0.0.1" */
     host: string;
-    /** 监听端口，默认 7890；传 0 表示随机端口并在日志中输出实际 URL */
+    /** 监听端口，默认 7890；必须是 1 到 65535，不支持 0 */
     port: number;
     /** 可选访问令牌；当 host 非 loopback 时必填（否则拒绝启动） */
     token?: string;
@@ -344,8 +344,7 @@ const LEGACY_RELAY_FALLBACK: WebRuntimeConfig = {
 
 ### 7.4 Phase 2 扩展（本地 Terminal 与 Desktop）
 
-- **Terminal**：复用 `DefaultRelayTerminalRuntime` + `rmux-bridge` 可选平台包，在 `/ws` 接收 `terminal-open` / `terminal-input` / `terminal-resize` / `terminal-close` 帧，直接在本机运行 PTY，无需跨网转发。
-- **Desktop**：在本机直接探测 loopback VNC server，并在同端口暴露 `WS /desktop/observe`，前端 noVNC 零改动即可连接。
+- **Terminal**：复用 `DefaultRelayTerminalRuntime` + `rmux-bridge` 可选平台包，在 `/ws` 接收 `terminal-open` / `terminal-input` / `terminal-resize` / `terminal-close` 帧，直接在本机运行 PTY，无需跨网转发。本机网页默认打开终端，用 `--no-terminal` 关闭；不提供远程桌面。
 
 ---
 

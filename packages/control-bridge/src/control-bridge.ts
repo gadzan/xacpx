@@ -226,6 +226,7 @@ function readHubHumanIngress(payload: unknown): {
   accountId?: string;
   senderName?: string;
   isOwner?: boolean;
+  chatType?: "direct";
 } | undefined {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return undefined;
@@ -254,6 +255,7 @@ function readHubHumanIngress(payload: unknown): {
       ? { senderName: ingress.senderName.trim() }
       : {}),
     ...(typeof ingress.isOwner === "boolean" ? { isOwner: ingress.isOwner } : {}),
+    ...(ingress.chatType === "direct" ? { chatType: "direct" as const } : {}),
   };
 }
 

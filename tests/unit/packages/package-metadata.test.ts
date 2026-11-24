@@ -123,6 +123,15 @@ test("relay-protocol workspace version and consumer deps match across manifests 
   }
 });
 
+test("the shared control bridge only type-imports the plugin API", () => {
+  const files = ["control-bridge.ts", "relay-interaction.ts"];
+  for (const file of files) {
+    const source = readFileSync(`packages/control-bridge/src/${file}`, "utf8");
+    const statements = source.split(";").filter((part) => part.includes('from "xacpx/plugin-api"'));
+    expect(statements.every((statement) => statement.trimStart().startsWith("import type"))).toBe(true);
+  }
+});
+
 test("relay and channel-relay install the shared control bridge", () => {
   const bridge = readJson("packages/control-bridge/package.json");
   const relay = readJson("packages/relay/package.json");
