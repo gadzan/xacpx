@@ -83,6 +83,7 @@ const TOOL_OWNED_PATHS = [
   ...CORE_FLOOR_TRACKERS.map((id) => `packages/${id}/src/index.ts`),
   "tests/unit/packages/package-metadata.test.ts",
   "tests/unit/packages/channel-relay/channel-relay-plugin.test.ts",
+  "tests/unit/packages/channel-web/plugin.test.ts",
   "tests/unit/packages/channel-feishu/feishu-plugin.test.ts",
   "tests/unit/packages/channel-discord/discord-plugin.test.ts",
   ...PACKAGE_REGISTRY.filter((pkg) => pkg.pluginEntryPath).map((pkg) => pkg.pluginEntryPath),

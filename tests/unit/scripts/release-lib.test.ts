@@ -357,7 +357,16 @@ test("collectEdits derives the whole core floor set from one version", () => {
     expect(targets).toContain(`packages/${id}/src/index.ts|`);
   }
   expect(targets).toContain("tests/unit/packages/package-metadata.test.ts|");
-  expect(targets).toContain("tests/unit/packages/channel-relay/channel-relay-plugin.test.ts|");
+  // Every floor tracker's test expectations follow the floor it asserts on, so
+  // the release edit set and the tool-owned path list must both name each one.
+  for (const file of [
+    "channel-relay/channel-relay-plugin.test.ts",
+    "channel-web/plugin.test.ts",
+    "channel-feishu/feishu-plugin.test.ts",
+    "channel-discord/discord-plugin.test.ts",
+  ]) {
+    expect(targets).toContain(`tests/unit/packages/${file}|`);
+  }
 
   const peer = edits.find((edit) => edit.path?.join(".") === "peerDependencies.xacpx");
   expect(peer.from).toBe(">=0.24.10-beta.3");
