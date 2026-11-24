@@ -214,10 +214,22 @@ export const BRIDGE_RANGE_FOLLOWERS = ["relay", "channel-relay"];
  * (channel-relay), 117s (web, vue-tsc).
  */
 export const PROTOCOL_CONSUMER_COMPILE = {
-  relay: { command: "bun", args: ["x", "tsc", "-p", "packages/relay/tsconfig.json"] },
-  "channel-relay": { command: "bun", args: ["x", "tsc", "-p", "packages/channel-relay/tsconfig.json"] },
-  web: { command: "bun", args: ["x", "vue-tsc", "--noEmit"], cwd: "packages/web" },
-  "control-bridge": { command: "bun", args: ["x", "tsc", "-p", "packages/control-bridge/tsconfig.json"] },
+  relay: {
+    command: "bun",
+    args: ["x", "tsc", "-p", "packages/relay/tsconfig.json"],
+    prepare: ["build:control-bridge"],
+  },
+  "channel-relay": {
+    command: "bun",
+    args: ["x", "tsc", "-p", "packages/channel-relay/tsconfig.json"],
+    prepare: ["build:control-bridge"],
+  },
+  web: { command: "bun", args: ["x", "vue-tsc", "--noEmit"], cwd: "packages/web", prepare: [] },
+  "control-bridge": {
+    command: "bun",
+    args: ["x", "tsc", "-p", "packages/control-bridge/tsconfig.json"],
+    prepare: ["build:plugin-api"],
+  },
 };
 
 /** Files carrying the core-floor literals that must move with a core release. */

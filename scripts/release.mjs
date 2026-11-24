@@ -961,9 +961,15 @@ function runGates(plan) {
     [join(ROOT, "scripts", "verify-publish.mjs"), "--packages", scope.verifyIds.join(",")],
     { cwd: ROOT, stdio: "inherit" },
   );
+  const prepared = new Set(scope.builds);
   for (const compile of scope.compiles) {
-    // Only reachable on a protocol release: these consumers are not shipping,
-    // but this release rewrites the protocol range they compile against.
+    // A protocol-only release has not built the packages these compiles import.
+    for (const script of compile.prepare ?? []) {
+      if (prepared.has(script)) continue;
+      prepared.add(script);
+      console.log(`  preparing ${script} before ${compile.id}`);
+      execFileSync("bun", ["run", script], { cwd: ROOT, stdio: "inherit" });
+    }
     console.log(`  compiling ${compile.id}, which installs the protocol this release publishes`);
     execFileSync(compile.command, compile.args, {
       cwd: join(ROOT, compile.cwd ?? "."),
