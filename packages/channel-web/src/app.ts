@@ -48,6 +48,8 @@ export interface LocalWebApp {
   ports: { current: number };
   publish: (event: WebServerEvent) => void;
   project: (event: ControlEventDto) => void;
+  /** Turns that arrived before their queue reply, still waiting to be claimed. */
+  earlyTurns: () => string[];
   allows: (session: string | undefined) => boolean;
   attach: (send: (data: string, done?: (error?: Error) => void) => void, end: () => void, session: string | undefined) => (raw?: string) => void;
   close: () => void;
@@ -426,6 +428,7 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
     ports,
     publish,
     project,
+    earlyTurns: () => [...earlyStarts.values()].flatMap((ids) => [...ids]),
     allows,
     attach,
     close: () => {

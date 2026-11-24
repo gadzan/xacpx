@@ -175,6 +175,37 @@ describe("local web app", () => {
     expect((await history.json()).messages.map((row: { text: string }) => row.text)).toEqual(["hello", "done"]);
   });
 
+  test("queues a prompt whose turn started before the reply arrived", async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    let reached: () => void = () => undefined;
+    const waiting = new Promise<void>((resolve) => { reached = resolve; });
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
+      port: 7890,
+      control: {
+        events: { subscribe: () => () => undefined },
+        prompt: () => {
+          reached();
+          return new Promise((resolve) => { finish = resolve; });
+        },
+      } as never,
+    });
+    const sent = local.app.request("/api/instances/local/rpc", {
+      method: "POST",
+      headers: headers({ "content-type": "application/json" }),
+      body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "demo", text: "hello" } }),
+    });
+    await waiting;
+    local.project({ type: "turn-started", chatKey: "web:local", sessionAlias: "demo", queueItemId: "q1" });
+    finish({ queued: true, queueItemId: "q1" });
+    expect((await sent).status).toBe(200);
+    // The early start was remembered, so this prompt is not queued again.
+    const pending = await local.app.request("/api/instances/local/sessions/demo/messages?view=pending", { headers: headers() });
+    expect((await pending.json()).items).toEqual([]);
+    // The reply claimed it: nothing is left behind for the life of the daemon.
+    expect(local.earlyTurns()).toEqual([]);
+  });
+
   test("removes a queued prompt only when cancellation succeeds", async () => {
     const local = createLocalWebApp({
       config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
