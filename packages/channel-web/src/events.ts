@@ -2,7 +2,17 @@ import { MSG, type ControlEventDto, type InstanceNoticePayload, type WebServerEv
 
 import { LOCAL_INSTANCE_ID } from "./config.js";
 
-/** A missing key is global. `bot:` is a conversation. Anything else must be this channel. */
+/**
+ * A missing key is global. `bot:` is a conversation. Anything else must belong to
+ * this console.
+ *
+ * `relay:` is deliberately NOT admitted wholesale. The shared session scope makes
+ * relay-prefixed sessions appear in this console's list, but a `relay:<accountId>`
+ * key names a specific relay account, and several can run against one daemon —
+ * forwarding all of them would stream another account's turns into this browser.
+ * Session actions reach those sessions through alias resolution instead, which
+ * maps a display alias onto the one stored record.
+ */
 export function isLocalScope(chatKey: unknown): boolean {
   if (typeof chatKey !== "string" || chatKey.length === 0) return true;
   return chatKey.startsWith("web:") || chatKey.startsWith("bot:");
