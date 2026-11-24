@@ -86,6 +86,21 @@ function sessionScopeFor(channelId: string): string {
   return SHARED_SESSION_SCOPE.has(channelId) ? "relay" : channelId;
 }
 
+/**
+ * The other channel in this channel's shared session scope, if it has one.
+ *
+ * `relay` and `web` see the same sessions, so an alias stored under one prefix
+ * must be findable from the other. Channels outside the set have no sibling:
+ * their display aliases are separate accounts and must never cross.
+ */
+function sharedScopeSibling(channelId: string): string | undefined {
+  if (!SHARED_SESSION_SCOPE.has(channelId)) return undefined;
+  for (const id of SHARED_SESSION_SCOPE) {
+    if (id !== channelId) return id;
+  }
+  return undefined;
+}
+
 export function isSessionAliasVisibleInChannel(alias: string, channelId: string): boolean {
   const [first] = alias.split(":", 1);
   if (first && KNOWN_CHANNEL_IDS.has(first)) {
@@ -109,6 +124,21 @@ export function resolveSessionAliasForInput(
   const scopedAlias = toInternalSessionAlias(channelId, normalized);
   for (const alias of existingAliases) {
     if (alias === scopedAlias) return scopedAlias;
+  }
+  // The relay hub and the local web console share one session list, so an alias
+  // created through the other door must resolve here too. Without this, listing
+  // shows a session that every alias-addressed action then fails to find: opening
+  // a terminal resolves `web:<alias>` for a record stored as `relay:<alias>`,
+  // gets no match, and the open is refused.
+  //
+  // The stored record keeps its own prefix — that prefix is the transport session
+  // name — so this returns the sibling alias rather than a new one.
+  const siblingChannel = sharedScopeSibling(channelId);
+  if (siblingChannel) {
+    const siblingAlias = toInternalSessionAlias(siblingChannel, normalized);
+    for (const alias of existingAliases) {
+      if (alias === siblingAlias) return siblingAlias;
+    }
   }
   // A Direct Conversation product alias is stored UNscoped, so the channel-
   // scoped form can never match and the fallback below must look for the bare

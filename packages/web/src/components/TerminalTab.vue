@@ -233,6 +233,10 @@ function mapErrorCode(code: string): string {
     case "terminal-session-archived": return "terminal.sessionArchived";
     case "terminal-capacity-exceeded": return "terminal.capacityExceeded";
     case "terminal-viewer-capacity-exceeded": return "terminal.viewerCapacityExceeded";
+    // The console reports every open failure under this one code, including a
+    // session it could not resolve, so it must not fall through to the generic
+    // "could not open" text that hides what happened.
+    case "terminal-unavailable": return "terminal.unavailable";
     default: return "terminal.error";
   }
 }

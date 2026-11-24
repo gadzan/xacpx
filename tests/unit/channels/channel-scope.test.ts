@@ -82,6 +82,22 @@ test("the relay hub and the local web console share one session list", () => {
   expect(isSessionAliasVisibleInChannel("weixin:backend", "web")).toBe(false);
 });
 
+test("resolves an alias stored under the other door's prefix", () => {
+  const existing = ["relay:backend", "web:made-locally"];
+
+  // Listing shows these sessions in both places, so every alias-addressed action
+  // must resolve them too — otherwise a listed session cannot open its terminal.
+  expect(resolveSessionAliasForInput("web", "backend", existing)).toBe("relay:backend");
+  expect(resolveSessionAliasForInput("relay", "made-locally", existing)).toBe("web:made-locally");
+
+  // An alias with no record keeps this channel's own prefix, so a new session is
+  // created under the door the user is actually using.
+  expect(resolveSessionAliasForInput("web", "brand-new", existing)).toBe("web:brand-new");
+
+  // The shared scope stays closed: another channel never inherits its aliases.
+  expect(resolveSessionAliasForInput("feishu", "backend", existing)).toBe("feishu:backend");
+});
+
 test("resolves input aliases with legacy weixin preference", () => {
   expect(resolveSessionAliasForInput("weixin", "backend:codex", ["backend:codex"])).toBe("backend:codex");
   expect(resolveSessionAliasForInput("weixin", "backend:codex", [])).toBe("weixin:backend:codex");
