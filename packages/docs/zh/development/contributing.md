@@ -54,7 +54,7 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 | `bun run build:channel-discord` | 主包 + Discord 插件 |
 | `bun run build:relay-protocol` | 线协议包（同时是 `build:plugin-api` 的依赖） |
 | `bun run build:web` | 看板包（`@ganglion/xacpx-web`） |
-| `bun run build:control-bridge` | 共享控制桥接包（`@ganglion/xacpx-control-bridge`） |
+| `bun run build:control-bridge` | 共享控制桥接包（`@ganglion/xacpx-control-bridge`）；会先生成插件 API 类型 |
 | `bun run build:relay` | relay hub；先构建看板和控制桥接包 |
 | `bun run build:channel-relay` | 主包 + relay 连接器插件 |
 | `bun run build:packages` | 主包 + 以上全部包 |
