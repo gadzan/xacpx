@@ -39,6 +39,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@ganglion/xacpx-control-bridge": "^0.1.0",
     "@ganglion/xacpx-relay-protocol": "^0.6.4",
     "ws": "^8.20.0"
   },

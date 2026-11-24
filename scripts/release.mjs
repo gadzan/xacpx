@@ -299,7 +299,7 @@ function buildPlan(options) {
     if (changedPaths[pkg.id].length > 0) changed.push(pkg.id);
   }
 
-  const { releases: releaseIds, floorTrackers } = expandReleaseSet({ changed });
+  const { releases: releaseIds, floorTrackers, webFollowers, bridgeFollowers } = expandReleaseSet({ changed });
 
   // Versions are decided from the ORIGINAL manifests, then written together, so
   // a derived edit (compat mirrors core) has both endpoints available.
@@ -329,6 +329,8 @@ function buildPlan(options) {
     bump: options.bump,
     releases,
     floorTrackers,
+    webFollowers,
+    bridgeFollowers,
     waves: publishWaves(releaseIds),
     edits,
     changedPaths,
@@ -478,7 +480,11 @@ function printPlan(plan) {
   for (const release of plan.releases) {
     const why = plan.floorTrackers.includes(release.id)
       ? "  (republished so its published floor tracks core)"
-      : "";
+      : plan.webFollowers?.includes(release.id)
+        ? "  (republished so its published web range names this version)"
+        : plan.bridgeFollowers?.includes(release.id)
+          ? "  (republished so its published control-bridge range names this version)"
+          : "";
     out.push(`  ${release.id.padEnd(16)} ${release.from} -> ${release.to}   ${release.tag}${why}`);
   }
   out.push("", "changed since last tag:");

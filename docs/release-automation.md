@@ -88,6 +88,9 @@ propagations are not obvious:
   dashboard publishes as `@ganglion/xacpx-web`. Relay's published range has to
   name that version: npm's `^X.Y.Z` does not match a prerelease, so leaving the
   old range on npm would make `npm i -g @ganglion/xacpx-relay` fail.
+- **`packages/control-bridge/**` → `control-bridge`, and both `relay` and
+  `channel-relay` are republished with it.** They install
+  `@ganglion/xacpx-control-bridge`, and the same prerelease rule applies.
 - **A core release republishes `channel-relay`, `channel-feishu`, and
   `channel-discord` even with no source change.** Those plugins statically
   import runtime named exports from `xacpx/plugin-api`, which ESM resolves
@@ -122,7 +125,7 @@ packages resolve from the registry, or its smoke steps fail with
 `ETARGET No matching version found`.
 
 1. wave 1 — `relay-protocol`
-2. wave 2 — `web`
+2. wave 2 — `web`, `control-bridge`
 3. wave 3 — `relay`, `channel-relay`
 4. wave 4 — `core`, `channel-feishu`, `channel-discord`, `channel-yuanbao`
 

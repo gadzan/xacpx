@@ -123,6 +123,16 @@ test("relay-protocol workspace version and consumer deps match across manifests 
   }
 });
 
+test("relay and channel-relay install the shared control bridge", () => {
+  const bridge = readJson("packages/control-bridge/package.json");
+  const relay = readJson("packages/relay/package.json");
+  const channel = readJson("packages/channel-relay/package.json");
+  expect(bridge.name).toBe("@ganglion/xacpx-control-bridge");
+  expect(bridge.version).toBe("0.1.0");
+  expect(relay.dependencies["@ganglion/xacpx-control-bridge"]).toBe("^0.1.0");
+  expect(channel.dependencies["@ganglion/xacpx-control-bridge"]).toBe("^0.1.0");
+});
+
 test("npm lockfile has no versionless installed package entries", () => {
   const lock = readJson("package-lock.json");
   const versionless = Object.entries(lock.packages as Record<string, { link?: boolean; version?: string }>)

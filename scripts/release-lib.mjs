@@ -11,7 +11,7 @@
  * under `.github/workflows/publish-*.yml`.
  */
 
-/** @typedef {"core"|"relay-protocol"|"web"|"relay"|"channel-relay"|"channel-feishu"|"channel-discord"|"channel-yuanbao"} PackageId */
+/** @typedef {"core"|"relay-protocol"|"web"|"control-bridge"|"relay"|"channel-relay"|"channel-feishu"|"channel-discord"|"channel-yuanbao"} PackageId */
 
 /**
  * Published packages, in publish-dependency order.
@@ -39,6 +39,14 @@ export const PACKAGE_REGISTRY = [
     // The dashboard is its own package. relay depends on it instead of embedding
     // a copy, so a UI-only change no longer ships as a relay release.
     sourcePaths: ["packages/web/src/", "packages/web/public/", "packages/web/assets/", "packages/web/index.js", "packages/web/index.d.ts"],
+    wave: 2,
+  },
+  {
+    id: "control-bridge",
+    npmName: "@ganglion/xacpx-control-bridge",
+    tagPrefix: "control-bridge-v",
+    manifestPath: "packages/control-bridge/package.json",
+    sourcePaths: ["packages/control-bridge/src/"],
     wave: 2,
   },
   {
@@ -109,6 +117,7 @@ export const RELEASE_ARTIFACTS = {
   core: { build: "build", verifyId: "root" },
   "relay-protocol": { build: "build:relay-protocol", verifyId: "relay-protocol" },
   web: { build: "build:web", verifyId: "web" },
+  "control-bridge": { build: "build:control-bridge", verifyId: "control-bridge" },
   relay: { build: "build:relay", verifyId: "relay" },
   "channel-relay": { build: "build:channel-relay", verifyId: "channel-relay" },
   "channel-feishu": { build: "build:channel-feishu", verifyId: "channel-feishu" },
@@ -139,8 +148,14 @@ export function gateScope(releaseIds) {
   const specs = releaseIds.map((id) => RELEASE_ARTIFACTS[id]);
   if (specs.some((spec) => spec === undefined)) return null;
   const covered = new Set(releaseIds);
-  // relay's own build runs `build:web`, which already typechecks the dashboard.
-  if (covered.has("relay")) covered.add("web");
+  // relay's own build runs `build:web` and `build:control-bridge`, and
+  // channel-relay's build runs `build:control-bridge`, so those are already
+  // typechecked.
+  if (covered.has("relay")) {
+    covered.add("web");
+    covered.add("control-bridge");
+  }
+  if (covered.has("channel-relay")) covered.add("control-bridge");
   const compiles = releaseIds.includes("relay-protocol")
     ? PROTOCOL_CONSUMERS
       .filter((id) => !covered.has(id))
@@ -171,7 +186,7 @@ export const CORE_FLOOR_TRACKERS = ["channel-relay", "channel-feishu", "channel-
 export const COMPAT_MANIFEST = "weacpx-compat/package.json";
 
 /** Every consumer whose protocol dependency range must equal the protocol version. */
-export const PROTOCOL_CONSUMERS = ["relay", "web", "channel-relay"];
+export const PROTOCOL_CONSUMERS = ["relay", "web", "channel-relay", "control-bridge"];
 
 /**
  * Packages whose published dependency on `@ganglion/xacpx-web` must name the
@@ -180,6 +195,9 @@ export const PROTOCOL_CONSUMERS = ["relay", "web", "channel-relay"];
  * fail with ETARGET. These are republished with web, not merely rewritten.
  */
 export const WEB_RANGE_FOLLOWERS = ["relay"];
+
+/** Same prerelease-range rule for the shared control bridge. */
+export const BRIDGE_RANGE_FOLLOWERS = ["relay", "channel-relay"];
 
 /**
  * How to compile each protocol consumer, for the gate that runs when the
@@ -199,6 +217,7 @@ export const PROTOCOL_CONSUMER_COMPILE = {
   relay: { command: "bun", args: ["x", "tsc", "-p", "packages/relay/tsconfig.json"] },
   "channel-relay": { command: "bun", args: ["x", "tsc", "-p", "packages/channel-relay/tsconfig.json"] },
   web: { command: "bun", args: ["x", "vue-tsc", "--noEmit"], cwd: "packages/web" },
+  "control-bridge": { command: "bun", args: ["x", "tsc", "-p", "packages/control-bridge/tsconfig.json"] },
 };
 
 /** Files carrying the core-floor literals that must move with a core release. */
@@ -418,14 +437,16 @@ export function detectChanged(changedPaths) {
  * must be republished only so a published floor keeps tracking core.
  *
  * @param {{changed:PackageId[]}} input
- * @returns {{releases:PackageId[], floorTrackers:PackageId[], webFollowers:PackageId[]}} `releases` in registry order
+ * @returns {{releases:PackageId[], floorTrackers:PackageId[], webFollowers:PackageId[], bridgeFollowers:PackageId[]}} `releases` in registry order
  */
 export function expandReleaseSet({ changed }) {
   const changedSet = new Set(changed);
   const coreReleased = changedSet.has("core");
   const webReleased = changedSet.has("web");
+  const bridgeReleased = changedSet.has("control-bridge");
   const floorTrackers = coreReleased ? CORE_FLOOR_TRACKERS.filter((id) => !changedSet.has(id)) : [];
   const webFollowers = webReleased ? WEB_RANGE_FOLLOWERS.filter((id) => !changedSet.has(id)) : [];
+  const bridgeFollowers = bridgeReleased ? BRIDGE_RANGE_FOLLOWERS.filter((id) => !changedSet.has(id)) : [];
 
   // A core release always republishes every floor-tracker, even one with no
   // source change: its published peer range would otherwise point at an older
@@ -436,6 +457,7 @@ export function expandReleaseSet({ changed }) {
   // the web version, so rewriting the manifest without publishing it would
   // leave `npm i -g` on the old range.
   if (webReleased) for (const id of WEB_RANGE_FOLLOWERS) all.add(id);
+  if (bridgeReleased) for (const id of BRIDGE_RANGE_FOLLOWERS) all.add(id);
 
   // A protocol release bumps the range in all three consumers, but a consumer
   // only gets republished if it has changes of its own: the range bump alone
@@ -443,7 +465,7 @@ export function expandReleaseSet({ changed }) {
   // range names them (`^X.Y.Z` excludes `X.Y.Z-beta.N`).
 
   const releases = PACKAGE_REGISTRY.filter((pkg) => all.has(pkg.id)).map((pkg) => pkg.id);
-  return { releases, floorTrackers, webFollowers };
+  return { releases, floorTrackers, webFollowers, bridgeFollowers };
 }
 
 /**
@@ -586,6 +608,18 @@ export function collectFloorViolations({ versions, manifests }) {
     }
   }
 
+  const bridge = versions["control-bridge"];
+  if (bridge) {
+    const expected = `^${bridge}`;
+    for (const id of BRIDGE_RANGE_FOLLOWERS) {
+      const manifest = manifests[registryEntry(id).manifestPath];
+      const range = manifest?.dependencies?.["@ganglion/xacpx-control-bridge"];
+      if (manifest && range !== expected) {
+        violations.push(`${registryEntry(id).manifestPath}: control-bridge range ${range} != ${expected}`);
+      }
+    }
+  }
+
   return violations;
 }
 
@@ -696,6 +730,21 @@ export function collectEdits({ releases, versions, previousVersions }) {
         from,
         to,
         reason: "npm excludes prereleases from a caret range, so the follower must name this web version",
+      });
+    }
+  }
+
+  if (released.has("control-bridge")) {
+    const from = `^${previousVersions["control-bridge"]}`;
+    const to = `^${versions["control-bridge"]}`;
+    for (const id of BRIDGE_RANGE_FOLLOWERS) {
+      edits.push({
+        kind: "json-value",
+        file: registryEntry(id).manifestPath,
+        path: ["dependencies", "@ganglion/xacpx-control-bridge"],
+        from,
+        to,
+        reason: "npm excludes prereleases from a caret range, so the follower must name this bridge version",
       });
     }
   }
