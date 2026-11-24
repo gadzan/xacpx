@@ -1322,6 +1322,7 @@ export interface MiscMessages {
   pluginChannelYuanbao: string;
   pluginChannelDiscord: string;
   pluginChannelRelay: string;
+  pluginChannelWeb: string;
   pluginChannelInstallHint: (channelType: string, packageName: string) => string;
 
   // doctor/orchestration-health: suggestions

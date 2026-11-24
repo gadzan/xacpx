@@ -40,7 +40,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 
-const RELAY_CHANNEL_ID = "relay";
+const TERMINAL_CHANNEL_IDS = new Set(["relay", "web"]);
 const DEFAULT_KILL_TIMEOUT_MS = 5_000;
 const DEFAULT_LAST_INPUT_CHECKPOINT_MS = 30_000;
 
@@ -853,7 +853,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     sessionAlias: string,
   ): Promise<SessionResourceDescriptor> {
     const descriptor = await this.catalog.resolve(chatKey, sessionAlias);
-    if (!descriptor || descriptor.channelId !== RELAY_CHANNEL_ID) {
+    if (!descriptor || !TERMINAL_CHANNEL_IDS.has(descriptor.channelId)) {
       throw new TerminalRuntimeError("terminal-session-not-found");
     }
     if (descriptor.archived) {

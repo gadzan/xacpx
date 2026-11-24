@@ -62,6 +62,8 @@ jobs:
               # Any change to the RMUX resolver, packaging, or terminal smoke
               # must re-run the Windows production-package + hostile PATH gate.
               - 'packages/channel-relay/**'
+              - 'packages/channel-web/**'
+              - 'packages/control-bridge/**'
               - 'scripts/pack-rmux-bridge-platform.mjs'
               - 'scripts/rmux-release.mjs'
               - 'scripts/sync-rmux-bridge-versions.mjs'

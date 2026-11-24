@@ -193,6 +193,7 @@ packages/channel-<name>/
 | `bun run build:control-bridge` | 共享控制桥接包（`@ganglion/xacpx-control-bridge`）；会先生成插件 API 类型 |
 | `bun run build:relay` | relay hub；先构建看板和控制桥接包 |
 | `bun run build:channel-relay` | 主包 + relay 连接器插件 |
+| `bun run build:channel-web` | 本机网页频道（`@ganglion/xacpx-channel-web`）；会先构建看板和控制桥接包 |
 | `bun run build:packages` | 主包 + 以上全部包 |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs`（发布前必跑） |
 | `bun run dev` | 前台跑主包源码（不需要先 build） |

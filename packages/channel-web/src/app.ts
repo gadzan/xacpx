@@ -1,0 +1,442 @@
+import { randomBytes, randomUUID } from "node:crypto";
+
+import { serveStatic } from "@hono/node-server/serve-static";
+import { MemoryMessageStore, compactHistoryMessage, createControlBridge, type ControlBridgeOptions } from "@ganglion/xacpx-control-bridge";
+import {
+  MSG,
+  RELAY_CAPABILITIES,
+  encodeEnvelope,
+  isErrorPayload,
+  parseControlPayload,
+  webEventEnvelope,
+  type ControlEventDto,
+  type LiveTurnSnapshotDto,
+  type WebServerEvent,
+} from "@ganglion/xacpx-relay-protocol";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { Hono } from "hono";
+import type { PublicControlService } from "xacpx/plugin-api";
+
+import { LOCAL_INSTANCE_ID, localInstanceName, type WebChannelConfig } from "./config.js";
+import { LocalInteractions, LOCAL_OWNER_ID } from "./interactions.js";
+import { hostHeaderAllowed, jsonContentType, originAllowed, tokensMatch } from "./security.js";
+import type { LocalTerminalClient } from "./terminal.js";
+import { terminalMessage } from "./terminal.js";
+
+export const SESSION_COOKIE = "xacpx_web_session";
+const LOCAL_ACCOUNT = "local";
+const LOCAL_CHAT_KEY = "web:local";
+
+const CHAT_SCOPED = new Set<string>([
+  MSG.prompt, MSG.promptCancel, MSG.commandExecute, MSG.queueCancel,
+  MSG.scheduledList, MSG.scheduledCreate, MSG.scheduledCancel,
+  MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsNativeList, MSG.sessionsRemove,
+  MSG.sessionsArchive, MSG.sessionsUnarchive, MSG.sessionsRename, MSG.sessionsFork,
+  MSG.sessionModelGet, MSG.sessionModelSet, MSG.sessionEffortGet, MSG.sessionEffortSet,
+]);
+
+interface Client {
+  send: (data: string, done?: (error?: Error) => void) => void;
+  end: () => void;
+  session: string | undefined;
+}
+
+export interface LocalWebApp {
+  app: Hono;
+  messages: MemoryMessageStore;
+  interactions: LocalInteractions;
+  ports: { current: number };
+  publish: (event: WebServerEvent) => void;
+  project: (event: ControlEventDto) => void;
+  /** Turns that arrived before their queue reply, still waiting to be claimed. */
+  earlyTurns: () => string[];
+  allows: (session: string | undefined) => boolean;
+  attach: (send: (data: string, done?: (error?: Error) => void) => void, end: () => void, session: string | undefined) => (raw?: string) => void;
+  close: () => void;
+}
+
+export interface LocalWebAppOptions {
+  config: WebChannelConfig;
+  port: number;
+  webRoot?: string;
+  control: PublicControlService;
+  trustedConversationPrompt?: ControlBridgeOptions["trustedConversationPrompt"];
+  trustedConversationPolicyPrompt?: ControlBridgeOptions["trustedConversationPolicyPrompt"];
+  terminal?: LocalTerminalClient;
+  now?: () => number;
+}
+
+export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
+  const { config, control } = options;
+  const ports = { current: options.port };
+  const now = options.now ?? Date.now;
+  const messages = new MemoryMessageStore(() => new Date(now()));
+  const turns = new Map<string, { text: string; startedAt: number }>();
+  const sessions = new Set<string>();
+  const clients = new Set<Client>();
+  const instanceName = localInstanceName(config);
+  const viewers = new Map<Client, string>();
+  let nextViewer = 1;
+  let publish: (event: WebServerEvent) => void = () => undefined;
+  const interactions = new LocalInteractions(now, setTimeout, clearTimeout, (frame) => {
+    publish({
+      kind: "control-event",
+      instanceId: LOCAL_INSTANCE_ID,
+      event: frame as never,
+    });
+  });
+  const bridge = createControlBridge(control, {
+    ...(options.trustedConversationPrompt ? { trustedConversationPrompt: options.trustedConversationPrompt } : {}),
+    ...(options.trustedConversationPolicyPrompt ? { trustedConversationPolicyPrompt: options.trustedConversationPolicyPrompt } : {}),
+  });
+
+  publish = (event: WebServerEvent): void => {
+    const data = encodeEnvelope(webEventEnvelope(event));
+    for (const client of clients) client.send(data);
+  };
+
+  const inflightPrompts = new Map<string, number>();
+  const earlyStarts = new Map<string, Set<string>>();
+  const project = (event: ControlEventDto): void => {
+    if (!("sessionAlias" in event) || typeof event.sessionAlias !== "string") return;
+    const alias = event.sessionAlias;
+    if (event.type === "turn-started") {
+      turns.set(alias, { text: "", startedAt: now() });
+      if (typeof event.queueItemId === "string") {
+        const promoted = messages.promoteQueued({ instanceId: LOCAL_INSTANCE_ID, sessionAlias: alias, queueItemId: event.queueItemId });
+        const waiting = earlyStarts.get(alias);
+        if (promoted) waiting?.delete(event.queueItemId);
+        else if ((inflightPrompts.get(alias) ?? 0) > 0) {
+          const ids = waiting ?? new Set<string>();
+          ids.add(event.queueItemId);
+          earlyStarts.set(alias, ids);
+        }
+      }
+    } else if (event.type === "session-history") {
+      const existing = messages.listBySession(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, alias, { limit: 1 });
+      if (existing.messages.length === 0) {
+        for (const row of event.messages) {
+          if (typeof row.text === "string" && (row.direction === "in" || row.direction === "out")) {
+            messages.append(LOCAL_INSTANCE_ID, alias, row.direction, row.text, row.structured);
+          }
+        }
+      }
+    } else if (event.type === "turn-output") {
+      const turn = turns.get(alias) ?? { text: "", startedAt: now() };
+      turn.text += event.chunk;
+      turns.set(alias, turn);
+    } else if (event.type === "turn-finished") {
+      const turn = turns.get(alias);
+      const text = typeof event.text === "string" && event.text.length > 0 ? event.text : turn?.text ?? "";
+      if (text) messages.append(LOCAL_INSTANCE_ID, alias, "out", text);
+      turns.delete(alias);
+    }
+  };
+
+  const app = new Hono();
+
+  app.use("*", async (c, next) => {
+    if (!hostHeaderAllowed(c.req.header("host"), config.host, ports.current)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+    const method = c.req.method.toUpperCase();
+    const changing = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+    if ((changing || c.req.path === "/ws") && !originAllowed(c.req.header("origin"), config.host, ports.current)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+    if (changing && c.req.path.startsWith("/api/") && !jsonContentType(c.req.header("content-type"))) {
+      return c.json({ error: "unsupported-media-type" }, 415);
+    }
+    return next();
+  });
+
+  const signedIn = (cookie: string | undefined): boolean => {
+    if (!config.token) return true;
+    return cookie !== undefined && sessions.has(cookie);
+  };
+
+  app.use("/api/*", async (c, next) => {
+    if (c.req.path === "/api/config" || c.req.path === "/api/login") return next();
+    if (!signedIn(getCookie(c, SESSION_COOKIE))) return c.json({ error: "unauthorized" }, 401);
+    return next();
+  });
+
+  app.get("/api/config", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json({
+      hostMode: "local",
+      auth: { required: Boolean(config.token), mode: "token" },
+      capabilities: {
+        multiInstance: false,
+        pairing: false,
+        invites: false,
+        webPush: false,
+        relayUpdate: false,
+        agentDirectory: false,
+        terminal: options.terminal?.ready === true,
+        desktop: false,
+      },
+      defaultInstanceId: LOCAL_INSTANCE_ID,
+      historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 },
+    });
+  });
+
+  app.post("/api/login", async (c) => {
+    if (!config.token) return c.json({ username: LOCAL_ACCOUNT });
+    const body = await c.req.json().catch(() => ({})) as { token?: unknown };
+    const token = typeof body.token === "string" ? body.token : "";
+    if (!tokensMatch(config.token, token)) return c.json({ error: "unauthorized" }, 401);
+    const session = randomBytes(32).toString("base64url");
+    sessions.add(session);
+    setCookie(c, SESSION_COOKIE, session, {
+      httpOnly: true,
+      sameSite: "Strict",
+      path: "/",
+    });
+    return c.json({ username: LOCAL_ACCOUNT });
+  });
+
+  app.post("/api/logout", (c) => {
+    const session = getCookie(c, SESSION_COOKIE);
+    if (session) {
+      sessions.delete(session);
+      for (const client of clients) {
+        if (client.session === session) client.end();
+      }
+    }
+    deleteCookie(c, SESSION_COOKIE, { path: "/" });
+    return c.body(null, 204);
+  });
+
+  app.get("/api/me", (c) => c.json({ username: LOCAL_ACCOUNT }));
+
+  app.get("/api/instances", (c) => c.json({
+    instances: [{
+      id: LOCAL_INSTANCE_ID,
+      name: instanceName,
+      online: true,
+      capabilities: options.terminal?.ready === true
+        ? [RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1]
+        : [],
+    }],
+  }));
+
+  app.patch("/api/instances/:id", async (c) => {
+    if (c.req.param("id") !== LOCAL_INSTANCE_ID) return c.json({ error: "not-found" }, 404);
+    const body = await c.req.json().catch(() => ({})) as { name?: unknown };
+    if (typeof body.name === "string" && body.name.trim()) {
+      return c.json({ id: LOCAL_INSTANCE_ID, name: body.name.trim(), online: true });
+    }
+    return c.json({ error: "bad-request" }, 400);
+  });
+
+  app.get("/api/active-turns", (c) => {
+    const live: LiveTurnSnapshotDto[] = [...turns.entries()].map(([sessionAlias, turn]) => ({
+      instanceId: LOCAL_INSTANCE_ID,
+      sessionAlias,
+      parts: turn.text ? [{ type: "text", text: turn.text }] : [],
+      status: turn.text ? "streaming" : "working",
+      startedAt: turn.startedAt,
+    }));
+    return c.json({ turns: live, usage: [], commands: [], conversationCommands: [] });
+  });
+
+  app.get("/api/instances/:id/sessions/:alias/messages/:messageId", (c) => {
+    if (c.req.param("id") !== LOCAL_INSTANCE_ID) return c.json({ error: "not-found" }, 404);
+    const messageId = Number(c.req.param("messageId"));
+    if (!Number.isFinite(messageId) || messageId <= 0) return c.json({ error: "not-found" }, 404);
+    const message = messages.getById(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, c.req.param("alias"), Math.floor(messageId));
+    if (!message) return c.json({ error: "not-found" }, 404);
+    return c.json({ message });
+  });
+
+  app.get("/api/instances/:id/sessions/:alias/messages", (c) => {
+    if (c.req.param("id") !== LOCAL_INSTANCE_ID) return c.json({ error: "not-found" }, 404);
+    const alias = c.req.param("alias");
+    if (c.req.query("view") === "pending") {
+      const pending = messages.listPendingBySession(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, alias);
+      return c.json({ items: pending });
+    }
+    const limitRaw = Number(c.req.query("limit"));
+    const beforeRaw = Number(c.req.query("before"));
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 100;
+    const before = Number.isFinite(beforeRaw) && beforeRaw > 0 ? Math.floor(beforeRaw) : undefined;
+    const page = messages.listBySession(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, alias, {
+      limit,
+      ...(before !== undefined ? { before } : {}),
+    });
+    if (c.req.query("view") === "compact") {
+      return c.json({ ...page, messages: page.messages.map(compactHistoryMessage) });
+    }
+    return c.json(page);
+  });
+
+  app.post("/api/instances/:id/rpc", async (c) => {
+    if (c.req.param("id") !== LOCAL_INSTANCE_ID) return c.json({ error: "not-found" }, 404);
+    const body = await c.req.json().catch(() => ({})) as { type?: unknown; payload?: unknown };
+    if (typeof body.type !== "string" || !body.type.startsWith("control.")) {
+      return c.json({ error: "invalid-rpc-type" }, 400);
+    }
+    let payload = (body.payload ?? {}) as Record<string, unknown>;
+    if (body.type === MSG.interactionRequest || body.type === MSG.interactionWithdraw) {
+      return c.json({ error: "unsupported-rpc" }, 403);
+    }
+    if (CHAT_SCOPED.has(body.type)) {
+      payload = {
+        ...payload,
+        chatKey: LOCAL_CHAT_KEY,
+        senderId: LOCAL_ACCOUNT,
+        isOwner: true,
+        chatType: "direct",
+      };
+    }
+    if (body.type === MSG.conversationPrompt || body.type === MSG.conversationPromptWithPolicy) {
+      payload = {
+        ...payload,
+        requestId: typeof payload.requestId === "string" && payload.requestId ? payload.requestId : randomUUID(),
+        humanIngress: {
+          chatKey: LOCAL_CHAT_KEY,
+          senderId: LOCAL_ACCOUNT,
+          accountId: LOCAL_ACCOUNT,
+          senderName: LOCAL_ACCOUNT,
+          isOwner: true,
+          chatType: "direct",
+        },
+      };
+    }
+    if (body.type === MSG.interactionRespond) {
+      const answer = parseControlPayload(MSG.interactionRespond, payload);
+      if (!answer) return c.json({ error: "invalid-payload" }, 400);
+      const pending = interactions.peek(answer.requestId);
+      const allowed = pending?.interaction.permission?.availableOutcomes;
+      if (pending?.interaction.kind === "permission" && allowed && !allowed.includes(answer.action)) {
+        return c.json({ error: "invalid-payload" }, 400);
+      }
+      if (!pending || pending.interaction.expiresAt <= now() || pending.interaction.kind !== answer.kind) {
+        if (pending && pending.interaction.expiresAt <= now()) {
+          interactions.answer(answer.requestId, { responded: false, reason: "expired" });
+        }
+        return c.json({ error: "interaction-gone" }, 409);
+      }
+      interactions.answer(answer.requestId, {
+        responded: true,
+        response: { ...answer, responderId: LOCAL_OWNER_ID },
+      });
+      return c.json({ result: { ok: true } });
+    }
+    const promptAlias = body.type === MSG.prompt && typeof payload.sessionAlias === "string" ? payload.sessionAlias : undefined;
+    const promptText = promptAlias && typeof payload.text === "string" ? payload.text : undefined;
+    const promptId = promptAlias && promptText
+      ? messages.append(LOCAL_INSTANCE_ID, promptAlias, "in", promptText)
+      : undefined;
+    if (promptAlias) inflightPrompts.set(promptAlias, (inflightPrompts.get(promptAlias) ?? 0) + 1);
+    let result: unknown;
+    let finishedPrompt = false;
+    try {
+      result = await new Promise((resolve) => {
+        bridge({ protocolVersion: 1, kind: "request", type: body.type, payload } as never, resolve);
+      });
+    } finally {
+      if (promptAlias) {
+        const left = (inflightPrompts.get(promptAlias) ?? 1) - 1;
+        if (left > 0) inflightPrompts.set(promptAlias, left);
+        else {
+          inflightPrompts.delete(promptAlias);
+          finishedPrompt = true;
+        }
+      }
+    }
+    const queuedId = result !== null && typeof result === "object" && "queued" in result && result.queued === true
+      && "queueItemId" in result && typeof result.queueItemId === "string"
+      ? result.queueItemId : undefined;
+    const startedEarly = Boolean(queuedId && promptAlias && earlyStarts.get(promptAlias)?.has(queuedId));
+    if (finishedPrompt && promptAlias) earlyStarts.delete(promptAlias);
+    const rejected = !queuedId && (isErrorPayload(result)
+      || (result !== null && typeof result === "object" && "ok" in result && result.ok === false));
+    if (queuedId && promptId !== undefined && promptAlias && !startedEarly) {
+      messages.markQueued(promptId, { instanceId: LOCAL_INSTANCE_ID, sessionAlias: promptAlias, queueItemId: queuedId });
+    } else if (rejected && promptId !== undefined && promptAlias) {
+      messages.drop(LOCAL_INSTANCE_ID, promptAlias, promptId);
+    }
+    if (body.type === MSG.queueCancel && !isErrorPayload(result) && typeof payload.itemId === "string" && typeof payload.sessionAlias === "string") {
+      const cancelled = result !== null && typeof result === "object" && "cancelled" in result ? result.cancelled : undefined;
+      if (cancelled !== false) messages.deletePendingByQueueItem(LOCAL_INSTANCE_ID, payload.sessionAlias, payload.itemId);
+    }
+    if (isErrorPayload(result)) {
+      const code = result.error.code;
+      const status = code === "invalid-payload" || code === "bad-request" ? 400 : code === "timeout" ? 504 : 500;
+      return c.json({ error: code }, status);
+    }
+    return c.json({ result });
+  });
+
+  const allows = (session: string | undefined): boolean => {
+    if (!config.token) return true;
+    return session !== undefined && sessions.has(session);
+  };
+
+  const receive = async (client: Client, raw: string): Promise<void> => {
+    const message = terminalMessage(raw);
+    if (!message || !options.terminal?.ready) return;
+    let viewerId = viewers.get(client);
+    if (!viewerId) {
+      viewerId = `local-viewer-${nextViewer}`;
+      nextViewer += 1;
+      viewers.set(client, viewerId);
+    }
+    await options.terminal.handle(message, viewerId, (event, done) => client.send(encodeEnvelope(webEventEnvelope(event)), done));
+  };
+
+  const attach = (send: (data: string, done?: (error?: Error) => void) => void, end: () => void, session: string | undefined): ((raw?: string) => void) => {
+    const client = { send, end, session };
+    clients.add(client);
+    client.send(encodeEnvelope(webEventEnvelope({
+      kind: "interaction-snapshot",
+      instanceId: LOCAL_INSTANCE_ID,
+      interactions: interactions.list(),
+    })));
+    return (raw?: string) => {
+      if (raw === undefined) {
+        const viewerId = viewers.get(client);
+        if (viewerId) options.terminal?.detachViewer(viewerId);
+        clients.delete(client);
+        viewers.delete(client);
+        return;
+      }
+      void receive(client, raw);
+    };
+  };
+
+  if (options.webRoot) {
+    const root = options.webRoot;
+    app.use("/*", async (c, next) => {
+      await next();
+      if (c.req.path.startsWith("/api") || c.req.path.startsWith("/ws") || !c.res.ok) return;
+      const html = (c.res.headers.get("content-type") ?? "").includes("text/html");
+      c.header("Cache-Control", !html && c.req.path.startsWith("/assets/")
+        ? "public, max-age=31536000, immutable"
+        : "no-cache");
+    });
+    app.use("/*", serveStatic({ root }));
+    app.get("/*", serveStatic({ path: "index.html", root }));
+  }
+
+  return {
+    app,
+    messages,
+    interactions,
+    ports,
+    publish,
+    project,
+    earlyTurns: () => [...earlyStarts.values()].flatMap((ids) => [...ids]),
+    allows,
+    attach,
+    close: () => {
+      interactions.closeAll("shutdown");
+      for (const client of clients) client.end();
+      clients.clear();
+      sessions.clear();
+    },
+  };
+}
+

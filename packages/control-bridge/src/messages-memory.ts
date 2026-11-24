@@ -492,6 +492,15 @@ export class MemoryMessageStore {
     return row ? toDto(row) : null;
   }
 
+  drop(instanceId: string, sessionAlias: string, id: number): boolean {
+    const rows = this.rowsFor(instanceId, sessionAlias);
+    const index = rows.findIndex((row) => row.id === id);
+    if (index < 0) return false;
+    rows.splice(index, 1);
+    this.totalRows -= 1;
+    return true;
+  }
+
   lastId(instanceId: string, sessionAlias: string): number | undefined {
     const rows = this.rowsFor(instanceId, sessionAlias);
     return rows.length === 0 ? undefined : rows[rows.length - 1]!.id;

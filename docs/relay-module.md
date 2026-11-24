@@ -59,7 +59,7 @@ Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任�
 - 首连用访问令牌（或传统一次性配对令牌）注册并换发长期凭证，存 `<xacpx-home>/relay/credential.json`
   （weixin 凭证先例；config.json 只存 url/pairingToken）。访问令牌可复用；
   传统配对令牌单次有效，过期/已用需在 relay 侧重新生成并 `xacpx channel add relay` 更新。
-- 桥接面：relay 的 control.* RPC → 核心 ControlService（见 docs/control-module.md）。映射实现在 `@ganglion/xacpx-control-bridge`（`packages/control-bridge`），relay 与 channel-relay 都依赖它；
+- 桥接面：relay 的 control.* RPC → 核心 ControlService（见 docs/control-module.md）。映射实现在 `@ganglion/xacpx-control-bridge`（`packages/control-bridge`），relay、channel-relay 与本机网页频道 `channel-web` 都依赖它；
   ControlEventBus 事件与编排通知上行为 instance.event / instance.notice。
 - 会话创建表单数据面：`control.agents.list`（列已配置 agent：name+driver）、
   `control.workspaces.list`（name+cwd+description）、`control.workspaces.create`

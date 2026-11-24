@@ -299,7 +299,7 @@ function buildPlan(options) {
     if (changedPaths[pkg.id].length > 0) changed.push(pkg.id);
   }
 
-  const { releases: releaseIds, floorTrackers, webFollowers, bridgeFollowers } = expandReleaseSet({ changed });
+  const { releases: releaseIds, floorTrackers, webFollowers, bridgeFollowers, channelRelayFollowers } = expandReleaseSet({ changed });
 
   // Versions are decided from the ORIGINAL manifests, then written together, so
   // a derived edit (compat mirrors core) has both endpoints available.
@@ -331,6 +331,7 @@ function buildPlan(options) {
     floorTrackers,
     webFollowers,
     bridgeFollowers,
+    channelRelayFollowers,
     waves: publishWaves(releaseIds),
     edits,
     changedPaths,
@@ -484,7 +485,9 @@ function printPlan(plan) {
         ? "  (republished so its published web range names this version)"
         : plan.bridgeFollowers?.includes(release.id)
           ? "  (republished so its published control-bridge range names this version)"
-          : "";
+          : plan.channelRelayFollowers?.includes(release.id)
+            ? "  (republished so its published channel-relay range names this version)"
+            : "";
     out.push(`  ${release.id.padEnd(16)} ${release.from} -> ${release.to}   ${release.tag}${why}`);
   }
   out.push("", "changed since last tag:");
@@ -964,6 +967,7 @@ function runGates(plan) {
   const prepared = new Set(scope.builds);
   for (const compile of scope.compiles) {
     // A protocol-only release has not built the packages these compiles import.
+    // Their declaration files have to exist before tsc, or a clean checkout fails.
     for (const script of compile.prepare ?? []) {
       if (prepared.has(script)) continue;
       prepared.add(script);

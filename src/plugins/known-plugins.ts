@@ -34,6 +34,12 @@ const KNOWN_PLUGIN_TEMPLATES: ReadonlyArray<KnownPluginTemplate> = [
     descriptionKey: "pluginChannelRelay",
     official: true,
   },
+  {
+    packageName: "@ganglion/xacpx-channel-web",
+    channels: ["web"],
+    descriptionKey: "pluginChannelWeb",
+    official: true,
+  },
 ];
 
 function resolveDescription(key: keyof ReturnType<typeof t>["misc"]): string {
