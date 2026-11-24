@@ -93,7 +93,8 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
     for (const client of clients) client.send(data);
   };
 
-  const startedQueue = new Set<string>();
+  const inflightPrompts = new Map<string, number>();
+  const earlyStarts = new Map<string, Set<string>>();
   const project = (event: ControlEventDto): void => {
     if (!("sessionAlias" in event) || typeof event.sessionAlias !== "string") return;
     const alias = event.sessionAlias;
@@ -101,8 +102,13 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
       turns.set(alias, { text: "", startedAt: now() });
       if (typeof event.queueItemId === "string") {
         const promoted = messages.promoteQueued({ instanceId: LOCAL_INSTANCE_ID, sessionAlias: alias, queueItemId: event.queueItemId });
-        if (!promoted) startedQueue.add(event.queueItemId);
-        else startedQueue.delete(event.queueItemId);
+        const waiting = earlyStarts.get(alias);
+        if (promoted) waiting?.delete(event.queueItemId);
+        else if ((inflightPrompts.get(alias) ?? 0) > 0) {
+          const ids = waiting ?? new Set<string>();
+          ids.add(event.queueItemId);
+          earlyStarts.set(alias, ids);
+        }
       }
     } else if (event.type === "session-history") {
       const existing = messages.listBySession(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, alias, { limit: 1 });
@@ -321,15 +327,31 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
     const promptId = promptAlias && promptText
       ? messages.append(LOCAL_INSTANCE_ID, promptAlias, "in", promptText)
       : undefined;
-    const result = await new Promise((resolve) => {
-      bridge({ protocolVersion: 1, kind: "request", type: body.type, payload } as never, resolve);
-    });
+    if (promptAlias) inflightPrompts.set(promptAlias, (inflightPrompts.get(promptAlias) ?? 0) + 1);
+    let result: unknown;
+    let finishedPrompt = false;
+    try {
+      result = await new Promise((resolve) => {
+        bridge({ protocolVersion: 1, kind: "request", type: body.type, payload } as never, resolve);
+      });
+    } finally {
+      if (promptAlias) {
+        const left = (inflightPrompts.get(promptAlias) ?? 1) - 1;
+        if (left > 0) inflightPrompts.set(promptAlias, left);
+        else {
+          inflightPrompts.delete(promptAlias);
+          finishedPrompt = true;
+        }
+      }
+    }
     const queuedId = result !== null && typeof result === "object" && "queued" in result && result.queued === true
       && "queueItemId" in result && typeof result.queueItemId === "string"
       ? result.queueItemId : undefined;
+    const startedEarly = Boolean(queuedId && promptAlias && earlyStarts.get(promptAlias)?.has(queuedId));
+    if (finishedPrompt && promptAlias) earlyStarts.delete(promptAlias);
     const rejected = !queuedId && (isErrorPayload(result)
       || (result !== null && typeof result === "object" && "ok" in result && result.ok === false));
-    if (queuedId && promptId !== undefined && promptAlias && !startedQueue.has(queuedId)) {
+    if (queuedId && promptId !== undefined && promptAlias && !startedEarly) {
       messages.markQueued(promptId, { instanceId: LOCAL_INSTANCE_ID, sessionAlias: promptAlias, queueItemId: queuedId });
     } else if (rejected && promptId !== undefined && promptAlias) {
       messages.drop(LOCAL_INSTANCE_ID, promptAlias, promptId);
