@@ -64,6 +64,24 @@ test("filters aliases visible in each channel", () => {
   expect(isSessionAliasVisibleInChannel("feishu:backend:codex", "feishu")).toBe(true);
 });
 
+test("the relay hub and the local web console share one session list", () => {
+  registerKnownChannelId("relay");
+  registerKnownChannelId("web");
+
+  // Two doors onto one machine: which one opened a session is not something the
+  // user should have to remember, so each must list the other's sessions.
+  expect(isSessionAliasVisibleInChannel("relay:backend", "web")).toBe(true);
+  expect(isSessionAliasVisibleInChannel("web:backend", "relay")).toBe(true);
+  expect(isSessionAliasVisibleInChannel("relay:backend", "relay")).toBe(true);
+  expect(isSessionAliasVisibleInChannel("web:backend", "web")).toBe(true);
+
+  // The shared scope is closed: it does not leak into any other channel, whose
+  // identical display aliases must stay separate accounts.
+  expect(isSessionAliasVisibleInChannel("relay:backend", "feishu")).toBe(false);
+  expect(isSessionAliasVisibleInChannel("feishu:backend", "web")).toBe(false);
+  expect(isSessionAliasVisibleInChannel("weixin:backend", "web")).toBe(false);
+});
+
 test("resolves input aliases with legacy weixin preference", () => {
   expect(resolveSessionAliasForInput("weixin", "backend:codex", ["backend:codex"])).toBe("backend:codex");
   expect(resolveSessionAliasForInput("weixin", "backend:codex", [])).toBe("weixin:backend:codex");

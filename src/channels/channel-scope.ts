@@ -66,12 +66,32 @@ export function toDisplaySessionAlias(internalAlias: string): string {
   return internalAlias;
 }
 
+/**
+ * Channels that present the same session list to the user.
+ *
+ * The relay hub and the local web console are two doors onto one machine: a
+ * session created in either must be visible in both. Which door opened it is an
+ * implementation detail, not something the user should have to remember, so
+ * their aliases stay channel-prefixed (the prefix is the transport session name
+ * and must not be rewritten) but the visibility rule treats the pair as one
+ * scope.
+ *
+ * Every other channel keeps its own prefix: Feishu, Discord and Yuanbao are
+ * separate accounts, where an identical display alias must not collide.
+ */
+const SHARED_SESSION_SCOPE: ReadonlySet<string> = new Set(["relay", "web"]);
+
+/** The scope a channel's session list belongs to; itself unless it shares one. */
+function sessionScopeFor(channelId: string): string {
+  return SHARED_SESSION_SCOPE.has(channelId) ? "relay" : channelId;
+}
+
 export function isSessionAliasVisibleInChannel(alias: string, channelId: string): boolean {
   const [first] = alias.split(":", 1);
   if (first && KNOWN_CHANNEL_IDS.has(first)) {
-    return first === channelId;
+    return sessionScopeFor(first) === sessionScopeFor(channelId);
   }
-  return channelId === "weixin";
+  return sessionScopeFor(channelId) === "weixin";
 }
 
 export function resolveSessionAliasForInput(
