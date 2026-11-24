@@ -97,6 +97,30 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
 
   const inflightPrompts = new Map<string, number>();
   const earlyStarts = new Map<string, Set<string>>();
+
+  /**
+   * What this console can serve, read from the core rather than assumed.
+   *
+   * The timeline is the dashboard's only conversation surface: without its
+   * capability the pane shows an upgrade notice and disables every write entry
+   * point. The core exposes a probe, so ask it — a daemon that answers `true`
+   * projects `control.conversation.timeline`, and our own validator must accept
+   * the payload before we advertise it.
+   */
+  const instanceCapabilities = (): string[] => {
+    const capabilities: string[] = [];
+    if (options.terminal?.ready === true) {
+      capabilities.push(RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1);
+    }
+    const probe = (control as { supportsConversationTimelineV1?: unknown }).supportsConversationTimelineV1;
+    if (typeof probe === "function" && (probe as () => unknown).call(control) === true) {
+      const accepted = parseControlPayload(MSG.conversationTimeline, {
+        conversationId: "probe", topicId: "probe", limit: 1,
+      }) !== null;
+      if (accepted) capabilities.push(RELAY_CAPABILITIES.conversationTimelineV1);
+    }
+    return capabilities;
+  };
   const project = (event: ControlEventDto): void => {
     if (!("sessionAlias" in event) || typeof event.sessionAlias !== "string") return;
     const alias = event.sessionAlias;
@@ -215,9 +239,7 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
       id: LOCAL_INSTANCE_ID,
       name: instanceName,
       online: true,
-      capabilities: options.terminal?.ready === true
-        ? [RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1]
-        : [],
+      capabilities: instanceCapabilities(),
     }],
   }));
 

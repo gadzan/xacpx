@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { MSG } from "@ganglion/xacpx-relay-protocol";
+import { MSG, RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 
 import { createLocalWebApp } from "../../../../packages/channel-web/src/app";
 
@@ -17,14 +17,14 @@ function control(seen: Array<Record<string, unknown>> = []) {
 
 function app(token?: string) {
   return createLocalWebApp({
-    config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false }, ...(token ? { token } : {}) },
-    port: 7890,
+    config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false }, ...(token ? { token } : {}) },
+    port: 7138,
     control: control() as never,
   }).app;
 }
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
-  return { host: "127.0.0.1:7890", ...extra };
+  return { host: "127.0.0.1:7138", ...extra };
 }
 
 describe("local web app", () => {
@@ -41,7 +41,7 @@ describe("local web app", () => {
   });
 
   test("rejects a foreign host and a foreign origin", async () => {
-    const host = await app().request("/api/config", { headers: { host: "evil.example:7890" } });
+    const host = await app().request("/api/config", { headers: { host: "evil.example:7138" } });
     expect(host.status).toBe(403);
     const origin = await app().request("/api/login", {
       method: "POST",
@@ -62,8 +62,8 @@ describe("local web app", () => {
 
   test("a token stays in an http-only cookie", async () => {
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, token: "secret", terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, token: "secret", terminal: { enabled: false } },
+      port: 7138,
       control: control() as never,
     });
     const denied = await local.app.request("/api/me", { headers: headers() });
@@ -86,8 +86,8 @@ describe("local web app", () => {
   test("stamps the local chat scope before a browser prompt reaches core", async () => {
     const seen: Array<Record<string, unknown>> = [];
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
       control: control(seen) as never,
     });
     const response = await local.app.request("/api/instances/local/rpc", {
@@ -112,8 +112,8 @@ describe("local web app", () => {
   test("stamps the local owner on a direct conversation prompt", async () => {
     const seen: Array<Record<string, unknown>> = [];
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
       control: { events: { subscribe: () => () => undefined } } as never,
       trustedConversationPrompt: async (input, ingress) => {
         seen.push({ ...input, humanIngress: ingress });
@@ -137,8 +137,8 @@ describe("local web app", () => {
 
   test("reports the terminal only when it actually started", async () => {
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: true } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: true } },
+      port: 7138,
       control: control() as never,
       terminal: { ready: false, handle: async () => undefined, detachViewer: () => undefined },
     });
@@ -146,13 +146,39 @@ describe("local web app", () => {
     expect((await response.json()).capabilities.terminal).toBe(false);
   });
 
+  test("advertises the timeline when the core provides it", async () => {
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
+      control: {
+        events: { subscribe: () => () => undefined },
+        supportsConversationTimelineV1: () => true,
+      } as never,
+    });
+    const response = await local.app.request("/api/instances", { headers: headers() });
+    const [instance] = (await response.json()).instances;
+    // The dashboard shows an upgrade notice and disables writes without this.
+    expect(instance.capabilities).toContain(RELAY_CAPABILITIES.conversationTimelineV1);
+  });
+
+  test("offers no timeline when the core cannot answer for it", async () => {
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
+      control: { events: { subscribe: () => () => undefined } } as never,
+    });
+    const response = await local.app.request("/api/instances", { headers: headers() });
+    const [instance] = (await response.json()).instances;
+    expect(instance.capabilities).not.toContain(RELAY_CAPABILITIES.conversationTimelineV1);
+  });
+
   test("keeps a prompt that starts before the queue reply is known", async () => {
     let finish: (value: unknown) => void = () => undefined;
     let reached: () => void = () => undefined;
     const waiting = new Promise<void>((resolve) => { reached = resolve; });
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
       control: {
         events: { subscribe: () => () => undefined },
         prompt: () => {
@@ -180,8 +206,8 @@ describe("local web app", () => {
     let reached: () => void = () => undefined;
     const waiting = new Promise<void>((resolve) => { reached = resolve; });
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
       control: {
         events: { subscribe: () => () => undefined },
         prompt: () => {
@@ -208,8 +234,8 @@ describe("local web app", () => {
 
   test("removes a queued prompt only when cancellation succeeds", async () => {
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
       control: {
         events: { subscribe: () => () => undefined },
         prompt: async () => ({ queued: true, queueItemId: "q1" }),
@@ -233,8 +259,8 @@ describe("local web app", () => {
 
   test("seeds recovered history once and keeps its structure", async () => {
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
       control: control() as never,
     });
     const seed = {
@@ -253,8 +279,8 @@ describe("local web app", () => {
 
   test("keeps a rejected prompt out of history", async () => {
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
       control: { events: { subscribe: () => () => undefined }, prompt: async () => ({ error: { code: "bad-request", message: "no" } }) } as never,
     });
     const response = await local.app.request("/api/instances/local/rpc", {
@@ -269,8 +295,8 @@ describe("local web app", () => {
 
   test("a live turn is still there after a refresh and lands in history when it finishes", async () => {
     const local = createLocalWebApp({
-      config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-      port: 7890,
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
       control: control() as never,
       now: () => 1_700_000_000_000,
     });
