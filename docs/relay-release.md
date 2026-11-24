@@ -110,23 +110,29 @@ git tag v<X.Y.Z>
 git push origin v<X.Y.Z>
 ```
 
-## 发布 relay 四包（tag 触发，已有 CI）
+## 发布 relay 栈（tag 触发，已有 CI）
 
-protocol、web、relay、channel-relay 各有 tag 触发 workflow（`publish-relay-protocol.yml` /
-`publish-web.yml` / `publish-relay.yml` / `publish-channel-relay.yml`，结构与频道包一致：test +
-`verify:publish` + tag/版本一致性校验 + `npm publish`（`secrets.NPM_TOKEN`）+ GitHub release）。
-看板必须先于 hub：hub 的依赖范围要能解析到刚发出的看板版本。按拓扑顺序推 tag：
+protocol、web、control-bridge、relay、channel-relay、channel-web 各有 tag 触发 workflow
+（`publish-relay-protocol.yml` / `publish-web.yml` / `publish-control-bridge.yml` /
+`publish-relay.yml` / `publish-channel-relay.yml` / `publish-channel-web.yml`，结构与频道包一致：
+test + `verify:publish` + tag/版本一致性校验 + `npm publish`（`secrets.NPM_TOKEN`）+ GitHub release）。
+按依赖顺序推 tag：protocol 最先；看板和控制桥接其次；hub 与 relay 连接器依赖前两波；本机网页频道最后，
+因为它同时依赖看板、控制桥接和 relay 连接器的终端入口。
 
 ```bash
 # 2. protocol 先发（确认 packages/relay-protocol/package.json 的 version）
 git tag relay-protocol-v<X.Y.Z> && git push origin relay-protocol-v<X.Y.Z>
 
-# 3. 看板（确认 packages/web/package.json 的 version）
+# 3. 看板和控制桥接（确认各自 package.json 的 version）
 git tag web-v<X.Y.Z> && git push origin web-v<X.Y.Z>
+git tag control-bridge-v<X.Y.Z> && git push origin control-bridge-v<X.Y.Z>
 
-# 4. 看板发布完成后，再发 hub 和连接器
+# 4. 前一波发布完成后，再发 hub 和连接器
 git tag relay-v<X.Y.Z>          && git push origin relay-v<X.Y.Z>
 git tag channel-relay-v<X.Y.Z>  && git push origin channel-relay-v<X.Y.Z>
+
+# 5. 本机网页频道最后发
+git tag channel-web-v<X.Y.Z> && git push origin channel-web-v<X.Y.Z>
 ```
 
 每个 workflow 会校验 tag 必须精确等于 `<pkg>-v<package.json 的 version>`，对不上直接失败。
@@ -169,8 +175,10 @@ xacpx channel add relay --url <host> --token <access-token>
 | `@ganglion/xacpx-channel-discord` | `channel-discord-v<X.Y.Z>` | publish-channel-discord.yml |
 | `@ganglion/xacpx-relay-protocol` | `relay-protocol-v<X.Y.Z>` | publish-relay-protocol.yml |
 | `@ganglion/xacpx-web` | `web-v<X.Y.Z>` | publish-web.yml |
+| `@ganglion/xacpx-control-bridge` | `control-bridge-v<X.Y.Z>` | publish-control-bridge.yml |
 | `@ganglion/xacpx-relay` | `relay-v<X.Y.Z>` | publish-relay.yml |
 | `@ganglion/xacpx-channel-relay` | `channel-relay-v<X.Y.Z>` | publish-channel-relay.yml |
+| `@ganglion/xacpx-channel-web` | `channel-web-v<X.Y.Z>` | publish-channel-web.yml |
 
 预发布走 npm `next` dist-tag；CI workflow 按 tag 里的 `-beta`/`-rc` 等后缀自动选 dist-tag。
 
