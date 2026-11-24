@@ -54,7 +54,8 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 | `bun run build:channel-discord` | Main package + Discord plugin |
 | `bun run build:relay-protocol` | Wire protocol package (also a dependency of `build:plugin-api`) |
 | `bun run build:web` | Dashboard package (`@ganglion/xacpx-web`); static assets only |
-| `bun run build:relay` | Relay hub; builds the dashboard first and depends on `@ganglion/xacpx-web` instead of embedding it |
+| `bun run build:control-bridge` | Shared control bridge (`@ganglion/xacpx-control-bridge`); builds the plugin API types first |
+| `bun run build:relay` | Relay hub; builds the dashboard and the control bridge first |
 | `bun run build:channel-relay` | Main package + relay connector plugin |
 | `bun run build:packages` | Main package + all of the above packages |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs` (run before every publish) |
@@ -119,8 +120,9 @@ xacpx/
 │   ├── channel-yuanbao/
 │   ├── channel-discord/
 │   ├── channel-relay/  # relay hub connector plugin
-│   ├── relay/          # relay hub (bin: xacpx-relay; depends on @ganglion/xacpx-web)
+│   ├── relay/          # relay hub (bin: xacpx-relay; depends on @ganglion/xacpx-web and @ganglion/xacpx-control-bridge)
 │   ├── relay-protocol/ # wire protocol + DTOs (zero deps)
+│   ├── control-bridge/ # shared control mapping (@ganglion/xacpx-control-bridge)
 │   ├── web/            # dashboard (@ganglion/xacpx-web; no runtime deps)
 │   └── docs/           # VitePress docs site (this site)
 ├── platform-packages/  # @ganglion/xacpx-rmux-bridge-* (NOT in root workspaces)

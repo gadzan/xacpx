@@ -299,7 +299,7 @@ function buildPlan(options) {
     if (changedPaths[pkg.id].length > 0) changed.push(pkg.id);
   }
 
-  const { releases: releaseIds, floorTrackers } = expandReleaseSet({ changed });
+  const { releases: releaseIds, floorTrackers, webFollowers, bridgeFollowers } = expandReleaseSet({ changed });
 
   // Versions are decided from the ORIGINAL manifests, then written together, so
   // a derived edit (compat mirrors core) has both endpoints available.
@@ -329,6 +329,8 @@ function buildPlan(options) {
     bump: options.bump,
     releases,
     floorTrackers,
+    webFollowers,
+    bridgeFollowers,
     waves: publishWaves(releaseIds),
     edits,
     changedPaths,
@@ -478,7 +480,11 @@ function printPlan(plan) {
   for (const release of plan.releases) {
     const why = plan.floorTrackers.includes(release.id)
       ? "  (republished so its published floor tracks core)"
-      : "";
+      : plan.webFollowers?.includes(release.id)
+        ? "  (republished so its published web range names this version)"
+        : plan.bridgeFollowers?.includes(release.id)
+          ? "  (republished so its published control-bridge range names this version)"
+          : "";
     out.push(`  ${release.id.padEnd(16)} ${release.from} -> ${release.to}   ${release.tag}${why}`);
   }
   out.push("", "changed since last tag:");
@@ -955,9 +961,15 @@ function runGates(plan) {
     [join(ROOT, "scripts", "verify-publish.mjs"), "--packages", scope.verifyIds.join(",")],
     { cwd: ROOT, stdio: "inherit" },
   );
+  const prepared = new Set(scope.builds);
   for (const compile of scope.compiles) {
-    // Only reachable on a protocol release: these consumers are not shipping,
-    // but this release rewrites the protocol range they compile against.
+    // A protocol-only release has not built the packages these compiles import.
+    for (const script of compile.prepare ?? []) {
+      if (prepared.has(script)) continue;
+      prepared.add(script);
+      console.log(`  preparing ${script} before ${compile.id}`);
+      execFileSync("bun", ["run", script], { cwd: ROOT, stdio: "inherit" });
+    }
     console.log(`  compiling ${compile.id}, which installs the protocol this release publishes`);
     execFileSync(compile.command, compile.args, {
       cwd: join(ROOT, compile.cwd ?? "."),

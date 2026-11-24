@@ -16,9 +16,12 @@ const STEP_TIMEOUT_MS = Number(
   process.env.RUN_TESTS_STEP_TIMEOUT_MS ?? (root === "tests/compat" ? 600_000 : 180_000),
 );
 
-const protocolBuildCode = await runOne("bun", ["run", "build:relay-protocol"]);
-if (protocolBuildCode !== 0) {
-  process.exit(protocolBuildCode ?? 1);
+// The bridge build emits the protocol package and dist/plugin-api.d.ts
+// itself. Its typecheck imports xacpx/plugin-api, so it cannot run before that
+// declaration exists.
+const bridgeBuildCode = await runOne("bun", ["run", "build:control-bridge"]);
+if (bridgeBuildCode !== 0) {
+  process.exit(bridgeBuildCode ?? 1);
 }
 
 const buildCode = await runOne("bun", [

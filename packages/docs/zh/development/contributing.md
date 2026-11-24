@@ -54,7 +54,8 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 | `bun run build:channel-discord` | 主包 + Discord 插件 |
 | `bun run build:relay-protocol` | 线协议包（同时是 `build:plugin-api` 的依赖） |
 | `bun run build:web` | 看板包（`@ganglion/xacpx-web`） |
-| `bun run build:relay` | relay hub；先构建看板，再依赖 `@ganglion/xacpx-web`，不再把看板拷进 hub |
+| `bun run build:control-bridge` | 共享控制桥接包（`@ganglion/xacpx-control-bridge`）；会先生成插件 API 类型 |
+| `bun run build:relay` | relay hub；先构建看板和控制桥接包 |
 | `bun run build:channel-relay` | 主包 + relay 连接器插件 |
 | `bun run build:packages` | 主包 + 以上全部包 |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs`（每次发布前运行） |
@@ -119,8 +120,9 @@ xacpx/
 │   ├── channel-yuanbao/
 │   ├── channel-discord/
 │   ├── channel-relay/  # relay hub 连接器插件
-│   ├── relay/          # relay hub（bin: xacpx-relay；依赖 @ganglion/xacpx-web）
+│   ├── relay/          # relay hub（bin: xacpx-relay；依赖 @ganglion/xacpx-web 和 @ganglion/xacpx-control-bridge）
 │   ├── relay-protocol/ # 线协议 + DTO（零依赖）
+│   ├── control-bridge/ # 共享控制桥接（@ganglion/xacpx-control-bridge）
 │   ├── web/            # 看板（@ganglion/xacpx-web；无运行时依赖）
 │   └── docs/           # VitePress 文档站（即本站）
 ├── platform-packages/  # @ganglion/xacpx-rmux-bridge-*（不在 root workspaces 内）

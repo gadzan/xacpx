@@ -190,7 +190,8 @@ Key scripts in `package.json`:
 | `bun run build:channel-discord` | Main package + discord plugin |
 | `bun run build:relay-protocol` | Wire protocol package (also a dependency of `build:plugin-api`) |
 | `bun run build:web` | Dashboard package (`@ganglion/xacpx-web`); static assets only |
-| `bun run build:relay` | relay hub; builds the dashboard first and depends on `@ganglion/xacpx-web` instead of embedding it |
+| `bun run build:control-bridge` | Shared control bridge (`@ganglion/xacpx-control-bridge`); builds the plugin API types first |
+| `bun run build:relay` | Relay hub; builds the dashboard and the control bridge first |
 | `bun run build:channel-relay` | Main package + relay connector plugin |
 | `bun run build:packages` | Main package + all of the above packages |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs` (must run before publishing) |
