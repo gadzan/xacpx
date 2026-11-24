@@ -40,6 +40,7 @@
     { "source": "docs/doctor-command.md", "site": null, "note": "CLI diagnostics; no site page" },
     { "source": "docs/faq.md", "site": null, "note": "repo FAQ; no site page" },
     { "source": "docs/feishu-cardactions-deployment.md", "site": null, "note": "ops runbook; no site page" },
+    { "source": "docs/local-web-plugin-dev.md", "site": null, "note": "contributor debugging guide; no site page" },
     { "source": "docs/peer-delegation.md", "site": null, "note": "internal design doc; no site page" },
     { "source": "docs/relay-deployment.md", "site": null, "note": "site ships its own longer guide/relay-self-hosting walkthrough" },
     { "source": "docs/relay-history-retirement.md", "site": null, "note": "internal design/implementation record for the history retirement; no site page" },

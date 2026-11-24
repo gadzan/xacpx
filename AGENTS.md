@@ -41,6 +41,17 @@ node ./scripts/verify-stack.mjs doctor              # stateless leftover check
 
 See [`docs/verification-stack.md`](docs/verification-stack.md). The harness redirects `HOME` and the xacpx state paths into a temp dir, so the operator's `~/.xacpx` is never read or written.
 
+**Debugging a channel plugin from source (no beta publish per fix):**
+
+```bash
+node ./scripts/dev-channel-web.mjs --build   # build, link this checkout into the plugin home
+node ./dist/cli.js restart                   # daemon now loads packages/channel-web
+```
+
+Iterate with `bun run build:channel-web && node ./dist/cli.js restart`, and go back to the published package with `node ./scripts/dev-channel-web.mjs --unlink`. Check `curl http://127.0.0.1:7138/api/instances` to confirm which build is loaded — the local instance reports `conversations.timeline.v1` only when the running code has the timeline probe, and without it the dashboard hides every conversation.
+
+See [`docs/local-web-plugin-dev.md`](docs/local-web-plugin-dev.md). Linking a plugin makes Node resolve `xacpx/plugin-api` from this checkout, so the script writes a shim into both trees; a missing shim makes every plugin fail to load and the daemon refuse to start.
+
 _*Monorepo builds (packages/* are Bun workspaces):_*
 
 ```bash
