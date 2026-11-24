@@ -29,7 +29,7 @@ describe("SettingsView", () => {
     const w = mount(SettingsView, { global: { stubs: { "router-link": true } } });
     await flushPromises();
     expect(get).toHaveBeenCalledWith("/api/config");
-    expect(w.text()).toContain("30");
+    expect(w.text()).toContain("On this device");
   });
 
   it("invite section does not exist for any user", async () => {

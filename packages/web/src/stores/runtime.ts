@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 import {
   LEGACY_RELAY_RUNTIME,
   normalizeRuntimeConfig,
@@ -15,11 +15,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (loaded.value) return config.value;
     try {
       config.value = normalizeRuntimeConfig(await api.get<unknown>("/api/config"));
-    } catch {
-      // An old hub answers 401 here. That is the relay dashboard.
-      config.value = { ...LEGACY_RELAY_RUNTIME, capabilities: { ...LEGACY_RELAY_RUNTIME.capabilities } };
+      loaded.value = true;
+    } catch (error) {
+      // An old hub answers 401 (the route used to require a session) or 404.
+      // A network blip or a 5xx must not stick: the next navigation tries again.
+      const status = error instanceof ApiError ? error.status : 0;
+      if (status === 401 || status === 404) {
+        config.value = { ...LEGACY_RELAY_RUNTIME, capabilities: { ...LEGACY_RELAY_RUNTIME.capabilities } };
+        loaded.value = true;
+      }
     }
-    loaded.value = true;
     return config.value;
   }
 

@@ -33,6 +33,7 @@ import {
 import { api, ApiError } from "../api/client";
 import { useChatStore } from "./chat";
 import { useAuthStore } from "./auth";
+import { useRuntimeStore } from "./runtime";
 import { dropSession as dropSessionViewSnapshots } from "../lib/view-snapshot-cache";
 import { loadGroupMode, saveGroupMode, type SidebarGroupMode } from "../lib/sidebar-group-mode";
 import { randomUuid } from "../lib/random-id";
@@ -579,9 +580,8 @@ export const useInstancesStore = defineStore("instances", () => {
 
 
   async function loadAgentDirectory(): Promise<void> {
-    const { useRuntimeStore } = await import("./runtime");
-    const runtime = useRuntimeStore();
-    if (runtime.loaded && !runtime.config.capabilities.agentDirectory) {
+    const config = await useRuntimeStore().ensure();
+    if (!config.capabilities.agentDirectory) {
       agentDirectory.value = [];
       return;
     }
