@@ -36,7 +36,7 @@ function stubHub(input: { token?: string } = {}) {
       return new Response(JSON.stringify({ token: input.token ?? "pair-tok" }), { status: 200 });
     }
     const result = url.includes("/api/config")
-      ? { historyRetention: RETENTION }
+      ? { historyRetention: { mode: "server", ...RETENTION } }
       : VERSION;
     return new Response(JSON.stringify(result), { status: 200 });
   }));

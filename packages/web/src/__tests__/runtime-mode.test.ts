@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, expect, test, vi } from "vitest";
 import { normalizeRuntimeConfig } from "../lib/runtime-config";
+import { hostRoute } from "../router";
 import { useAuthStore } from "../stores/auth";
 import { useRuntimeStore } from "../stores/runtime";
 
@@ -74,10 +75,50 @@ test("local mode with a token still signs in, and does not touch web push", asyn
   expect(urls).toEqual(["/api/login"]);
 });
 
-test("a failed config request keeps the relay dashboard", async () => {
+test("a 401 config response is an older relay hub and is remembered", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => json({ error: "unauthorized" }, 401)));
-  const config = await useRuntimeStore().ensure();
+  const runtime = useRuntimeStore();
+  const config = await runtime.ensure();
   expect(config.hostMode).toBe("relay");
-  expect(config.auth.required).toBe(true);
+  expect(runtime.loaded).toBe(true);
   expect(config.capabilities.agentDirectory).toBe(true);
+});
+
+test("a failed config request is not remembered, so the next navigation can retry", async () => {
+  const fetchMock = vi.fn()
+    .mockRejectedValueOnce(new TypeError("offline"))
+    .mockResolvedValueOnce(json({
+      hostMode: "local",
+      auth: { required: false, mode: "none" },
+      capabilities: LOCAL_CAPS,
+    }));
+  vi.stubGlobal("fetch", fetchMock);
+  const runtime = useRuntimeStore();
+  expect((await runtime.ensure()).hostMode).toBe("relay");
+  expect(runtime.loaded).toBe(false);
+  expect((await runtime.ensure()).hostMode).toBe("local");
+  expect(runtime.loaded).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+test("an open local host leaves login and invite for the dashboard", () => {
+  const config = normalizeRuntimeConfig({
+    hostMode: "local",
+    auth: { required: false, mode: "none" },
+    capabilities: LOCAL_CAPS,
+  });
+  expect(hostRoute("login", config)).toEqual({ name: "dashboard" });
+  expect(hostRoute("invite", config)).toEqual({ name: "dashboard" });
+  expect(hostRoute("dashboard", config)).toBe(true);
+});
+
+test("a token-gated local host keeps login and refuses invites", () => {
+  const config = normalizeRuntimeConfig({
+    hostMode: "local",
+    auth: { required: true, mode: "token" },
+    capabilities: LOCAL_CAPS,
+  });
+  expect(hostRoute("login", config)).toBe(true);
+  expect(hostRoute("invite", config)).toEqual({ name: "login" });
+  expect(hostRoute("settings", config)).toBe("check-session");
 });

@@ -527,6 +527,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     } catch {
       webPush = false;
     }
+    c.header("Cache-Control", "no-store");
     return c.json({
       hostMode: "relay",
       auth: { required: true, mode: "token" },

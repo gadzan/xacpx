@@ -40,8 +40,7 @@ const showAddInstance = ref(false);
 
 onMounted(async () => {
   try {
-    const cfg = await api.get<{ historyRetention: { mode?: string; days: number; maxPerSession: number } }>("/api/config");
-    retention.value = cfg.historyRetention;
+    retention.value = (await runtime.ensure()).historyRetention;
   } catch { /* leave null; UI shows a dash */ }
   try {
     relay.value = await api.get<{ current: string; latest: string | null; updateAvailable: boolean }>("/api/version");
@@ -68,6 +67,12 @@ async function probeNotifications(): Promise<void> {
   // Capability boundary first: no Notification API at all -> unsupported, never toggleable.
   if (typeof Notification === "undefined") {
     notifState.value = "unsupported";
+    return;
+  }
+  // No server push channel. The row stays so the reason is visible; the browser
+  // Notification API is a separate switch and is not offered from this row.
+  if (!(await runtime.ensure()).capabilities.webPush) {
+    notifState.value = "server-disabled";
     return;
   }
   if (Notification.permission === "denied") {
@@ -287,7 +292,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-if="runtime.config.capabilities.webPush" data-test="notif-setting" class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
+      <section data-test="notif-setting" class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.notifTitle") }}</h2>
         <div class="flex items-center gap-1.5">
           <!-- The state text carries the honesty: Off/On is the app preference,

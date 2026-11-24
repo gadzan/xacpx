@@ -999,6 +999,7 @@ test("GET /api/config is public so the dashboard can choose a host mode before l
   });
   const res = await app.request("/api/config");
   expect(res.status).toBe(200);
+  expect(res.headers.get("cache-control")).toBe("no-store");
   expect((await res.json()).hostMode).toBe("relay");
 });
 

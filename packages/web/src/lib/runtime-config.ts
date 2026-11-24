@@ -1,3 +1,11 @@
+/**
+ * Host description read from `GET /api/config` before routing.
+ *
+ * This file parses the whole capability set. The dashboard currently acts on
+ * `pairing`, `relayUpdate`, `webPush` and `agentDirectory`. `multiInstance`,
+ * `invites`, `terminal`, `desktop` and `defaultInstanceId` are part of the
+ * contract for the local host and are consumed by later changes.
+ */
 export interface WebRuntimeCapabilities {
   multiInstance: boolean;
   pairing: boolean;

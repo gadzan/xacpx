@@ -130,6 +130,24 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
       json(res, 200, { username: "e2e" });
       return;
     }
+    if (req.method === "GET" && path === "/api/config") {
+      json(res, 200, {
+        hostMode: "relay",
+        auth: { required: true, mode: "token" },
+        capabilities: {
+          multiInstance: true,
+          pairing: true,
+          invites: true,
+          webPush: false,
+          relayUpdate: true,
+          agentDirectory: true,
+          terminal: true,
+          desktop: true,
+        },
+        historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 },
+      });
+      return;
+    }
     if (req.method === "GET" && path === "/api/instances") {
       json(res, 200, {
         instances: [{
