@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-channel-relay",
-  "version": "0.7.9",
+  "version": "0.7.10-beta.0",
   "description": "Relay hub connector channel plugin for xacpx.",
   "license": "MIT",
   "keywords": [
@@ -32,7 +32,7 @@
     "README.md"
   ],
   "peerDependencies": {
-    "xacpx": ">=0.24.10"
+    "xacpx": ">=0.24.11-beta.0"
   },
   "peerDependenciesMeta": {
     "xacpx": {
@@ -44,14 +44,14 @@
   },
   "dependencies": {
     "@ganglion/xacpx-control-bridge": "^0.1.0",
-    "@ganglion/xacpx-relay-protocol": "^0.6.4",
+    "@ganglion/xacpx-relay-protocol": "^0.6.5-beta.0",
     "ws": "^8.20.0"
   },
   "optionalDependencies": {
-    "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.9",
-    "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.9",
-    "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.9",
-    "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.9",
-    "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.9"
+    "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.10-beta.0",
+    "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.10-beta.0",
+    "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.10-beta.0",
+    "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.10-beta.0",
+    "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.10-beta.0"
   }
 }

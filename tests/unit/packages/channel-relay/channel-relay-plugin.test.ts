@@ -7,23 +7,23 @@ import { validatePluginCompatibility } from "../../../../src/plugins/compatibili
 test("relay connector requires the M3-elicitation-capable xacpx core", () => {
   const pkg = JSON.parse(readFileSync("packages/channel-relay/package.json", "utf8"));
 
-  expect(plugin.minXacpxVersion).toBe("0.24.10");
-  expect(pkg.peerDependencies.xacpx).toBe(">=0.24.10");
+  expect(plugin.minXacpxVersion).toBe("0.24.11-beta.0");
+  expect(pkg.peerDependencies.xacpx).toBe(">=0.24.11-beta.0");
 
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
     currentXacpxVersion: "0.24.9",
   })).toThrow();
-  // The floor graduated from a prerelease to `0.24.10`, and a stable minimum
+  // The floor graduated from a prerelease to `0.24.11-beta.0`, and a stable minimum
   // normalizes the running core before comparing, so a prerelease of that same
   // version satisfies it (see normalizeCoreVersionForCompat).
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
-    currentXacpxVersion: "0.24.10-beta.2",
+    currentXacpxVersion: "0.24.11-beta.0-beta.2",
   })).not.toThrow();
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
-    currentXacpxVersion: "0.24.10",
+    currentXacpxVersion: "0.24.11-beta.0",
   })).not.toThrow();
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,

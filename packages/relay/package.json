@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-relay",
-  "version": "0.14.12",
+  "version": "0.14.13-beta.0",
   "description": "Self-hosted relay hub for xacpx: instance gateway, accounts, and web API.",
   "license": "MIT",
   "keywords": [
@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@ganglion/xacpx-control-bridge": "^0.1.0",
-    "@ganglion/xacpx-relay-protocol": "^0.6.4",
+    "@ganglion/xacpx-relay-protocol": "^0.6.5-beta.0",
     "@ganglion/xacpx-web": "^0.1.0",
     "@hono/node-server": "^1.13.0",
     "hono": "^4.6.0",

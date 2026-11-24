@@ -11,7 +11,7 @@ export type { WebChannelConfig } from "./config.js";
 const plugin: XacpxPlugin = {
   apiVersion: 1,
   name: "@ganglion/xacpx-channel-web",
-  minXacpxVersion: "0.24.10",
+  minXacpxVersion: "0.24.11-beta.0",
   channels: [
     {
       type: "web",

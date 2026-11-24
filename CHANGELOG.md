@@ -1,4 +1,55 @@
 # Changelog
+## [relay-protocol 0.6.5-beta.0] - 2026-11-24
+
+### Added
+
+- continue a session under another configured agent (UX3) (#606)
+
+## [relay 0.14.13-beta.0] - 2026-11-24
+
+### Added
+
+- retire server-side message history, keep transcripts client-side (#616)
+- publish the dashboard as @ganglion/xacpx-web (#617)
+- let one dashboard serve relay and local hosts (#621)
+
+### Changed
+
+- share the control bridge (#622)
+
+### Fixed
+
+- do not fork at the wrong prompt node (#615)
+
+## [channel-relay 0.7.10-beta.0] - 2026-11-24
+
+- 跟随 core 重新发布，`minXacpxVersion` 与 `peerDependencies.xacpx` 下限指向本版 core；本次无用户可见行为变化。
+
+## [0.24.11-beta.0] - 2026-11-24
+
+### Added
+
+- continue a session under another configured agent (UX3) (#606)
+- add a local web channel (#620)
+
+### Fixed
+
+- clear the failing unit suites and the defects they exposed (#601)
+- share one model list across workspaces of the same agent (#602)
+- do not fork at the wrong prompt node (#615)
+
+## [channel-web 0.1.1-beta.0] - 2026-11-24
+
+- 跟随 core 重新发布，`minXacpxVersion` 与 `peerDependencies.xacpx` 下限指向本版 core；零代码变动。
+
+## [channel-feishu 0.8.8-beta.0] - 2026-11-24
+
+- 跟随 core 重新发布，`minXacpxVersion` 与 `peerDependencies.xacpx` 下限从 `0.24.10-beta.19` 提到 `0.24.11-beta.0`；本次无用户可见行为变化。
+
+## [channel-discord 0.8.8-beta.0] - 2026-11-24
+
+- 跟随 core 重新发布，`minXacpxVersion` 与 `peerDependencies.xacpx` 下限从 `0.24.10-beta.19` 提到 `0.24.11-beta.0`；本次无用户可见行为变化。
+
 ## [0.24.10] - 2026-11-20
 
 0.24.10 把 0.24.6–0.24.10 的 beta 线转成正式版。下面是这条线相对 0.24.5 的用户可见变化。
