@@ -193,6 +193,7 @@ Key scripts in `package.json`:
 | `bun run build:control-bridge` | Shared control bridge (`@ganglion/xacpx-control-bridge`); builds the plugin API types first |
 | `bun run build:relay` | Relay hub; builds the dashboard and the control bridge first |
 | `bun run build:channel-relay` | Main package + relay connector plugin |
+| `bun run build:channel-web` | Local web channel (`@ganglion/xacpx-channel-web`); builds the dashboard and control bridge first |
 | `bun run build:packages` | Main package + all of the above packages |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs` (must run before publishing) |
 | `bun run dev` | Run main package source in the foreground (no build needed first) |

@@ -21,6 +21,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./terminal": {
+      "types": "./dist/terminal.d.ts",
+      "default": "./dist/terminal.js"
     }
   },
   "files": [

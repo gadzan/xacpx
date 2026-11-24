@@ -11,7 +11,7 @@
  * under `.github/workflows/publish-*.yml`.
  */
 
-/** @typedef {"core"|"relay-protocol"|"web"|"control-bridge"|"relay"|"channel-relay"|"channel-feishu"|"channel-discord"|"channel-yuanbao"} PackageId */
+/** @typedef {"core"|"relay-protocol"|"web"|"control-bridge"|"relay"|"channel-relay"|"channel-web"|"channel-feishu"|"channel-discord"|"channel-yuanbao"} PackageId */
 
 /**
  * Published packages, in publish-dependency order.
@@ -75,6 +75,15 @@ export const PACKAGE_REGISTRY = [
     wave: 4,
   },
   {
+    id: "channel-web",
+    npmName: "@ganglion/xacpx-channel-web",
+    tagPrefix: "channel-web-v",
+    manifestPath: "packages/channel-web/package.json",
+    sourcePaths: ["packages/channel-web/src/"],
+    pluginEntryPath: "packages/channel-web/src/index.ts",
+    wave: 4,
+  },
+  {
     id: "channel-feishu",
     npmName: "@ganglion/xacpx-channel-feishu",
     tagPrefix: "channel-feishu-v",
@@ -120,6 +129,7 @@ export const RELEASE_ARTIFACTS = {
   "control-bridge": { build: "build:control-bridge", verifyId: "control-bridge" },
   relay: { build: "build:relay", verifyId: "relay" },
   "channel-relay": { build: "build:channel-relay", verifyId: "channel-relay" },
+  "channel-web": { build: "build:channel-web", verifyId: "channel-web" },
   "channel-feishu": { build: "build:channel-feishu", verifyId: "channel-feishu" },
   "channel-discord": { build: "build:channel-discord", verifyId: "channel-discord" },
   "channel-yuanbao": { build: "build:channel-yuanbao", verifyId: "channel-yuanbao" },
@@ -156,6 +166,10 @@ export function gateScope(releaseIds) {
     covered.add("control-bridge");
   }
   if (covered.has("channel-relay")) covered.add("control-bridge");
+  if (covered.has("channel-web")) {
+    covered.add("web");
+    covered.add("control-bridge");
+  }
   const compiles = releaseIds.includes("relay-protocol")
     ? PROTOCOL_CONSUMERS
       .filter((id) => !covered.has(id))
@@ -180,13 +194,13 @@ export function gateScope(releaseIds) {
  * `channel-yuanbao` is deliberately absent: its floor is `0.17.0` and it does
  * not import the newer runtime exports.
  */
-export const CORE_FLOOR_TRACKERS = ["channel-relay", "channel-feishu", "channel-discord"];
+export const CORE_FLOOR_TRACKERS = ["channel-relay", "channel-web", "channel-feishu", "channel-discord"];
 
 /** Files whose contents mirror a package version. */
 export const COMPAT_MANIFEST = "weacpx-compat/package.json";
 
 /** Every consumer whose protocol dependency range must equal the protocol version. */
-export const PROTOCOL_CONSUMERS = ["relay", "web", "channel-relay", "control-bridge"];
+export const PROTOCOL_CONSUMERS = ["relay", "web", "channel-relay", "channel-web", "control-bridge"];
 
 /**
  * Packages whose published dependency on `@ganglion/xacpx-web` must name the
@@ -194,10 +208,16 @@ export const PROTOCOL_CONSUMERS = ["relay", "web", "channel-relay", "control-bri
  * so a dashboard beta would otherwise make `npm i -g @ganglion/xacpx-relay`
  * fail with ETARGET. These are republished with web, not merely rewritten.
  */
-export const WEB_RANGE_FOLLOWERS = ["relay"];
+export const WEB_RANGE_FOLLOWERS = ["relay", "channel-web"];
 
 /** Same prerelease-range rule for the shared control bridge. */
-export const BRIDGE_RANGE_FOLLOWERS = ["relay", "channel-relay"];
+export const BRIDGE_RANGE_FOLLOWERS = ["relay", "channel-relay", "channel-web"];
+
+/**
+ * The local web channel imports `@ganglion/xacpx-channel-relay/terminal`.
+ * A prerelease of that package is not matched by the old caret range.
+ */
+export const CHANNEL_RELAY_RANGE_FOLLOWERS = ["channel-web"];
 
 /**
  * How to compile each protocol consumer, for the gate that runs when the
@@ -230,6 +250,11 @@ export const PROTOCOL_CONSUMER_COMPILE = {
     args: ["x", "tsc", "-p", "packages/control-bridge/tsconfig.json"],
     prepare: ["build:plugin-api"],
   },
+  "channel-web": {
+    command: "bun",
+    args: ["x", "tsc", "-p", "packages/channel-web/tsconfig.json"],
+    prepare: ["build:channel-relay"],
+  },
 };
 
 /** Files carrying the core-floor literals that must move with a core release. */
@@ -237,6 +262,7 @@ export const CORE_FLOOR_TEST_FILES = {
   "channel-relay": "tests/unit/packages/channel-relay/channel-relay-plugin.test.ts",
   "channel-feishu": "tests/unit/packages/channel-feishu/feishu-plugin.test.ts",
   "channel-discord": "tests/unit/packages/channel-discord/discord-plugin.test.ts",
+  "channel-web": "tests/unit/packages/channel-web/plugin.test.ts",
 };
 
 export const METADATA_TEST_FILE = "tests/unit/packages/package-metadata.test.ts";
@@ -449,16 +475,20 @@ export function detectChanged(changedPaths) {
  * must be republished only so a published floor keeps tracking core.
  *
  * @param {{changed:PackageId[]}} input
- * @returns {{releases:PackageId[], floorTrackers:PackageId[], webFollowers:PackageId[], bridgeFollowers:PackageId[]}} `releases` in registry order
+ * @returns {{releases:PackageId[], floorTrackers:PackageId[], webFollowers:PackageId[], bridgeFollowers:PackageId[], channelRelayFollowers:PackageId[]}} `releases` in registry order
  */
 export function expandReleaseSet({ changed }) {
   const changedSet = new Set(changed);
   const coreReleased = changedSet.has("core");
   const webReleased = changedSet.has("web");
   const bridgeReleased = changedSet.has("control-bridge");
+  const channelRelayReleased = changedSet.has("channel-relay");
   const floorTrackers = coreReleased ? CORE_FLOOR_TRACKERS.filter((id) => !changedSet.has(id)) : [];
   const webFollowers = webReleased ? WEB_RANGE_FOLLOWERS.filter((id) => !changedSet.has(id)) : [];
   const bridgeFollowers = bridgeReleased ? BRIDGE_RANGE_FOLLOWERS.filter((id) => !changedSet.has(id)) : [];
+  const channelRelayFollowers = channelRelayReleased
+    ? CHANNEL_RELAY_RANGE_FOLLOWERS.filter((id) => !changedSet.has(id))
+    : [];
 
   // A core release always republishes every floor-tracker, even one with no
   // source change: its published peer range would otherwise point at an older
@@ -470,6 +500,7 @@ export function expandReleaseSet({ changed }) {
   // leave `npm i -g` on the old range.
   if (webReleased) for (const id of WEB_RANGE_FOLLOWERS) all.add(id);
   if (bridgeReleased) for (const id of BRIDGE_RANGE_FOLLOWERS) all.add(id);
+  if (channelRelayReleased) for (const id of CHANNEL_RELAY_RANGE_FOLLOWERS) all.add(id);
 
   // A protocol release bumps the range in all three consumers, but a consumer
   // only gets republished if it has changes of its own: the range bump alone
@@ -477,7 +508,7 @@ export function expandReleaseSet({ changed }) {
   // range names them (`^X.Y.Z` excludes `X.Y.Z-beta.N`).
 
   const releases = PACKAGE_REGISTRY.filter((pkg) => all.has(pkg.id)).map((pkg) => pkg.id);
-  return { releases, floorTrackers, webFollowers, bridgeFollowers };
+  return { releases, floorTrackers, webFollowers, bridgeFollowers, channelRelayFollowers };
 }
 
 /**
@@ -632,6 +663,18 @@ export function collectFloorViolations({ versions, manifests }) {
     }
   }
 
+  const channelRelay = versions["channel-relay"];
+  if (channelRelay) {
+    const expected = `^${channelRelay}`;
+    for (const id of CHANNEL_RELAY_RANGE_FOLLOWERS) {
+      const manifest = manifests[registryEntry(id).manifestPath];
+      const range = manifest?.dependencies?.["@ganglion/xacpx-channel-relay"];
+      if (manifest && range !== expected) {
+        violations.push(`${registryEntry(id).manifestPath}: channel-relay range ${range} != ${expected}`);
+      }
+    }
+  }
+
   return violations;
 }
 
@@ -757,6 +800,21 @@ export function collectEdits({ releases, versions, previousVersions }) {
         from,
         to,
         reason: "npm excludes prereleases from a caret range, so the follower must name this bridge version",
+      });
+    }
+  }
+
+  if (released.has("channel-relay")) {
+    const from = `^${previousVersions["channel-relay"]}`;
+    const to = `^${versions["channel-relay"]}`;
+    for (const id of CHANNEL_RELAY_RANGE_FOLLOWERS) {
+      edits.push({
+        kind: "json-value",
+        file: registryEntry(id).manifestPath,
+        path: ["dependencies", "@ganglion/xacpx-channel-relay"],
+        from,
+        to,
+        reason: "npm excludes prereleases from a caret range, so the follower must name this channel-relay version",
       });
     }
   }

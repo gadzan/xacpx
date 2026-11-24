@@ -137,15 +137,17 @@ test("a protocol release compiles the consumers whose range it rewrites", () => 
     "relay",
     "web",
     "channel-relay",
+    "channel-web",
     "control-bridge",
   ]);
   // A consumer that also ships is compiled by its own build. relay's build
   // runs build:web, so the dashboard is not typechecked a second time.
   expect(gateScope(["relay-protocol", "relay"])?.compiles.map((compile) => compile.id))
-    .toEqual(["channel-relay"]);
+    .toEqual(["channel-relay", "channel-web"]);
   expect(gateScope(["relay"])?.compiles).toEqual([]);
-  expect(gateScope(["relay-protocol"])?.compiles.find((compile) => compile.id === "relay")?.prepare)
-    .toEqual(["build:control-bridge"]);
+  const protocol = gateScope(["relay-protocol"]);
+  expect(protocol?.compiles.find((compile) => compile.id === "relay")?.prepare).toEqual(["build:control-bridge"]);
+  expect(protocol?.compiles.find((compile) => compile.id === "channel-web")?.prepare).toEqual(["build:channel-relay"]);
 });
 
 test("every protocol consumer has a compile command", () => {
@@ -296,21 +298,27 @@ test("detectChanged returns registry order, not path order", () => {
 
 test("a core release pulls in every floor tracker, listed separately from real changes", () => {
   const { releases, floorTrackers } = expandReleaseSet({ changed: ["core"] });
-  expect(releases).toEqual(["channel-relay", "core", "channel-feishu", "channel-discord"]);
-  expect(floorTrackers).toEqual(["channel-relay", "channel-feishu", "channel-discord"]);
+  expect(releases).toEqual(["channel-relay", "core", "channel-web", "channel-feishu", "channel-discord"]);
+  expect(floorTrackers).toEqual(["channel-relay", "channel-web", "channel-feishu", "channel-discord"]);
 });
 
 test("a dashboard change republishes relay so its published range names that web version", () => {
   const { releases, floorTrackers, webFollowers } = expandReleaseSet({ changed: ["web"] });
-  expect(releases).toEqual(["web", "relay"]);
+  expect(releases).toEqual(["web", "relay", "channel-web"]);
   expect(floorTrackers).toEqual([]);
-  expect(webFollowers).toEqual(["relay"]);
+  expect(webFollowers).toEqual(["relay", "channel-web"]);
 });
 
 test("a control-bridge change republishes the two packages that install it", () => {
   const { releases, bridgeFollowers } = expandReleaseSet({ changed: ["control-bridge"] });
-  expect(releases).toEqual(["control-bridge", "relay", "channel-relay"]);
-  expect(bridgeFollowers).toEqual(["relay", "channel-relay"]);
+  expect(releases).toEqual(["control-bridge", "relay", "channel-relay", "channel-web"]);
+  expect(bridgeFollowers).toEqual(["relay", "channel-relay", "channel-web"]);
+});
+
+test("a channel-relay change republishes the local web channel that imports its terminal", () => {
+  const { releases, channelRelayFollowers } = expandReleaseSet({ changed: ["channel-relay"] });
+  expect(releases).toEqual(["channel-relay", "channel-web"]);
+  expect(channelRelayFollowers).toEqual(["channel-web"]);
 });
 
 test("channel-yuanbao is never pulled in by a core release", () => {
@@ -325,18 +333,18 @@ test("channel-yuanbao is never pulled in by a core release", () => {
 });
 
 test("publishWaves orders protocol, then the dashboard, then its dependents", () => {
-  const waves = publishWaves(["core", "relay-protocol", "web", "control-bridge", "relay", "channel-relay", "channel-discord"]);
+  const waves = publishWaves(["core", "relay-protocol", "web", "control-bridge", "relay", "channel-relay", "channel-web", "channel-discord"]);
   expect(waves).toEqual([
     ["relay-protocol"],
     ["web", "control-bridge"],
     ["relay", "channel-relay"],
-    ["core", "channel-discord"],
+    ["core", "channel-web", "channel-discord"],
   ]);
 });
 
 test("collectEdits derives the whole core floor set from one version", () => {
   const edits = collectEdits({
-    releases: ["channel-relay", "core", "channel-feishu", "channel-discord"],
+    releases: ["channel-relay", "channel-web", "core", "channel-feishu", "channel-discord"],
     versions: { core: "0.24.10-beta.4" },
     previousVersions: { core: "0.24.10-beta.3" },
   });
@@ -344,7 +352,7 @@ test("collectEdits derives the whole core floor set from one version", () => {
 
   expect(targets).toContain(`${COMPAT_MANIFEST}|version`);
   expect(targets).toContain(`${COMPAT_MANIFEST}|dependencies.@ganglion/xacpx`);
-  for (const id of ["channel-relay", "channel-feishu", "channel-discord"]) {
+  for (const id of ["channel-relay", "channel-web", "channel-feishu", "channel-discord"]) {
     expect(targets).toContain(`packages/${id}/package.json|peerDependencies.xacpx`);
     expect(targets).toContain(`packages/${id}/src/index.ts|`);
   }
@@ -368,6 +376,7 @@ test("collectEdits rewrites the protocol range in every consumer with one versio
   const files = edits.filter((edit) => (edit.path ?? []).at(-1) === "@ganglion/xacpx-relay-protocol");
   expect(files.map((edit) => edit.file).sort()).toEqual([
     "packages/channel-relay/package.json",
+    "packages/channel-web/package.json",
     "packages/control-bridge/package.json",
     "packages/relay/package.json",
     "packages/web/package.json",
@@ -387,6 +396,17 @@ test("collectEdits rewrites the web range in relay when the dashboard ships", ()
   expect(webRange?.file).toBe("packages/relay/package.json");
   expect(webRange?.from).toBe("^0.1.0");
   expect(webRange?.to).toBe("^0.1.1-beta.0");
+});
+
+test("collectEdits rewrites the channel-relay range when that package ships", () => {
+  const edits = collectEdits({
+    releases: ["channel-relay"],
+    versions: { "channel-relay": "0.7.9-beta.0" },
+    previousVersions: { "channel-relay": "0.7.8" },
+  });
+  const range = edits.find((edit) => edit.path?.join(".") === "dependencies.@ganglion/xacpx-channel-relay");
+  expect(range?.file).toBe("packages/channel-web/package.json");
+  expect(range?.to).toBe("^0.7.9-beta.0");
 });
 
 test("collectEdits asks for the bridge sync whenever channel-relay ships", () => {
@@ -414,9 +434,19 @@ function consistentManifests(core: string) {
       peerDependencies: { xacpx: `>=${core}` },
       dependencies: { "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2" },
     },
+    "packages/channel-web/package.json": {
+      peerDependencies: { xacpx: `>=${core}` },
+      dependencies: {
+        "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.2",
+        "@ganglion/xacpx-web": "^0.1.0",
+        "@ganglion/xacpx-control-bridge": "^0.1.0",
+        "@ganglion/xacpx-channel-relay": "^0.7.8",
+      },
+    },
     "packages/channel-feishu/package.json": { peerDependencies: { xacpx: `>=${core}` } },
     "packages/channel-discord/package.json": { peerDependencies: { xacpx: `>=${core}` } },
     "channel-relay:minXacpxVersion": core,
+    "channel-web:minXacpxVersion": core,
     "channel-feishu:minXacpxVersion": core,
     "channel-discord:minXacpxVersion": core,
   };

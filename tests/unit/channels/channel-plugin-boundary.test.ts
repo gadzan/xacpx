@@ -199,7 +199,7 @@ test("first-party channel packages live outside core", async () => {
     .filter((name) => name.startsWith("channel-"))
     .sort();
 
-  expect(channelPackages).toEqual(["channel-discord", "channel-feishu", "channel-relay", "channel-yuanbao"]);
+  expect(channelPackages).toEqual(["channel-discord", "channel-feishu", "channel-relay", "channel-web", "channel-yuanbao"]);
 });
 
 test("core does not import first-party channel plugin packages", async () => {

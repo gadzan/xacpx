@@ -57,6 +57,7 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 | `bun run build:control-bridge` | Shared control bridge (`@ganglion/xacpx-control-bridge`); builds the plugin API types first |
 | `bun run build:relay` | Relay hub; builds the dashboard and the control bridge first |
 | `bun run build:channel-relay` | Main package + relay connector plugin |
+| `bun run build:channel-web` | Local web channel (`@ganglion/xacpx-channel-web`); builds the dashboard and control bridge first |
 | `bun run build:packages` | Main package + all of the above packages |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs` (run before every publish) |
 | `bun run dev` | Run main package source directly (no build needed) |
@@ -120,6 +121,7 @@ xacpx/
 │   ├── channel-yuanbao/
 │   ├── channel-discord/
 │   ├── channel-relay/  # relay hub connector plugin
+│   ├── channel-web/    # local web console (@ganglion/xacpx-channel-web)
 │   ├── relay/          # relay hub (bin: xacpx-relay; depends on @ganglion/xacpx-web and @ganglion/xacpx-control-bridge)
 │   ├── relay-protocol/ # wire protocol + DTOs (zero deps)
 │   ├── control-bridge/ # shared control mapping (@ganglion/xacpx-control-bridge)

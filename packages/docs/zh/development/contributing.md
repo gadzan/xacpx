@@ -57,6 +57,7 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 | `bun run build:control-bridge` | 共享控制桥接包（`@ganglion/xacpx-control-bridge`）；会先生成插件 API 类型 |
 | `bun run build:relay` | relay hub；先构建看板和控制桥接包 |
 | `bun run build:channel-relay` | 主包 + relay 连接器插件 |
+| `bun run build:channel-web` | 本机网页频道（`@ganglion/xacpx-channel-web`）；会先构建看板和控制桥接包 |
 | `bun run build:packages` | 主包 + 以上全部包 |
 | `bun run verify:publish` | `build:packages` + `scripts/verify-publish.mjs`（每次发布前运行） |
 | `bun run dev` | 直接运行主包源码（无需构建） |
@@ -120,6 +121,7 @@ xacpx/
 │   ├── channel-yuanbao/
 │   ├── channel-discord/
 │   ├── channel-relay/  # relay hub 连接器插件
+│   ├── channel-web/    # 本机网页控制台（@ganglion/xacpx-channel-web）
 │   ├── relay/          # relay hub（bin: xacpx-relay；依赖 @ganglion/xacpx-web 和 @ganglion/xacpx-control-bridge）
 │   ├── relay-protocol/ # 线协议 + DTO（零依赖）
 │   ├── control-bridge/ # 共享控制桥接（@ganglion/xacpx-control-bridge）

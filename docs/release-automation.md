@@ -84,14 +84,17 @@ mid-flight, which is exactly the case that deserves a human.
 A package ships when a file it owns changed since its own last tag. Two
 propagations are not obvious:
 
-- **`packages/web/**` → `web`, and `relay` is republished with it.** The
-  dashboard publishes as `@ganglion/xacpx-web`. Relay's published range has to
-  name that version: npm's `^X.Y.Z` does not match a prerelease, so leaving the
-  old range on npm would make `npm i -g @ganglion/xacpx-relay` fail.
-- **`packages/control-bridge/**` → `control-bridge`, and both `relay` and
-  `channel-relay` are republished with it.** They install
+- **`packages/web/**` → `web`, and `relay` plus `channel-web` are republished
+  with it.** The dashboard publishes as `@ganglion/xacpx-web`. Their published
+  range has to name that version: npm's `^X.Y.Z` does not match a prerelease,
+  so leaving the old range on npm would make a fresh install fail.
+- **`packages/control-bridge/**` → `control-bridge`, and `relay`,
+  `channel-relay`, and `channel-web` are republished with it.** They install
   `@ganglion/xacpx-control-bridge`, and the same prerelease rule applies.
-- **A core release republishes `channel-relay`, `channel-feishu`, and
+- **`packages/channel-relay/**` → `channel-relay`, and `channel-web` is
+  republished with it.** The local web channel imports its terminal entry, so
+  its published range has to name that version too.
+- **A core release republishes `channel-relay`, `channel-web`, `channel-feishu`, and
   `channel-discord` even with no source change.** Those plugins statically
   import runtime named exports from `xacpx/plugin-api`, which ESM resolves
   during linking — before the plugin's default export runs, and therefore
@@ -127,7 +130,7 @@ packages resolve from the registry, or its smoke steps fail with
 1. wave 1 — `relay-protocol`
 2. wave 2 — `web`, `control-bridge`
 3. wave 3 — `relay`, `channel-relay`
-4. wave 4 — `core`, `channel-feishu`, `channel-discord`, `channel-yuanbao`
+4. wave 4 — `core`, `channel-web`, `channel-feishu`, `channel-discord`, `channel-yuanbao`
 
 Tags are pushed one at a time even inside a wave: `relay` and `channel-relay`
 are both heavy ubuntu jobs, and dispatching them together invites

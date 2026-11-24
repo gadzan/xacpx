@@ -91,11 +91,21 @@ export const DEFAULT_PACKAGES = [
     id: "channel-relay",
     dir: "packages/channel-relay",
     expectedName: "@ganglion/xacpx-channel-relay",
-    requiredFiles: ["dist/index.js", "dist/index.d.ts", "README.md", "package.json"],
+    requiredFiles: ["dist/index.js", "dist/index.d.ts", "dist/terminal.js", "dist/terminal.d.ts", "README.md", "package.json"],
     requiredPeer: "xacpx",
     forbiddenPeer: "weacpx",
     expectedExportedName: "@ganglion/xacpx-channel-relay",
     requiredDependency: "@ganglion/xacpx-control-bridge",
+  },
+  {
+    id: "channel-web",
+    dir: "packages/channel-web",
+    expectedName: "@ganglion/xacpx-channel-web",
+    requiredFiles: ["dist/index.js", "dist/index.d.ts", "README.md", "package.json"],
+    requiredPeer: "xacpx",
+    forbiddenPeer: "weacpx",
+    expectedExportedName: "@ganglion/xacpx-channel-web",
+    requiredDependencies: ["@ganglion/xacpx-control-bridge", "@ganglion/xacpx-web"],
   },
 ];
 

@@ -12,6 +12,7 @@ export const misc: MiscMessages = {
   pluginChannelYuanbao: "Tencent Yuanbao channel",
   pluginChannelDiscord: "Discord channel",
   pluginChannelRelay: "Relay hub connector (drive this instance from a self-hosted relay hub)",
+  pluginChannelWeb: "Local web console (open this machine in a browser without a relay hub)",
   pluginChannelInstallHint: (channelType: string, packageName: string) =>
     `Channel ${channelType} requires a plugin: xacpx plugin add ${packageName}`,
 

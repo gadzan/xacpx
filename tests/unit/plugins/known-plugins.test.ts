@@ -16,6 +16,7 @@ test("listKnownPlugins includes Feishu, Yuanbao, and the Relay connector", () =>
   expect(packageNames).toContain("@ganglion/xacpx-channel-feishu");
   expect(packageNames).toContain("@ganglion/xacpx-channel-yuanbao");
   expect(packageNames).toContain("@ganglion/xacpx-channel-relay");
+  expect(packageNames).toContain("@ganglion/xacpx-channel-web");
 });
 
 test("listKnownPlugins marks every entry as official", () => {
