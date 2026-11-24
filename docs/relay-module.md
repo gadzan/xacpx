@@ -219,8 +219,11 @@ Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任�
 
 ## 阶段四服务端接缝（维护循环与配置）
 
-- **`GET /api/config`（authed）**：返回 `{ historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 } }`
-  供设置页展示；数字是旧服务端默认值（老客户端不显示“0 条·0 天”），新客户端只看 `mode`。历史保留已退休为客户端配置（本设备每会话最近 1000 行/8MB，只读展示）。
+- **`GET /api/config`（公开，`Cache-Control: no-store`）**：登录前即可读，不含账号数据。返回
+  `hostMode: "relay"`、`auth: { required: true, mode: "token" }`、能力表（多实例、配对、邀请、Web Push 是否已配 VAPID、更新检查、agent 目录、终端、桌面）
+  以及 `{ historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 } }`。
+  数字是旧服务端默认值（老客户端不显示“0 条·0 天”），新客户端只看 `mode`。历史保留已退休为客户端配置（本设备每会话最近 1000 行/8MB，只读展示）。
+  没有 `hostMode` 的旧响应，看板按 relay 登录处理。
 - **`GET /api/version`（authed）**：返回 `{ current, latest, updateAvailable }` 供设置页展示 hub 版本与「有可用更新」提示。`current` 读自 hub 自身的 `package.json`（`readRelayVersion`）；`latest` 经 `npm view @ganglion/xacpx-relay version` 查询，结果缓存 ~1h 且失败/超时容错（失败时返回 `latest:null`、`updateAvailable:false`，绝不阻塞设置页）。版本读取、npm 查询、语义化比较与缓存检查器集中在 `packages/relay/src/version.ts`，由本端点与 `xacpx-relay update` CLI 共用。
 - **维护子系统 `src/maintenance.ts`**：`runMaintenance(stores, opts)` 跑一遍清理，
   `startMaintenanceLoop(...)` 每小时一次（`setInterval` 并 `unref`，不挡进程退出）：

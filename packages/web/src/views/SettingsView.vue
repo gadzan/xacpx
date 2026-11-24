@@ -4,6 +4,7 @@ import { ArrowLeft, Info, LogOut, Plus } from "lucide-vue-next";
 import { useRouter } from "vue-router";
 import { api } from "../api/client";
 import { useAuthStore } from "../stores/auth";
+import { useRuntimeStore } from "../stores/runtime";
 import { useThemeStore } from "../stores/theme";
 import { useLocaleStore } from "../stores/locale";
 import { useI18n } from "vue-i18n";
@@ -25,6 +26,7 @@ import UiButton from "../components/UiButton.vue";
 import UiSwitch from "../components/UiSwitch.vue";
 
 const auth = useAuthStore();
+const runtime = useRuntimeStore();
 const theme = useThemeStore();
 const router = useRouter();
 const locale = useLocaleStore();
@@ -38,8 +40,7 @@ const showAddInstance = ref(false);
 
 onMounted(async () => {
   try {
-    const cfg = await api.get<{ historyRetention: { mode?: string; days: number; maxPerSession: number } }>("/api/config");
-    retention.value = cfg.historyRetention;
+    retention.value = (await runtime.ensure()).historyRetention;
   } catch { /* leave null; UI shows a dash */ }
   try {
     relay.value = await api.get<{ current: string; latest: string | null; updateAvailable: boolean }>("/api/version");
@@ -66,6 +67,12 @@ async function probeNotifications(): Promise<void> {
   // Capability boundary first: no Notification API at all -> unsupported, never toggleable.
   if (typeof Notification === "undefined") {
     notifState.value = "unsupported";
+    return;
+  }
+  // No server push channel. The row stays so the reason is visible; the browser
+  // Notification API is a separate switch and is not offered from this row.
+  if (!(await runtime.ensure()).capabilities.webPush) {
+    notifState.value = "server-disabled";
     return;
   }
   if (Notification.permission === "denied") {
@@ -242,7 +249,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
+      <section v-if="runtime.config.capabilities.pairing" class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.addInstance") }}</h2>
         <!-- Light text action: the 44px target is transport, not paint. -->
         <button type="button" data-test="open-add-instance"
@@ -273,7 +280,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
+      <section v-if="runtime.config.capabilities.relayUpdate" class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.relayTitle") }}</h2>
         <div class="text-right">
           <p class="text-sm text-fg-muted" data-test="relay-version">
@@ -314,7 +321,7 @@ onBeforeUnmount(() => {
 
       <section class="flex min-h-11 items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.account") }}</h2>
-        <UiButton variant="danger-ghost" data-test="logout" @click="onLogout">
+        <UiButton v-if="runtime.config.auth.required" variant="danger-ghost" data-test="logout" @click="onLogout">
           <LogOut :size="15" />{{ $t("settings.signOut") }}
         </UiButton>
       </section>

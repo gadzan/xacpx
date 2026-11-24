@@ -15,21 +15,34 @@ const lib = vi.hoisted(() => ({
 vi.mock("../lib/web-push", () => lib);
 
 // SettingsView pulls the whole api client + confirm dialog; stub what it uses.
-vi.mock("../api/client", () => ({
-  api: {
-    get: vi.fn().mockRejectedValue(new Error("offline")),
-    post: vi.fn(),
-  },
-}));
+vi.mock("../api/client", () => {
+  class ApiError extends Error {
+    constructor(public readonly code: string, public readonly status: number) {
+      super(code);
+    }
+  }
+  return {
+    ApiError,
+    api: {
+      get: vi.fn().mockRejectedValue(new ApiError("offline", 503)),
+      post: vi.fn(),
+    },
+  };
+});
 vi.mock("../lib/use-confirm", () => ({ confirm: vi.fn() }));
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import SettingsView from "../views/SettingsView.vue";
 import Tooltip from "../components/Tooltip.vue";
 import { i18n } from "../i18n";
+import { normalizeRuntimeConfig } from "../lib/runtime-config";
+import { useRuntimeStore } from "../stores/runtime";
 
-function mountSettings() {
-  return mount(SettingsView, { global: { plugins: [createPinia(), i18n] } });
+function mountSettings(prepare?: () => void) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  prepare?.();
+  return mount(SettingsView, { global: { plugins: [pinia, i18n] } });
 }
 /**
  * Drain the component's onMounted promise chain without real wall-clock timers.
@@ -70,6 +83,23 @@ describe("settings notifications section", () => {
     lib.getExistingSubscription.mockResolvedValue(null);
     lib.isDesktopNotificationsEnabled.mockReturnValue(false);
   });
+  it("keeps the row when the hub has no push channel, and leaves the switch off", async () => {
+    const w = mountSettings(() => {
+      const runtime = useRuntimeStore();
+      runtime.config = normalizeRuntimeConfig({
+        hostMode: "relay",
+        capabilities: { webPush: false },
+      });
+      runtime.loaded = true;
+    });
+    await flush();
+    expect(w.find('[data-test="notif-setting"]').exists()).toBe(true);
+    expect(w.find('[data-test="notif-state"]').text()).toBe("Not enabled on server");
+    const sw = notifSwitch(w);
+    expect(sw.exists).toBe(true);
+    expect(sw.attrs.disabled).toBeDefined();
+  });
+
   it("renders an on switch when the app preference is enabled and the browser grants it", async () => {
     lib.isDesktopNotificationsEnabled.mockReturnValue(true);
     const w = mountSettings();

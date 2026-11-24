@@ -3,9 +3,12 @@ import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useAuthStore } from "../stores/auth";
+import { useRuntimeStore } from "../stores/runtime";
 import { forgetToken, readRememberedToken, rememberToken } from "../lib/login-token";
 
 const auth = useAuthStore();
+const runtime = useRuntimeStore();
+const localMode = computed(() => runtime.loaded && runtime.config.hostMode === "local");
 const router = useRouter();
 const { t, te } = useI18n();
 const token = ref(readRememberedToken());
@@ -25,6 +28,7 @@ const ADD_TOKEN_CMD = "xacpx-relay add token";
 const errorText = computed(() => {
   const code = auth.error;
   if (!code) return "";
+  if (localMode.value && code === "invalid-token") return t("login.localInvalid");
   const key = `login.errors.${code}`;
   return te(key) ? t(key) : t("login.errors.fallback");
 });
@@ -70,7 +74,7 @@ async function copyCommand() {
           </defs>
           <path d="M5 5 L19 19 M19 5 L5 19" stroke="url(#loginBrandX)" stroke-width="3.4" stroke-linecap="round" />
         </svg>
-        <h1 class="text-ui font-semibold tracking-tight text-fg">xacpx relay</h1>
+        <h1 class="text-ui font-semibold tracking-tight text-fg">{{ localMode ? $t("login.localTitle") : "xacpx relay" }}</h1>
       </div>
 
       <form
@@ -81,7 +85,7 @@ async function copyCommand() {
         <!-- body -->
         <div class="px-4 pb-5 pt-4">
           <!-- command hint + copy -->
-          <div class="flex items-center gap-2">
+          <div v-if="!localMode" class="flex items-center gap-2">
             <p class="flex-1 text-ui text-fg"><span class="select-none text-run">$</span> {{ ADD_TOKEN_CMD }}</p>
             <button
               type="button"
@@ -101,7 +105,7 @@ async function copyCommand() {
               </svg>
             </button>
           </div>
-          <p id="login-hint" class="mb-5 mt-1 text-xs leading-relaxed text-fg-muted">{{ $t("login.runHint") }}</p>
+          <p id="login-hint" class="mb-5 mt-1 text-xs leading-relaxed text-fg-muted">{{ localMode ? $t("login.localRunHint") : $t("login.runHint") }}</p>
 
           <!-- prompt label -->
           <div aria-hidden="true" class="mb-2 flex items-center gap-1.5 text-xs text-fg-muted">

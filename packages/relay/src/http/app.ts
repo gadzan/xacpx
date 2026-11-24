@@ -493,6 +493,9 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     // registration order alone already keeps these public, but if the gate is
     // ever hoisted the exemption keeps behavior identical.
     if (c.req.path === "/api/login" || c.req.path === "/api/invites/redeem") return next();
+    // Host mode is read before login so a local dashboard can skip the login
+    // page. The payload has no account data.
+    if (c.req.path === "/api/config" && c.req.method === "GET") return next();
     const token = getCookie(c, SESSION_COOKIE);
     const account = token ? deps.accounts.getSessionAccount(token) : null;
     if (!account) return c.json({ error: "unauthorized" }, 401);
@@ -518,7 +521,26 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     // Old clients only render `days`/`maxPerSession` (they would show
     // "0 days · 0 messages" on zeroes), so keep reporting the last
     // server-side defaults there; new clients key off `mode`.
+    let webPush = false;
+    try {
+      webPush = Boolean(deps.vapidPublicKey?.());
+    } catch {
+      webPush = false;
+    }
+    c.header("Cache-Control", "no-store");
     return c.json({
+      hostMode: "relay",
+      auth: { required: true, mode: "token" },
+      capabilities: {
+        multiInstance: true,
+        pairing: true,
+        invites: true,
+        webPush,
+        relayUpdate: true,
+        agentDirectory: true,
+        terminal: true,
+        desktop: true,
+      },
       historyRetention: {
         mode: "client-side",
         days: 30,

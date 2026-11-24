@@ -38,7 +38,8 @@
 - 客户端 **IndexedDB 全量留存**：`session-tail-cache.ts` 从"尾部 10 行"升级为
   "每会话全量 + 上限裁剪"，hub 页与本地缓存按 id 合并展示。
 - `--history-retention-days` 保留解析、打印 deprecation（老部署脚本不炸）；
-  `/api/config` 返回 `{ mode: "client-side", days: 30, maxPerSession: 2000 }`——
+  `/api/config` 现为公开接口，返回 `historyRetention: { mode: "client-side", days: 30, maxPerSession: 2000 }`，
+  并带 `hostMode` / `auth` / `capabilities`（见 relay-module）。
   数字是旧服务端默认值（老客户端不显示“0 条·0 天”），新客户端只看 `mode`，
   设置页切换为客户端口径展示。
 
