@@ -81,6 +81,44 @@ export function toDisplaySessionAlias(internalAlias: string): string {
  */
 const SHARED_SESSION_SCOPE: ReadonlySet<string> = new Set(["relay", "web"]);
 
+/**
+ * Internal alias for `displayAlias` addressed from `channelId`, preferring a live
+ * record over a guessed prefix.
+ *
+ * The functions above answer "what should the key be"; this one answers "which key
+ * already exists", which is what every lookup needs. Inside the shared scope the
+ * stored record may carry the sibling's prefix, so a lookup that only tries this
+ * channel's own form misses a session the list just showed.
+ *
+ * `resolve` tests whether a candidate alias names a live session; callers pass the
+ * session service lookup so this file stays free of that dependency.
+ */
+export function resolveAddressableAlias(
+  channelId: string,
+  displayAlias: string,
+  resolve: (candidate: string) => string | undefined,
+): string {
+  const normalized = displayAlias.trim();
+  if (normalized.length === 0) return scopeDisplayAliasToInternal(channelId, normalized);
+  // An already-scoped alias names its own channel; never re-scope it.
+  const [first] = normalized.split(":", 1);
+  if (first && KNOWN_CHANNEL_IDS.has(first)) {
+    return resolve(normalized) ?? normalized;
+  }
+  const direct = resolve(normalized);
+  if (direct) return direct;
+  const scoped = scopeDisplayAliasToInternal(channelId, normalized);
+  const scopedHit = resolve(scoped);
+  if (scopedHit) return scopedHit;
+  const siblingChannel = sharedScopeSibling(channelId);
+  if (siblingChannel) {
+    const siblingAlias = toInternalSessionAlias(siblingChannel, normalized);
+    const siblingHit = resolve(siblingAlias);
+    if (siblingHit) return siblingHit;
+  }
+  return scoped;
+}
+
 /** The scope a channel's session list belongs to; itself unless it shares one. */
 function sessionScopeFor(channelId: string): string {
   return SHARED_SESSION_SCOPE.has(channelId) ? "relay" : channelId;

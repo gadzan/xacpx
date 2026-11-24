@@ -66,6 +66,7 @@ import { worktreeStatus } from "../conversations/conversation-worktree-types";
 import {
   getChannelIdFromChatKey,
   isSessionAliasVisibleInChannel,
+  resolveAddressableAlias,
   scopeDisplayAliasToInternal,
   toDisplaySessionAlias,
   toInternalSessionAlias,
@@ -1543,16 +1544,27 @@ export class ControlService {
    */
   private assertOrdinaryAddressedAlias(chatKey: string, alias: string): void {
     const channelId = getChannelIdFromChatKey(chatKey);
-    const resolved =
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(alias)?.alias
-      ?? this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, alias),
-      )?.alias;
+    const resolved = this.lookupInternalAlias(channelId, alias);
     const record =
-      this.deps.sessions.getLogicalSessionRecord?.(resolved ?? alias)
+      this.deps.sessions.getLogicalSessionRecord?.(resolved)
       ?? this.deps.sessions.getLogicalSessionRecord?.(alias)
       ?? this.deps.sessions.getLogicalSessionRecord?.(toInternalSessionAlias(channelId, alias));
     assertOrdinarySessionAddressable(record?.owner);
+  }
+
+  /**
+   * The stored internal alias for a display alias addressed from `channelId`.
+   *
+   * Inside the shared session scope the record may carry the sibling channel's
+   * prefix — the relay hub and the local web console list the same sessions, so an
+   * action here must reach a session created there. One helper keeps every lookup
+   * in agreement; before this, each site re-derived the prefix and they could not
+   * all be fixed at once.
+   */
+  private lookupInternalAlias(channelId: string, displayAlias: string): string {
+    return resolveAddressableAlias(channelId, displayAlias, (candidate) =>
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(candidate)?.alias,
+    );
   }
 
   get events(): ControlEventBus {
@@ -1857,7 +1869,7 @@ export class ControlService {
 
     this.assertOrdinaryAddressedAlias(input.chatKey, input.sourceAlias);
     const channelId = getChannelIdFromChatKey(input.chatKey);
-    const targetInternal = scopeDisplayAliasToInternal(channelId, targetAlias);
+    const targetInternal = this.lookupInternalAlias(channelId, targetAlias);
 
     // A replay must name the same scope and requested aliases: a reused request
     // id with a different payload is a client bug, not an idempotent retry.
@@ -2495,11 +2507,7 @@ export class ControlService {
   ): Promise<ControlPromptResult> {
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, input.sessionAlias),
-      )?.alias ??
-      scopeDisplayAliasToInternal(channelId, input.sessionAlias);
+      this.lookupInternalAlias(channelId, input.sessionAlias);
 
     const configTail =
       this.sessionConfigSetTails.get(internalAlias) ??
@@ -2570,11 +2578,7 @@ export class ControlService {
     this.assertOrdinaryAddressedAlias(input.chatKey, input.sessionAlias);
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, input.sessionAlias),
-      )?.alias ??
-      scopeDisplayAliasToInternal(channelId, input.sessionAlias);
+      this.lookupInternalAlias(channelId, input.sessionAlias);
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
@@ -2595,21 +2599,13 @@ export class ControlService {
   queueLength(chatKey: string, sessionAlias: string): number {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, sessionAlias),
-      )?.alias ??
-      scopeDisplayAliasToInternal(channelId, sessionAlias);
+      this.lookupInternalAlias(channelId, sessionAlias);
     return this.turnQueue.queueLength(chatKey, sessionAlias, internalAlias);
   }
   isBusy(chatKey: string, sessionAlias: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, sessionAlias),
-      )?.alias ??
-      scopeDisplayAliasToInternal(channelId, sessionAlias);
+      this.lookupInternalAlias(channelId, sessionAlias);
     return this.turnQueue.isBusy(chatKey, sessionAlias, internalAlias);
   }
 
@@ -2620,22 +2616,14 @@ export class ControlService {
     this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, sessionAlias),
-      )?.alias ??
-      scopeDisplayAliasToInternal(channelId, sessionAlias);
+      this.lookupInternalAlias(channelId, sessionAlias);
     return this.turnQueue.cancelTurn(chatKey, sessionAlias, internalAlias);
   }
 
   #cancelTurnForPromptRequest(chatKey: string, sessionAlias: string, promptRequestId: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, sessionAlias),
-      )?.alias ??
-      scopeDisplayAliasToInternal(channelId, sessionAlias);
+      this.lookupInternalAlias(channelId, sessionAlias);
     return this.turnQueue.cancelTurnForPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
   }
 
@@ -2646,11 +2634,7 @@ export class ControlService {
   ): "in-flight" | "settled" | "absent" {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, sessionAlias),
-      )?.alias ??
-      scopeDisplayAliasToInternal(channelId, sessionAlias);
+      this.lookupInternalAlias(channelId, sessionAlias);
     return this.turnQueue.inspectPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
   }
 
@@ -2678,11 +2662,7 @@ export class ControlService {
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       input.boundSessionAlias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
-      this.deps.sessions.getResolvedSessionByInternalAlias?.(
-        toInternalSessionAlias(channelId, input.sessionAlias),
-      )?.alias ??
-      scopeDisplayAliasToInternal(channelId, input.sessionAlias);
+      this.lookupInternalAlias(channelId, input.sessionAlias);
     const session = await this.deps.sessions.getSession(internalAlias);
     if (!session || session.archived === true) {
       throw new AgentMessagingError(
@@ -2800,7 +2780,7 @@ export class ControlService {
     itemId: string,
   ): { cancelled: boolean } {
     const channelId = getChannelIdFromChatKey(chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    const internalAlias = this.lookupInternalAlias(channelId, sessionAlias);
     return this.turnQueue.cancelQueuedItem(chatKey, sessionAlias, itemId, internalAlias);
   }
 
@@ -2810,13 +2790,13 @@ export class ControlService {
   ): Promise<{ cleared: boolean }> {
     this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
     const channelId = getChannelIdFromChatKey(chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    const internalAlias = this.lookupInternalAlias(channelId, sessionAlias);
     return this.turnQueue.clearSession(chatKey, sessionAlias, internalAlias);
   }
 
   finishClear(chatKey: string, sessionAlias: string): void {
     const channelId = getChannelIdFromChatKey(chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    const internalAlias = this.lookupInternalAlias(channelId, sessionAlias);
     this.turnQueue.finishClear(chatKey, sessionAlias, internalAlias);
   }
 
