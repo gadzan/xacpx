@@ -144,6 +144,8 @@ test("a protocol release compiles the consumers whose range it rewrites", () => 
   expect(gateScope(["relay-protocol", "relay"])?.compiles.map((compile) => compile.id))
     .toEqual(["channel-relay"]);
   expect(gateScope(["relay"])?.compiles).toEqual([]);
+  expect(gateScope(["relay-protocol"])?.compiles.find((compile) => compile.id === "relay")?.prepare)
+    .toEqual(["build:control-bridge"]);
 });
 
 test("every protocol consumer has a compile command", () => {
