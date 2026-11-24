@@ -223,9 +223,8 @@ test("composer rests at 48px with a 32px disc inside a 44px hit box", async ({ p
   // A dead Send is dimmed by the button's own disabled state.
   const disabledColor = box.discColor;
   await page.getByTestId("group-composer-textarea").fill("Ready");
-  const enabledColor = await page.getByTestId("group-send-prompt-button").locator("span").first()
-    .evaluate((el) => getComputedStyle(el).backgroundColor);
-  expect(enabledColor).not.toBe(disabledColor);
+  await expect.poll(async () => page.getByTestId("group-send-prompt-button").locator("span").first()
+    .evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe(disabledColor);
 
   // Expanded: the disc drops to the bottom-right corner of the grown card.
   await page.getByTestId("group-composer-textarea").fill("Line one\nLine two\nLine three");
