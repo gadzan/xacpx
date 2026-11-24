@@ -58,18 +58,18 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.7.8",
+      "version": "0.7.9",
       "dependencies": {
         "@ganglion/xacpx-control-bridge": "^0.1.0",
         "@ganglion/xacpx-relay-protocol": "^0.6.4",
         "ws": "^8.20.0",
       },
       "optionalDependencies": {
-        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.8",
-        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.8",
-        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.8",
-        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.8",
-        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.8",
+        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.9",
+        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.9",
+        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.9",
+        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.9",
+        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.9",
       },
       "peerDependencies": {
         "xacpx": ">=0.24.10",
@@ -583,16 +583,6 @@
     "@ganglion/xacpx-relay": ["@ganglion/xacpx-relay@workspace:packages/relay"],
 
     "@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@workspace:packages/relay-protocol"],
-
-    "@ganglion/xacpx-rmux-bridge-darwin-arm64": ["@ganglion/xacpx-rmux-bridge-darwin-arm64@0.7.8", "", { "os": "darwin", "cpu": "arm64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge" } }, "sha512-sbBbfhPWfOgKkbZlPGPiietyi4+qmuzdMjKJCG2ZGIMUzJlZnMcGSIpcYgQ4JpJ6A+rhUeGKwX8Xxx8srkwCyw=="],
-
-    "@ganglion/xacpx-rmux-bridge-darwin-x64": ["@ganglion/xacpx-rmux-bridge-darwin-x64@0.7.8", "", { "os": "darwin", "cpu": "x64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge" } }, "sha512-KJFvRcoi1rl9F19xea1WZYPR0pLVjQPIaz154XdnnI++2HiBtzI5dy0A226lRAufbIcZgxjLqbhoyX97QDN8Kg=="],
-
-    "@ganglion/xacpx-rmux-bridge-linux-arm64": ["@ganglion/xacpx-rmux-bridge-linux-arm64@0.7.8", "", { "os": "linux", "cpu": "arm64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge" } }, "sha512-ZoGqN4BLyJ4wcZ5J0KxWe56/XuBnjdsKDJLDbgcHgY91zo82uZVZ0wD7kQyvhD9AFizwNAUYN61FDL1fp66RZQ=="],
-
-    "@ganglion/xacpx-rmux-bridge-linux-x64": ["@ganglion/xacpx-rmux-bridge-linux-x64@0.7.8", "", { "os": "linux", "cpu": "x64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge" } }, "sha512-b/3Zn7SkhnY5NZ7oR7KlAiTFihTtKIakxlEhELOCOOdQMWrKr5mwPEm8qaeR7u3MxheN/gzkHSxPMxf+uEhRHw=="],
-
-    "@ganglion/xacpx-rmux-bridge-win32-x64": ["@ganglion/xacpx-rmux-bridge-win32-x64@0.7.8", "", { "os": "win32", "cpu": "x64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge.exe" } }, "sha512-SCTHPqYEA2gnYn6LmUYt1pi+TWI2dQOiONwH3aMEFFi844oAPJ7o9/vnz7IyOnu4jd4YpLudYGE3frNVDK6zxw=="],
 
     "@ganglion/xacpx-web": ["@ganglion/xacpx-web@workspace:packages/web"],
 
