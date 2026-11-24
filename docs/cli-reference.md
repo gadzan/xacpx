@@ -19,6 +19,7 @@ commands (sent inside WeChat / Feishu / Yuanbao), see [commands.md](./commands.m
 | `xacpx plugin list\|add\|update\|remove\|enable\|disable\|doctor\|known` | Manage plugins: list/install/update/remove, toggle, run `doctor`, or list official packages with `known` |
 | `xacpx plugin add @ganglion/xacpx-channel-feishu && xacpx channel add feishu` | Install and add the Feishu channel; prompts for Feishu app credentials |
 | `xacpx plugin add @ganglion/xacpx-channel-yuanbao && xacpx channel add yuanbao` | Install and add the Yuanbao channel; prompts for Yuanbao appKey/appSecret |
+| `xacpx plugin add @ganglion/xacpx-channel-web && xacpx channel add web` | Install and add the local web console at `127.0.0.1:7138`; accepts `--host`, `--port`, `--token`, `--no-terminal` |
 | `xacpx doctor` | Run environment diagnostics |
 | `xacpx version` | Show the current version |
 | `xacpx agent list` | List agents registered on this machine |

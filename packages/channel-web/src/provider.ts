@@ -6,7 +6,7 @@ import type {
   ChannelRuntimeConfig,
 } from "xacpx/plugin-api";
 
-import { validateWebChannelConfig, webConfigFromCli } from "./config.js";
+import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, validateWebChannelConfig, webConfigFromCli } from "./config.js";
 
 function take(args: string[], index: number, flag: string): string {
   const value = args[index + 1];
@@ -54,8 +54,8 @@ export const webCliProvider: ChannelCliProvider = {
 
   renderSummary(config: ChannelRuntimeConfig): string[] {
     const options = (config.options ?? {}) as Record<string, unknown>;
-    const host = typeof options.host === "string" ? options.host : "127.0.0.1";
-    const port = typeof options.port === "number" ? options.port : 7890;
+    const host = typeof options.host === "string" ? options.host : DEFAULT_WEB_HOST;
+    const port = typeof options.port === "number" ? options.port : DEFAULT_WEB_PORT;
     const terminal = options.terminal as { enabled?: unknown } | undefined;
     const lines = [`web: http://${host}:${port}`, `terminal: ${terminal?.enabled === false ? "disabled" : "enabled"}`];
     if (typeof options.token === "string" && options.token.length > 0) lines.push("access token: ***");

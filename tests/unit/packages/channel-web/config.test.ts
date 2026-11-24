@@ -5,7 +5,7 @@ import { hostHeaderAllowed, jsonContentType, originAllowed, tokensMatch } from "
 
 describe("web channel config", () => {
   test("defaults to the local address", () => {
-    expect(parseWebChannelConfig({})).toEqual({ host: "127.0.0.1", port: 7890, terminal: { enabled: true } });
+    expect(parseWebChannelConfig({})).toEqual({ host: "127.0.0.1", port: 7138, terminal: { enabled: true } });
   });
 
   test("refuses a public address without a token", () => {
@@ -37,17 +37,17 @@ describe("web channel config", () => {
 
 describe("local request checks", () => {
   test("accepts the bound host and loopback aliases", () => {
-    expect(hostHeaderAllowed("127.0.0.1:7890", "127.0.0.1", 7890)).toBe(true);
-    expect(hostHeaderAllowed("localhost:7890", "127.0.0.1", 7890)).toBe(true);
+    expect(hostHeaderAllowed("127.0.0.1:7138", "127.0.0.1", 7138)).toBe(true);
+    expect(hostHeaderAllowed("localhost:7138", "127.0.0.1", 7138)).toBe(true);
     expect(hostHeaderAllowed("127.0.0.1", "127.0.0.1", 80)).toBe(true);
     expect(originAllowed("http://127.0.0.1", "127.0.0.1", 80)).toBe(true);
-    expect(hostHeaderAllowed("evil.example:7890", "127.0.0.1", 7890)).toBe(false);
+    expect(hostHeaderAllowed("evil.example:7138", "127.0.0.1", 7138)).toBe(false);
   });
 
   test("rejects a foreign page origin", () => {
-    expect(originAllowed("http://127.0.0.1:7890", "127.0.0.1", 7890)).toBe(true);
-    expect(originAllowed("https://evil.example", "127.0.0.1", 7890)).toBe(false);
-    expect(originAllowed(undefined, "127.0.0.1", 7890)).toBe(true);
+    expect(originAllowed("http://127.0.0.1:7138", "127.0.0.1", 7138)).toBe(true);
+    expect(originAllowed("https://evil.example", "127.0.0.1", 7138)).toBe(false);
+    expect(originAllowed(undefined, "127.0.0.1", 7138)).toBe(true);
   });
 
   test("requires json for changes", () => {

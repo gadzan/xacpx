@@ -5,7 +5,7 @@ import { MSG, decodeEnvelope } from "@ganglion/xacpx-relay-protocol";
 import { createLocalWebApp } from "../../../../packages/channel-web/src/app";
 import { LocalInteractions } from "../../../../packages/channel-web/src/interactions";
 
-const headers = { host: "127.0.0.1:7890", "content-type": "application/json" };
+const headers = { host: "127.0.0.1:7138", "content-type": "application/json" };
 
 test("an open form is sent as data the browser can read, and a late answer is refused", async () => {
   const frames: unknown[] = [];
@@ -25,8 +25,8 @@ test("an open form is sent as data the browser can read, and a late answer is re
   expect(frames[0]).toMatchObject({ type: "interaction-opened", interaction: { requestId: "ask-1", kind: "elicitation" } });
 
   const local = createLocalWebApp({
-    config: { host: "127.0.0.1", port: 7890, terminal: { enabled: false } },
-    port: 7890,
+    config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+    port: 7138,
     control: { events: { subscribe: () => () => undefined } } as never,
     now: () => 1_000,
   });

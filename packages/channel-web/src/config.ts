@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import type { ChannelCliInput, ChannelCliValidationIssue, ChannelRuntimeConfig } from "xacpx/plugin-api";
 
 export const DEFAULT_WEB_HOST = "127.0.0.1";
-export const DEFAULT_WEB_PORT = 7890;
+export const DEFAULT_WEB_PORT = 7138;
 export const LOCAL_INSTANCE_ID = "local";
 
 export interface WebTerminalConfig {

@@ -89,6 +89,18 @@ xacpx channel add feishu     # 按提示输入 appId/appSecret
 xacpx restart
 ```
 
+本机网页控制台直接在本机提供共享看板，不需要 relay hub，默认监听
+`127.0.0.1:7138`：
+
+```bash
+xacpx plugin add @ganglion/xacpx-channel-web
+xacpx channel add web          # http://127.0.0.1:7138
+xacpx restart
+```
+
+用 `--port` 和 `--host` 改地址。`--host` 如果是非回环地址必须同时给 `--token`，
+并且要写浏览器实际打开的地址，不能写 `0.0.0.0`。终端页默认开启，`--no-terminal` 关闭。
+
 端到端流程见[频道管理](/zh/guide/channel-management)，自己写插件见[频道插件开发](/zh/plugins/development)。
 
 ## 诊断 —— `xacpx doctor`

@@ -89,6 +89,19 @@ xacpx channel add feishu     # enter appId/appSecret when prompted
 xacpx restart
 ```
 
+The local web console serves the shared dashboard on this machine and needs no
+relay hub. It listens on `127.0.0.1:7138` by default:
+
+```bash
+xacpx plugin add @ganglion/xacpx-channel-web
+xacpx channel add web          # http://127.0.0.1:7138
+xacpx restart
+```
+
+`--port` and `--host` change the address. A non-loopback `--host` requires
+`--token` and must be the address the browser opens, not `0.0.0.0`. `--no-terminal`
+turns off the terminal tab, which is on by default.
+
 See [Channel Management](/guide/channel-management) for the end-to-end flow and [Channel Plugin Development](/plugins/development) for writing your own.
 
 ## Diagnostics — `xacpx doctor`
