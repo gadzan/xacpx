@@ -1,6 +1,9 @@
 import type { AttachmentMetadata, MessageDirection, MessageRecordDto, PeerMessageHistoryEntry } from "@ganglion/xacpx-relay-protocol";
+import type { QueueCorrelation } from "@ganglion/xacpx-control-bridge";
 
 import type { SqlDriver } from "../db.js";
+
+export type { QueueCorrelation };
 
 type StructuredTurn = NonNullable<MessageRecordDto["structured"]>;
 
@@ -24,12 +27,6 @@ export interface MessagePage {
   messages: MessageRecordDto[];
   /** True when older rows exist beyond this page (drives "load older" on scroll-up). */
   hasMore: boolean;
-}
-
-export interface QueueCorrelation {
-  instanceId: string;
-  sessionAlias: string;
-  queueItemId: string;
 }
 
 function toDto(r: MessageRow): MessageRecordDto {

@@ -74,11 +74,18 @@ export const DEFAULT_PACKAGES = [
     emptyDependencies: true,
   },
   {
+    id: "control-bridge",
+    dir: "packages/control-bridge",
+    expectedName: "@ganglion/xacpx-control-bridge",
+    requiredFiles: ["dist/index.js", "dist/index.d.ts", "README.md", "package.json"],
+    requiredDependency: "@ganglion/xacpx-relay-protocol",
+  },
+  {
     id: "relay",
     dir: "packages/relay",
     expectedName: "@ganglion/xacpx-relay",
     requiredFiles: ["dist/cli.js", "README.md", "package.json"],
-    requiredDependency: "@ganglion/xacpx-web",
+    requiredDependencies: ["@ganglion/xacpx-web", "@ganglion/xacpx-control-bridge"],
   },
   {
     id: "channel-relay",
@@ -88,6 +95,7 @@ export const DEFAULT_PACKAGES = [
     requiredPeer: "xacpx",
     forbiddenPeer: "weacpx",
     expectedExportedName: "@ganglion/xacpx-channel-relay",
+    requiredDependency: "@ganglion/xacpx-control-bridge",
   },
 ];
 
@@ -337,8 +345,14 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
       failures.push(`web: index.js failed to load (${message})`);
     }
   }
-  if (pkg.requiredDependency && !(pkg.requiredDependency in (packageJson.dependencies ?? {}))) {
-    failures.push(`${pkg.id}: package.json dependencies must include ${pkg.requiredDependency}`);
+  const requiredDependencies = [
+    ...(pkg.requiredDependency ? [pkg.requiredDependency] : []),
+    ...(pkg.requiredDependencies ?? []),
+  ];
+  for (const name of requiredDependencies) {
+    if (!(name in (packageJson.dependencies ?? {}))) {
+      failures.push(`${pkg.id}: package.json dependencies must include ${name}`);
+    }
   }
 
   for (const file of pkg.requiredFiles) {

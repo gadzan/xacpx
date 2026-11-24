@@ -1,0 +1,32 @@
+{
+  "name": "@ganglion/xacpx-control-bridge",
+  "version": "0.1.0",
+  "description": "Shared control bridge between xacpx's PublicControlService and the relay wire protocol.",
+  "license": "MIT",
+  "keywords": ["xacpx", "relay", "control"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gadzan/xacpx.git",
+    "directory": "packages/control-bridge"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@ganglion/xacpx-relay-protocol": "^0.6.4"
+  },
+  "peerDependencies": {
+    "xacpx": ">=0.24.10"
+  },
+  "peerDependenciesMeta": {
+    "xacpx": { "optional": true }
+  }
+}

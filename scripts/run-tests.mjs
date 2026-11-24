@@ -21,6 +21,11 @@ if (protocolBuildCode !== 0) {
   process.exit(protocolBuildCode ?? 1);
 }
 
+const bridgeBuildCode = await runOne("bun", ["run", "build:control-bridge"]);
+if (bridgeBuildCode !== 0) {
+  process.exit(bridgeBuildCode ?? 1);
+}
+
 const buildCode = await runOne("bun", [
   "build",
   "./src/plugin-api.ts",

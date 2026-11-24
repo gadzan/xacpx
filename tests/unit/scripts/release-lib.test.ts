@@ -137,6 +137,7 @@ test("a protocol release compiles the consumers whose range it rewrites", () => 
     "relay",
     "web",
     "channel-relay",
+    "control-bridge",
   ]);
   // A consumer that also ships is compiled by its own build. relay's build
   // runs build:web, so the dashboard is not typechecked a second time.
@@ -304,6 +305,12 @@ test("a dashboard change republishes relay so its published range names that web
   expect(webFollowers).toEqual(["relay"]);
 });
 
+test("a control-bridge change republishes the two packages that install it", () => {
+  const { releases, bridgeFollowers } = expandReleaseSet({ changed: ["control-bridge"] });
+  expect(releases).toEqual(["control-bridge", "relay", "channel-relay"]);
+  expect(bridgeFollowers).toEqual(["relay", "channel-relay"]);
+});
+
 test("channel-yuanbao is never pulled in by a core release", () => {
   const { releases } = expandReleaseSet({ changed: ["core"] });
   expect(releases).not.toContain("channel-yuanbao");
@@ -316,10 +323,10 @@ test("channel-yuanbao is never pulled in by a core release", () => {
 });
 
 test("publishWaves orders protocol, then the dashboard, then its dependents", () => {
-  const waves = publishWaves(["core", "relay-protocol", "web", "relay", "channel-relay", "channel-discord"]);
+  const waves = publishWaves(["core", "relay-protocol", "web", "control-bridge", "relay", "channel-relay", "channel-discord"]);
   expect(waves).toEqual([
     ["relay-protocol"],
-    ["web"],
+    ["web", "control-bridge"],
     ["relay", "channel-relay"],
     ["core", "channel-discord"],
   ]);
@@ -350,7 +357,7 @@ test("collectEdits derives the whole core floor set from one version", () => {
   expect(floor.to).toBe('minXacpxVersion: "0.24.10-beta.4"');
 });
 
-test("collectEdits rewrites the protocol range in all three consumers with one version", () => {
+test("collectEdits rewrites the protocol range in every consumer with one version", () => {
   const edits = collectEdits({
     releases: ["relay-protocol"],
     versions: { "relay-protocol": "0.6.4-beta.2" },
@@ -359,6 +366,7 @@ test("collectEdits rewrites the protocol range in all three consumers with one v
   const files = edits.filter((edit) => (edit.path ?? []).at(-1) === "@ganglion/xacpx-relay-protocol");
   expect(files.map((edit) => edit.file).sort()).toEqual([
     "packages/channel-relay/package.json",
+    "packages/control-bridge/package.json",
     "packages/relay/package.json",
     "packages/web/package.json",
   ]);
