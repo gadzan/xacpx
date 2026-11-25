@@ -287,7 +287,7 @@ describe("GroupAvatarStack call sites", () => {
     groups.groupsLoaded["i1"] = true;
 
     const wrapper = mount(InstanceTree, { global: { plugins: [i18n] } });
-    await wrapper.find('[data-test="instance-nav-groups"]').trigger("click");
+    await wrapper.find('[data-test="instance-nav-bots"]').trigger("click");
     await flushPromises();
 
     const collage = wrapper.find('[data-test="group-row"] [data-test="group-avatar-stack"]');

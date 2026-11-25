@@ -874,6 +874,7 @@ export default {
     },
     list: {
       empty: "No bots on this instance.",
+      emptyMixed: "No Bots or Groups on this instance.",
       disabledToggle: "Disabled ({count})",
       allDisabled: "Every Bot here is disabled. Open the disabled list to enable one.",
     },
@@ -883,6 +884,8 @@ export default {
     },
     actions: {
       newBot: "New Bot",
+      pin: "Pin to top",
+      unpin: "Unpin",
       edit: "Edit Bot",
       disable: "Disable",
       delete: "Delete Bot",

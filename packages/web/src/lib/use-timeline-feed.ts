@@ -14,6 +14,9 @@ export interface TimelineFeedInput {
   topicId: Ref<string | null | undefined>;
   /** Capability gate: `control.conversation.timeline` exists on this instance. */
   enabled: Ref<boolean>;
+  /** The room's Topic context is settled: Topics have loaded, so an absent topic id
+   *  means this room really has no Topic rather than "still resolving". */
+  roomReady: Ref<boolean>;
   /** Any reactive fingerprint of the stores' live state (message count, newest
    *  seq, active Run identity). A change refetches the newest page; older pages
    *  already loaded stay. */
@@ -48,6 +51,15 @@ export function useConversationTimelineFeed(input: TimelineFeedInput) {
   const hasMoreAfter = ref(false);
   /** True once the first page has landed for the current room. */
   const loaded = ref(false);
+  /**
+   * The pane does not know yet what this room holds: either the Topic context is
+   * still resolving, or a page for a known Topic is in flight. `loaded` alone cannot
+   * answer this — a room with no Topic never fetches, so it is settled while `loaded`
+   * stays false. Exposed so the timeline can hold a skeleton instead of claiming
+   * "no messages yet" during that window.
+   */
+  const pending = computed(() =>
+    !loaded.value && (input.roomReady.value === false || !!input.topicId.value));
 
   const roomKey = computed(() => [
     input.instanceId.value ?? "",
@@ -201,6 +213,7 @@ export function useConversationTimelineFeed(input: TimelineFeedInput) {
     timeline,
     activeRound,
     loading,
+    pending,
     loadingOlder,
     error,
     hasMoreBefore,

@@ -35,7 +35,7 @@ test.beforeEach(async ({ page }) => {
 
 async function openDialog(page: Page, kind: "bot" | "group"): Promise<Locator> {
   await loginAndShowInstances(page);
-  const mode = page.getByTestId(`instance-nav-${kind === "bot" ? "bots" : "groups"}`);
+  const mode = page.getByTestId("instance-nav-bots");
   await expect(mode).toBeInViewport();
   await mode.click();
   await page.getByTestId(`new-${kind}-button`).click();

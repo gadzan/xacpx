@@ -728,8 +728,8 @@ describe("Group management", () => {
       routes.set("control.groups.create", () => ({ group: created }));
       routes.set("control.groups.list", () => ({ groups: [created] }));
       const wrapper = track(mount(InstanceTree, { attachTo: document.body, global: { plugins: [i18n] } }));
-      await wrapper.find('[data-test="instance-nav-groups"]').trigger("click");
-      expect(wrapper.find('[data-test="no-groups"]').exists()).toBe(true);
+      await wrapper.find('[data-test="instance-nav-bots"]').trigger("click");
+      expect(wrapper.find('[data-test="new-group-button"]').exists()).toBe(true);
 
       await wrapper.find('[data-test="new-group-button"]').trigger("click");
       const dialog = wrapper.findComponent(GroupDialog);
@@ -754,7 +754,7 @@ describe("Group management", () => {
       const groups = useGroupsStore();
       groups.groupsLoaded["i1"] = true;
       const wrapper = track(mount(InstanceTree, { attachTo: document.body, global: { plugins: [i18n] } }));
-      await wrapper.find('[data-test="instance-nav-groups"]').trigger("click");
+      await wrapper.find('[data-test="instance-nav-bots"]').trigger("click");
       await wrapper.find('[data-test="new-group-button"]').trigger("click");
       await flushPromises();
 
@@ -793,7 +793,7 @@ describe("Group management", () => {
       groups.groupsLoaded["i1"] = true;
       groups.groupsByInstance["i1"] = [{ ...GROUP, lifecycle: "deleting" }];
       const wrapper = track(mount(InstanceTree, { global: { plugins: [i18n] } }));
-      await wrapper.find('[data-test="instance-nav-groups"]').trigger("click");
+      await wrapper.find('[data-test="instance-nav-bots"]').trigger("click");
       expect(wrapper.find('[data-test="group-deleting-badge"]').text()).toBe("Deleting");
     });
   });

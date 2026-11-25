@@ -57,15 +57,17 @@ function mountFeed(overrides: {
   const conversationId = ref<string | null>(overrides.conversationId ?? "c1");
   const topicId = ref<string | null>("t1");
   const enabled = ref(overrides.enabled ?? true);
+  const roomReady = ref(true);
   const reloadKey = ref(overrides.reloadKey ?? "0");
   const feed = scope.run(() => useConversationTimelineFeed({
     instanceId,
     conversationId,
     topicId,
     enabled,
+    roomReady,
     reloadKey,
   }))!;
-  return { scope, feed, instanceId, conversationId, topicId, enabled, reloadKey };
+  return { scope, feed, instanceId, conversationId, topicId, enabled, roomReady, reloadKey };
 }
 
 describe("useConversationTimelineFeed", () => {

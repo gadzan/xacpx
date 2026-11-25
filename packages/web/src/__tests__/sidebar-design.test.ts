@@ -142,7 +142,7 @@ describe("sidebar selection treatment", () => {
 
     const w = mount(InstanceTree);
     await flushPromises();
-    await w.find('[data-test="instance-nav-groups"]').trigger("click");
+    await w.find('[data-test="instance-nav-bots"]').trigger("click");
     await flushPromises();
 
     const row = w.find('[data-test="group-row"]');
@@ -176,7 +176,7 @@ describe("sidebar mode segmented control", () => {
     expect(track.classes()).toContain("[@media(pointer:coarse)]:h-11");
     // Uniform 2px visual inset: 2 + 28 + 2 vertically, 2px left/right for the
     // first and last pill. The padding lives on the track's content box, so the
-    // thirds are computed after it — never with a negative margin.
+    // halves are computed after it — never with a negative margin.
     expect(track.classes()).toContain("px-0.5");
     expect(track.classes()).not.toContain("-mx-0.5");
 
@@ -201,12 +201,12 @@ describe("sidebar mode segmented control", () => {
     expect(botsPill.classes()).toContain("hover:bg-fill-hover");
     expect(botsPill.classes()).not.toContain("bg-raised");
 
-    // First, middle and last segments all paint the same inset 28px pill and
+    // First and last segments all paint the same inset 28px pill and
     // never a translate/negative-margin offset.
-    for (const mode of ["instance-nav-sessions", "instance-nav-bots", "instance-nav-groups"]) {
+    for (const mode of ["instance-nav-sessions", "instance-nav-bots"]) {
       await w.find(`[data-test="${mode}"]`).trigger("click");
       await flushPromises();
-      for (const segment of ["instance-nav-sessions", "instance-nav-bots", "instance-nav-groups"]) {
+      for (const segment of ["instance-nav-sessions", "instance-nav-bots"]) {
         const button = w.find(`[data-test="${segment}"]`);
         const pill = button.find('[data-test="instance-nav-pill"]');
         expect(pill.classes()).toContain("h-7");

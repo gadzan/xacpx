@@ -596,6 +596,7 @@ const timelineFeed = useConversationTimelineFeed({
   conversationId: computed(() => directBotsStore.activeConversationId),
   topicId: computed(() => directBotsStore.activeTopicId),
   enabled: timelineSupported,
+  roomReady: computed(() => directBotsStore.topicReady),
   reloadKey: timelineReloadKey,
 });
 
@@ -785,6 +786,7 @@ const timelineFeed = useConversationTimelineFeed({
       :room="roomView"
       :timeline="timelineFeed.timeline.value"
       :live-overlay="liveOverlay"
+      :pending="timelineFeed.pending.value"
       :loading="timelineFeed.loading.value"
       :loading-older="timelineFeed.loadingOlder.value"
       :error="timelineFeed.error.value"

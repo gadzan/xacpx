@@ -758,19 +758,19 @@ describe("InstanceTree session management", () => {
     w.unmount();
   });
 
-  it("opens the Groups tab when a Group was restored as the selection", async () => {
+  it("opens the Bots tab when a Group was restored as the selection", async () => {
     const store = useInstancesStore();
     store.instances = [instance()] as never;
     const directBots = useDirectBotsStore();
     directBots.instanceId = null;
     directBots.selectedBotId = null;
-    // Group selection is the store's own flag; the sidebar only reads it.
+    // Group selection is the store's own flag; Groups now live in the Bots tab.
     const groupsStore = useGroupsStore();
     groupsStore.instanceId = "i1";
     groupsStore.selectedGroupId = "g1";
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     await flushPromises();
-    expect(w.find('[data-test="instance-nav-groups"] [data-test="instance-nav-pill"]').classes())
+    expect(w.find('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]').classes())
       .toContain("bg-raised");
     w.unmount();
   });
