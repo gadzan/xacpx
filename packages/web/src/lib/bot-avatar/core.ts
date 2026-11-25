@@ -12,7 +12,7 @@ export interface AvatarPose {
   readonly eyes: readonly [Readonly<AvatarEye>, Readonly<AvatarEye>];
   readonly ring: number;
 }
-export interface AvatarTarget { config: CharacterAvatarConfig; state: BotAvatarState; motion: boolean; celebrate?: boolean }
+export interface AvatarTarget { config: CharacterAvatarConfig; state: BotAvatarState; motion: boolean; celebrate?: boolean; blink?: AvatarBlinkRhythm }
 export interface AvatarPointer { x: number; y: number }
 export const AVATAR_TRANSITION_SECONDS = 0.24;
 const ACTIVE_STATES: Partial<Record<BotAvatarState, true>> = { queued: true, working: true, streaming: true, waiting: true };
@@ -24,26 +24,67 @@ export function avatarHasLoop(state: BotAvatarState): boolean {
 }
 
 const BLINK_PERIOD = 3600;
+/** A blink keeps the lid moving for this long, in seconds. */
 const BLINK_DURATION = 0.18;
-const BLINKS: readonly number[] = (() => {
+/** Seconds between two blinks, drawn per blink: never faster than MIN, never slower than MAX. */
+export const BLINK_INTERVAL_MIN = 1.9;
+export const BLINK_INTERVAL_MAX = 4.6;
+
+/** One avatar's own blink rhythm. Two avatars with different rhythms never blink in step. */
+export interface AvatarBlinkRhythm { readonly seed: number; readonly first: number }
+
+/** The rhythm used when a caller has no identity to seed one from; it also keeps
+ *  `sampleAvatar` deterministic, so tests and frozen previews stay reproducible. */
+export const DEFAULT_BLINK_RHYTHM: AvatarBlinkRhythm = Object.freeze({ seed: 0x5eed, first: 1.4 });
+
+function blinkInterval(seed: number): number {
+  return BLINK_INTERVAL_MIN + seed / 4294967296 * (BLINK_INTERVAL_MAX - BLINK_INTERVAL_MIN);
+}
+
+/** A fresh rhythm for one avatar: the first blink lands anywhere in the interval too, so
+ *  avatars mounted together by the same list do not blink together a moment later. */
+export function createBlinkRhythm(random: () => number = Math.random): AvatarBlinkRhythm {
+  return Object.freeze({ seed: Math.floor(random() * 4294967296) >>> 0, first: BLINK_INTERVAL_MIN + random() * (BLINK_INTERVAL_MAX - BLINK_INTERVAL_MIN) });
+}
+
+const RHYTHMS_BY_KEY = new Map<string, AvatarBlinkRhythm>();
+/** The rhythm of one named Bot: every place that Bot appears blinks alike, so a sidebar
+ *  row and its conversation header stay one character, and the rhythm survives remounts
+ *  instead of being redrawn. Distinct keys get distinct rhythms, which is what stops a
+ *  list of Bots from blinking in step. */
+export function blinkRhythmFor(key: string): AvatarBlinkRhythm {
+  const known = RHYTHMS_BY_KEY.get(key);
+  if (known) return known;
+  let seed = 2166136261;
+  for (let i = 0; i < key.length; i += 1) seed = Math.imul(seed ^ key.charCodeAt(i), 16777619) >>> 0;
+  const rhythm = Object.freeze({ seed, first: blinkInterval(seed) });
+  RHYTHMS_BY_KEY.set(key, rhythm);
+  return rhythm;
+}
+
+const BLINK_STARTS = new WeakMap<AvatarBlinkRhythm, readonly number[]>();
+function blinkStarts(rhythm: AvatarBlinkRhythm): readonly number[] {
+  const cached = BLINK_STARTS.get(rhythm);
+  if (cached) return cached;
   const starts: number[] = [];
-  let seed = 0x5eed, t = 1.4;
+  let seed = rhythm.seed, t = rhythm.first;
   while (t + BLINK_DURATION < BLINK_PERIOD) {
     starts.push(t);
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-    t += 1.9 + seed / 4294967296 * 2.7;
+    t += blinkInterval(seed);
   }
-  return Object.freeze(starts);
-})();
-function blink(t: number): number {
+  return BLINK_STARTS.set(rhythm, Object.freeze(starts)).get(rhythm)!;
+}
+function blink(t: number, rhythm: AvatarBlinkRhythm): number {
+  const starts = blinkStarts(rhythm);
   const phase = t % BLINK_PERIOD;
-  let lo = 0, hi = BLINKS.length;
+  let lo = 0, hi = starts.length;
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
-    if (BLINKS[mid]! <= phase) lo = mid + 1;
+    if (starts[mid]! <= phase) lo = mid + 1;
     else hi = mid;
   }
-  const k = (phase - (BLINKS[lo - 1] ?? -1)) / BLINK_DURATION;
+  const k = (phase - (starts[lo - 1] ?? -1)) / BLINK_DURATION;
   return k < 0 || k > 1 ? 1 : k < 0.45 ? 1 - k / 0.45 : (k - 0.45) / 0.55;
 }
 
@@ -60,7 +101,7 @@ export function sampleAvatar(target: AvatarTarget, t: number, pointer?: AvatarPo
   const projections = eyePoses({ yaw, pitch, roll: gaze.roll }, expression.split);
   const fit = AVATAR_EYE_FIT[config.shape];
   const pulse = animated && (working || streaming) ? Math.sin(time * (streaming ? 9 : 3)) : 0;
-  const lid = animated ? blink(time) : 1;
+  const lid = animated ? blink(time, target.blink ?? DEFAULT_BLINK_RHYTHM) : 1;
   const wink = animated && state === "completed" && target.celebrate && time < 0.8
     ? Math.sin(clamp((time - 0.15) / 0.4) * Math.PI) : 0;
   // Gaze drift, pointer follow and blink all act on the raw projection; the shared

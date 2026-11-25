@@ -9,12 +9,16 @@ import type { BotAvatarConfig, CharacterAvatarConfig } from "@ganglion/xacpx-rel
 import AgentIcon from "./AgentIcon.vue";
 import type { BotAvatarState } from "../lib/bot-avatar-state";
 import { avatarClock } from "../lib/bot-avatar/clock";
-import { avatarHasLoop, avatarTransition, sampleAvatar, sampleTransition, shouldCelebrate, AVATAR_TRANSITION_SECONDS, type AvatarPointer, type AvatarTransition } from "../lib/bot-avatar/core";
+import { avatarHasLoop, avatarTransition, blinkRhythmFor, createBlinkRhythm, sampleAvatar, sampleTransition, shouldCelebrate, AVATAR_TRANSITION_SECONDS, type AvatarPointer, type AvatarTransition } from "../lib/bot-avatar/core";
 import { bodyPath } from "../lib/bot-avatar/geometry";
 
 const props = withDefaults(defineProps<{
   avatar?: BotAvatarConfig; driver?: string | null; name?: string; size?: number; state?: BotAvatarState;
   static?: boolean; disabled?: boolean; retired?: boolean; activityKey?: string; follow?: boolean; preview?: boolean; observedCompletion?: boolean;
+  /** Identity that owns this character's blink rhythm. Two avatars given the same key are
+   *  the same Bot shown twice and blink alike; leave it out and this instance draws its
+   *  own rhythm, which keeps a list of Bots from blinking in step. */
+  blinkKey?: string;
   /** Crop the character's 100-unit frame to the body's own extent, so the drawn
    *  avatar fills its box instead of floating inside an empty margin. The box is
    *  sized with the body in mind (the sidebar's 40px row avatar), so the optional
@@ -37,7 +41,11 @@ const text = computed(() => {
   return value;
 });
 const reduced = ref(false), visible = ref(false), pageVisible = ref(true);
-const pose = shallowRef(character.value ? sampleAvatar({ config: character.value, state: state.value, motion: false }, 0) : undefined);
+/** Each avatar blinks on its own rhythm, so a list of them never blinks in step. Places that
+ *  know which Bot they draw pass a blink key, so the same Bot keeps one rhythm everywhere. */
+const ownRhythm = createBlinkRhythm();
+const blinkRhythm = computed(() => (props.blinkKey ? blinkRhythmFor(props.blinkKey) : ownRhythm));
+const pose = shallowRef(character.value ? sampleAvatar({ config: character.value, state: state.value, motion: false, blink: blinkRhythm.value }, 0) : undefined);
 const radii = computed(() => pose.value?.radii);
 const stretchX = computed(() => pose.value?.sx ?? 1), stretchY = computed(() => pose.value?.sy ?? 1);
 const channels = computed(() => pose.value?.color);
@@ -106,7 +114,7 @@ function reconcile() {
 function resetPose(celebrate = false) {
   const config: CharacterAvatarConfig | undefined = character.value;
   if (!config) { pose.value = undefined; transition = undefined; reconcile(); return; }
-  const target = { config, state: state.value, motion: motionAllowed.value, celebrate };
+  const target = { config, state: state.value, motion: motionAllowed.value, celebrate, blink: blinkRhythm.value };
   if (motionAllowed.value && visible.value && pageVisible.value && pose.value) transition = avatarTransition(pose.value, target, time);
   else {
     pose.value = sampleAvatar({ ...target, motion: false, celebrate: false }, 0);

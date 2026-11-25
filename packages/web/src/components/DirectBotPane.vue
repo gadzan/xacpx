@@ -127,6 +127,8 @@ const avatarActivityKey = computed(() => [
   directBotsStore.instanceId, bot.value?.id, directBotsStore.activeConversationId,
   directBotsStore.activeTopicId, directBotsStore.activeRun?.id,
 ].join(":"));
+/** One rhythm per Bot, shared with its sidebar row, so both faces blink together. */
+const blinkKey = computed(() => [directBotsStore.instanceId, bot.value?.id].filter(Boolean).join(":"));
 const observedCompletion = computed(() => !!directBotsStore.activeRun
   && directBotsStore.liveCompletedRunId === directBotsStore.activeRun.id);
 
@@ -620,6 +622,7 @@ const timelineFeed = useConversationTimelineFeed({
       <div class="glass-control glass-chip absolute left-1/2 top-[calc(0.875rem+env(safe-area-inset-top))] mt-[2.7rem] flex -translate-x-1/2 flex-col items-center rounded-full px-3 py-1.5">
         <span class="glass-control glass-disc absolute -top-2 left-1/2 -mt-[2.7rem] grid h-14 w-14 -translate-x-1/2 place-items-center rounded-full">
           <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="56"
+                     :blink-key="blinkKey"
                      :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
                      :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
         </span>
@@ -660,6 +663,7 @@ const timelineFeed = useConversationTimelineFeed({
     <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
       <div class="flex items-center gap-3 min-w-0">
         <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
+                   :blink-key="blinkKey"
                    :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
                    :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
 
@@ -802,7 +806,7 @@ const timelineFeed = useConversationTimelineFeed({
              where it runs. Starter chips are the agent's advertised commands; with no
              advertisement the page keeps just the hint. A tap fills, never sends. -->
         <div data-test="direct-empty" class="flex flex-col items-center gap-2.5">
-          <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="56"
+          <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="56" :blink-key="blinkKey"
                      :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
           <p data-test="direct-empty-name" class="text-sm font-semibold tracking-tight text-fg">
             {{ bot?.name ?? $t("bot.nav.title") }}

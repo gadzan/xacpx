@@ -1079,7 +1079,7 @@ const rowSwipes = computed(() => {
                 class="flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1.5 text-left"
                 @click="onBotTap(inst.id, entry.bot.id)"
               >
-                <BotAvatar :avatar="entry.bot.avatar" :driver="driverForAgentName(inst, entry.bot.agent)" :name="entry.bot.name" :size="40" crop
+                <BotAvatar :avatar="entry.bot.avatar" :driver="driverForAgentName(inst, entry.bot.agent)" :name="entry.bot.name" :size="40" crop :blink-key="`${inst.id}:${entry.bot.id}`"
                            :disabled="!entry.bot.enabled" :retired="entry.bot.retired" :state="inst.online ? 'idle' : 'offline'"
                            :class="!entry.bot.enabled ? 'opacity-50' : ''" />
                 <span class="flex min-w-0 flex-1 flex-col">
