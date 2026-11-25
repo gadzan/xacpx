@@ -39,7 +39,12 @@ export function useTopicActions(handlers: TopicActionHandlers) {
   const isolationTopic = ref<TopicSummaryDto | null>(null);
   const isolationSaving = ref(false);
 
-  const canAbandonUnknown = computed(() => confirmKind.value === "delete"
+  // A sealed `indeterminate` Run blocks every teardown that would discard it, and
+  // clearing a topic is one of them: the clear refuses with
+  // `conversation_indeterminate` exactly like a delete does. Offering the escape only
+  // for delete left a topic whose Run went unknown impossible to reset — the one
+  // action a reader reaches for in exactly that situation.
+  const canAbandonUnknown = computed(() => confirmKind.value !== null
     && actionErrorCode.value === "conversation_indeterminate"
     && (confirmImpact.value?.abandonableRunIds?.length ?? 0) > 0
     && handlers.abandonUnknownRuns !== undefined);

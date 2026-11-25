@@ -178,6 +178,38 @@ describe("TopicSwitcher (Bot topics)", () => {
     expect(wrapper.find("[data-test='topic-confirm']").exists()).toBe(false);
   });
 
+  it("offers the same abandon door when CLEARING a topic hits unknown work", async () => {
+    // Clearing a topic refuses on a sealed indeterminate Run exactly like a delete
+    // does. Offering the escape only on delete stranded the topic: reset is the one
+    // action a reader reaches for when a turn's outcome is unknown.
+    const clearTopic = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("topic has indeterminate work"), {
+        code: "conversation_indeterminate",
+      }))
+      .mockResolvedValueOnce(undefined);
+    const abandonUnknownRuns = vi.fn(async () => {});
+    const { wrapper } = mountSwitcher({
+      clearTopic,
+      abandonUnknownRuns,
+      previewTopic: vi.fn(async () => impact({ indeterminateRunIds: ["run_1"], abandonableRunIds: ["run_1"] })),
+    });
+    // Clear is offered on the DEFAULT topic only (index 0); delete is not.
+    const menu = await rowMenu(wrapper, 0);
+    await menu.find("[data-test='menu-clear']").trigger("click");
+    await flushPromises();
+    expect(wrapper.find("[data-test='topic-abandon']").exists()).toBe(false);
+    await wrapper.find("[data-test='topic-confirm-submit']").trigger("click");
+    await flushPromises();
+    const requestId = clearTopic.mock.calls[0]![1];
+    expect(wrapper.find("[data-test='topic-abandon']").exists()).toBe(true);
+    await wrapper.find("[data-test='topic-abandon-submit']").trigger("click");
+    await flushPromises();
+    expect(abandonUnknownRuns).toHaveBeenCalledWith(["run_1"]);
+    expect(clearTopic).toHaveBeenCalledTimes(2);
+    // Retried with the same requestId: the backend is idempotent per request.
+    expect(clearTopic.mock.calls[1]![1]).toBe(requestId);
+  });
+
   it("keeps the abandon door shut for a failure that is not unknown work", async () => {
     const abandonUnknownRuns = vi.fn(async () => {});
     const { wrapper } = mountSwitcher({
