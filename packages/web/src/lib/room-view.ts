@@ -5,7 +5,9 @@ import type {
   ConversationRunDto,
   ConversationTimelineDto,
   ConversationTimelineEntryDto,
+  TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
+
 
 /**
  * The room every conversation pane renders (design §4.2, §8).
@@ -47,6 +49,10 @@ export interface TimelineLiveTurn {
   status: "working" | "streaming";
   /** Monotonic revision so the scroller re-pins on in-place stream growth. */
   revision?: number;
+  /** The turn's live parts, so the bubble can report what the Bot is doing now.
+   *  `text` alone carries only the reply, which is why a live turn used to show a
+   *  bare working indicator while tool steps ran. */
+  parts?: TurnPartDto[];
 }
 
 export type TimelineMessageEntry = Extract<ConversationTimelineEntryDto, { kind: "message" }>;

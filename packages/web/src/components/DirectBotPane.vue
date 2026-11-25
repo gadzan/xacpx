@@ -575,6 +575,9 @@ const liveOverlay = computed<TimelineLiveTurn[]>(() => {
     text: textBubblesOf(live.parts).join("\n\n"),
     status: live.status,
     revision: live.revision,
+    // The timeline needs the steps themselves, not just the reply text: without them a
+    // working Bot showed a bare spinner while tools ran.
+    parts: live.parts,
   }];
 });
 
@@ -890,6 +893,7 @@ function handleStopAll(): void {
       :member-turns="directBotsStore.activeMemberTurn ? [directBotsStore.activeMemberTurn] : []"
       :active-speaker-name="timelineSpeakerName"
       :stopping="!!directBotsStore.cancellingRunId"
+      hide-stop-all
       @stop-all="handleStopAll"
       @open-detail="openTimelineDetail"
     />

@@ -9,6 +9,8 @@ import BotAvatar from "./BotAvatar.vue";
 import Tooltip from "./Tooltip.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ThinkingDots from "./ThinkingDots.vue";
+import TraceLiveStack from "./TraceLiveStack.vue";
+import { deriveTurnPresentation } from "../lib/turn-presentation";
 import {
   participantFor,
   type RoomParticipant,
@@ -52,6 +54,13 @@ const message = computed<ConversationMessageDto | null>(() =>
   props.row.kind === "message" ? props.row.entry.message : null);
 const live = computed<TimelineLiveTurn | undefined>(() =>
   props.row.kind === "activity" ? props.row.live : undefined);
+
+/** The live turn's parts, folded into the same nodes the drawer renders. */
+const liveStackNodes = computed(() => {
+  const parts = live.value?.parts;
+  if (!parts?.length) return [];
+  return deriveTurnPresentation(parts, { streaming: true }).nodes;
+});
 
 function speakerOf(botId: string | undefined): RoomParticipant | undefined {
   return participantFor(props.room, botId);
@@ -366,6 +375,16 @@ const noticeToneClass = computed(() => {
         data-test="timeline-live-bubble"
         class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
       >
+        <!-- What the Bot is doing right now, in the bubble the reply will land in.
+             Above the text because it explains the wait; it disappears with the live
+             turn, so a settled conversation never accumulates progress noise. -->
+        <TraceLiveStack
+          v-if="liveStackNodes.length"
+          variant="inline"
+          :nodes="liveStackNodes"
+          :streaming="true"
+          @reveal="emit('openDetail', messageDetail)"
+        />
         <StreamMarkdown
           v-if="live.text"
           :text="live.text"

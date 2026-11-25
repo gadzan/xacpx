@@ -1034,7 +1034,7 @@ const rowSwipes = computed(() => {
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
         <!-- BOTS MODE -->
-        <div v-if="inst.online && navMode === 'bots'" class="space-y-px">
+        <div v-if="inst.online && navMode === 'bots'" class="space-y-0.5">
           <div v-if="directBotsStore.botsByInstance[inst.id]?.length"
                data-test="bots-list-count"
                class="flex items-center gap-1.5 py-1 pl-2.5 text-xs text-fg-muted">

@@ -1949,7 +1949,9 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", [], []]);
     });
 
-    it("keeps Send as the composer's only action while a run is active", async () => {
+    it("keeps Send usable while a run is active", async () => {
+      // No instance fixture here, so the pane advertises no timeline capability and
+      // the composer's Stop stays off — Send must remain usable regardless.
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
       directBots.activeRun = {
@@ -1974,12 +1976,10 @@ describe("Direct Bot Components", () => {
       // composes into it.
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
-      // Stop all lives in the status bar, so the card never renders a second
-      // stop control, whatever the draft or cancel state is.
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      // An active run with an empty draft swaps Send for Stop, exactly as an ordinary
+      // session's composer does; typing below brings Send back.
+      expect(wrapper.find('[data-test="cancel-bot-turn"]').exists()).toBe(true);
       const send = () => wrapper.find('[data-test="send-prompt-button"]');
-      expect(send().exists()).toBe(true);
-      expect((send().element as HTMLButtonElement).disabled).toBe(true);
 
       // Typed text makes the queued send usable: the backend accepts a prompt
       // mid-run, so the user is never stuck unable to send what they just typed.
@@ -1988,10 +1988,10 @@ describe("Direct Bot Components", () => {
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
       expect(wrapper.emitted("send")).toBeTruthy();
 
-      // A cancel in flight keeps Send (never a card-level Stop) and only dims it.
+      // A cancel in flight keeps Send usable and keeps Stop reachable until the turn
+      // actually settles.
       directBots.cancellingRunId = "run_1";
       await flushPromises();
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
       expect(send().exists()).toBe(true);
     });
 
@@ -2760,9 +2760,11 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       expect(wrapper.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(true);
       expect(wrapper.find('[data-test="timeline-upgrade-required"]').exists()).toBe(false);
-      // Exactly one Stop: the status bar owns it while the card only offers Send.
-      expect(wrapper.find('[data-test="conversation-stop-all"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      // Exactly one Stop, and it belongs to the composer — the same place an ordinary
+      // session keeps it. The status bar's Stop-all is the Group affordance (one Stop
+      // for several members) and must not render here as a second competing control.
+      expect(wrapper.find('[data-test="cancel-bot-turn"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="conversation-stop-all"]').exists()).toBe(false);
       wrapper.unmount();
     });
 

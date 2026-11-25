@@ -448,6 +448,17 @@ function onKeydown(e: KeyboardEvent): void {
     void handleSend();
   }
 }
+/**
+ * Stop from the composer, matching how an ordinary session's Stop behaves: the
+ * running turn ends and anything waiting behind it is retired. A Direct Bot keeps
+ * this control in the composer rather than in the status bar, because the reader is
+ * looking at the input they just used — the status bar's "Stop all" is the Group
+ * affordance, where several members share one Run.
+ */
+async function stopRun(): Promise<void> {
+  await directBotsStore.stopCurrentAndQueued();
+}
+
 async function handleSend(): Promise<void> {
   if (blocked.value || composing.value || attachments.uploading) return;
   const key = scope.value,
@@ -571,11 +582,14 @@ defineExpose({ fillDraft, focusInput, hasDraft });
       :send-disabled="false"
       :placeholder="composerPlaceholder"
       send-test-id="send-prompt-button"
+      stop-test-id="cancel-bot-turn"
+      allow-stop
       combobox
       combobox-list-id="direct-completion-menu"
       :combobox-expanded="menuOpen"
       :combobox-active-id="menuOpen && rows.length ? 'direct-completion-' + cmdActiveIdx : undefined"
       @send="handleSend"
+      @cancel="stopRun"
       @keydown="onKeydown"
       @input="onInput"
       @paste="onPaste"

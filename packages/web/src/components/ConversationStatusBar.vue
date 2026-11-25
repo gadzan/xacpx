@@ -24,6 +24,11 @@ const props = defineProps<{
   activeSpeakerName?: string;
   /** A Stop-all request is in flight. */
   stopping?: boolean;
+  /** Hide the Run-level Stop. A Direct Bot keeps its Stop in the composer, next to the
+   *  input the reader just used; the status-bar control belongs to a Group Run, where one
+   *  Stop covers several members. Rendering both gave a single-Bot pane two competing
+   *  Stops that did the same thing. */
+  hideStopAll?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -110,7 +115,7 @@ const statusText = computed<string>(() => props.activeSpeakerName ?? "");
     </template>
 
     <button
-      v-if="active"
+      v-if="active && !hideStopAll"
       type="button"
       data-test="conversation-stop-all"
       :disabled="stopping"
