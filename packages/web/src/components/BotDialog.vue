@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle, ChevronLeft, Pencil } from "lucide-vue-next";
 import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, supportsBotDedicatedWorkspaceUpdate, useInstancesStore } from "../stores/instances";
+import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import DialogShell from "./DialogShell.vue";
 import UiButton from "./UiButton.vue";
@@ -40,15 +40,21 @@ const isEditing = computed(() => !!props.bot);
 // dedicated slot and never as a normal option.
 const botDedicatedWorkspace = ref(props.bot?.dedicatedWorkspace);
 const ownsDedicatedWorkspace = computed(() => botDedicatedWorkspace.value !== undefined);
-// Creating a Bot without a workspace needs a core that allocates a dedicated
-// one; older cores (and their connectors) still require `workspace`, so the
-// option only appears when the instance advertises it. Editing needs the
-// update capability instead, and is refused once the Bot already owns a
-// dedicated workspace (replacing it would orphan its directory).
+// Creating always allocates a dedicated workspace: a Bot is meant to have its own
+// directory, and letting the form pick a shared one invited two Bots to collide in
+// the same tree. Editing may point the Bot at a shared workspace, and may always
+// come back to its own — but may not request a SECOND dedicated directory, since
+// the first would keep its registration with nothing left to release it.
 const canRequestDedicatedWorkspace = computed(() =>
-  isEditing.value
-    ? supportsBotDedicatedWorkspaceUpdate(inst.value) && !ownsDedicatedWorkspace.value
-    : supportsBotDedicatedWorkspace(inst.value));
+  isEditing.value ? false : supportsBotDedicatedWorkspace(inst.value));
+// Editing an existing Bot freely re-points its workspace, so the picker is offered
+// there. A new Bot is given a directory by the daemon and has nothing to choose —
+// except against an older core that cannot allocate one, where the picker is the
+// only way to name a workspace and must stay.
+const canChooseWorkspace = computed(() => isEditing.value || !supportsBotDedicatedWorkspace(inst.value));
+// The workspace is required exactly when the form neither picks it nor receives it
+// from the daemon: only a create against a core that allocates one leaves it out.
+const workspaceRequired = computed(() => !canRequestDedicatedWorkspace.value);
 // True once the Bot materialized an actual direct runtime binding/session:
 // agent/workspace are then backend-locked (runtime_identity_locked). A
 // persisted Direct Conversation alone keeps delete fail-closed (bot_in_use)
@@ -229,6 +235,8 @@ const workspaceGroups = computed<SelectGroup[]>(() => {
   // The Bot's own dedicated workspace never appears as an ordinary option: its
   // raw name stays out of the list, and the current value is labelled as the
   // Bot-owned slot so an update that keeps it still keeps the daemon's marker.
+  // It is offered whenever the Bot owns one, so switching away and back is a
+  // normal edit rather than a one-way trip.
   if (botDedicatedWorkspace.value) {
     options.unshift({ value: botDedicatedWorkspace.value.name, label: t("bot.fields.dedicatedWorkspaceCurrent") });
   } else if (isEditing.value && workspace.value && !options.some((option) => option.value === workspace.value)) {
@@ -236,7 +244,6 @@ const workspaceGroups = computed<SelectGroup[]>(() => {
     // value must stay visible.
     options.unshift({ value: workspace.value, label: workspace.value });
   }
-  if (canRequestDedicatedWorkspace.value) options.unshift({ value: "", label: t("bot.fields.dedicatedWorkspace") });
   return [{ options }];
 });
 const capabilityWorkspace = computed(() => workspace.value || (canRequestDedicatedWorkspace.value ? availableWorkspaces.value[0]?.name : undefined));
@@ -625,9 +632,10 @@ function describeSubmitError(err: unknown): string {
           <!-- Workspace -->
           <div>
             <label for="bot-workspace" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.workspace") }} <span v-if="!canRequestDedicatedWorkspace" class="text-danger-overlay">*</span>
+              {{ $t("bot.fields.workspace") }} <span v-if="workspaceRequired" class="text-danger-overlay">*</span>
             </label>
             <SelectMenu
+              v-if="canChooseWorkspace"
               id="bot-workspace"
               v-model="workspace"
               data-test="bot-workspace"
@@ -638,7 +646,9 @@ function describeSubmitError(err: unknown): string {
               :groups="workspaceGroups"
               @update:model-value="workspaceDirty = true"
             />
-            <p v-if="canRequestDedicatedWorkspace && !workspace" data-test="bot-dedicated-workspace-hint" class="mt-1 text-xs text-fg-muted">
+            <!-- A new Bot has no workspace to choose: the daemon allocates one,
+                 named after the Bot, so two Bots can never share a tree. -->
+            <p v-else data-test="bot-dedicated-workspace-hint" class="rounded-lg bg-surface-2 px-3 py-1.5 text-sm text-fg-muted">
               {{ $t("bot.fields.dedicatedWorkspaceHint") }}
             </p>
           </div>
