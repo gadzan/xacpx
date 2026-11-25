@@ -10,7 +10,13 @@ import {
   type ClaudeSettingsPolicy,
 } from "../adapters/claude-settings-policy";
 import { resolveSpawnCommand } from "../process/spawn-command";
-import { terminateProcessTree } from "../process/terminate-process-tree";
+import {
+  defaultAcpxRunner,
+  shellSessionCreateRunner,
+  spawnCapture,
+  type AcpxSpawnOptions,
+  type AcpxSpawnResult,
+} from "../transport/acpx-spawn";
 import { getPromptText, normalizeCommandError } from "../transport/prompt-output";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
 import { createStructuredPromptFile } from "../transport/prompt-media";
@@ -81,23 +87,13 @@ export class EnsureSessionFailedError extends Error {
   }
 }
 
-interface CommandResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-export interface CommandRunnerOptions {
-  onStderrLine?: (line: string) => void;
-  /** Kill the spawned process tree and reject with CommandTimeoutError when it runs longer than this. */
-  timeoutMs?: number;
-  /** Stable operation name included in timeout diagnostics. */
-  stage?: AcpxCommandStage;
-  /** Per-agent environment; provider credentials never cross the bridge JSON protocol. */
-  env?: NodeJS.ProcessEnv;
-}
+// Unified spawn types (canonical definitions live in ../transport/acpx-spawn.ts).
+type CommandResult = AcpxSpawnResult;
+export type CommandRunnerOptions = AcpxSpawnOptions;
 type CommandRunner = (command: string, args: string[], options?: CommandRunnerOptions) => Promise<CommandResult>;
 type SessionCreateRunner = (command: string, args: string[], cwd: string, options?: CommandRunnerOptions) => Promise<CommandResult>;
+export type { SpawnCaptureOptions } from "../transport/acpx-spawn";
+export { spawnCapture };
 type PromptRunner = typeof runStreamingPrompt;
 type RepairSessionIndexFn = () => Promise<boolean>;
 
@@ -1299,85 +1295,7 @@ export class BridgeRuntime {
   }
 }
 
-export interface SpawnCaptureOptions extends CommandRunnerOptions {
-  cwd?: string;
-  /** Test seam: replaces node:child_process spawn. */
-  spawnFn?: typeof spawn;
-  /** Test seam: replaces terminateProcessTree for timeout kills. */
-  killProcessTreeFn?: (pid: number) => Promise<void>;
-}
-
-export function spawnCapture(
-  command: string,
-  args: string[],
-  options?: SpawnCaptureOptions,
-): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    const spawnFn = options?.spawnFn ?? spawn;
-    const child = spawnFn(command, args, {
-      cwd: options?.cwd,
-      env: options?.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    let stdout = "";
-    let stderr = "";
-    let stderrTail = "";
-
-    const timeoutId =
-      typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
-        ? setTimeout(() => {
-            // Same kill semantics as the acpx-cli transport's timed-out runner:
-            // tear down the whole spawned tree so no orphan keeps holding the lane.
-            const kill = options.killProcessTreeFn
-              ?? ((pid: number) => terminateProcessTree(pid, { detachedProcessGroup: false }));
-            void kill(child.pid ?? 0);
-            reject(new CommandTimeoutError(options.timeoutMs!, [command, ...args].join(" "), {
-              stage: options.stage,
-              stdout,
-              stderr,
-            }));
-          }, options.timeoutMs)
-        : undefined;
-
-    child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      const text = String(chunk);
-      stderr += text;
-      if (!options?.onStderrLine) return;
-      stderrTail += text;
-      // Split on both \n and \r so Windows CRLF and bare-\r progress bars both emit lines.
-      const matches = stderrTail.split(/\r\n|\r|\n/);
-      // Last element is the unterminated tail (or "" if input ended on a separator).
-      stderrTail = matches.pop() ?? "";
-      for (const line of matches) {
-        options.onStderrLine(line);
-      }
-    });
-    child.on("error", (error) => {
-      if (timeoutId) clearTimeout(timeoutId);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (options?.onStderrLine && stderrTail.length > 0) {
-        options.onStderrLine(stderrTail);
-      }
-      resolve({ code: code ?? 1, stdout, stderr });
-    });
-  });
-}
-
-async function defaultRunner(
-  command: string,
-  args: string[],
-  options?: CommandRunnerOptions,
-): Promise<CommandResult> {
-  return await spawnCapture(command, args, options);
-}
+const defaultRunner = defaultAcpxRunner;
 
 export async function runStreamingPrompt(
   command: string,
@@ -1497,14 +1415,7 @@ async function defaultPromptRunner(
   return await runStreamingPrompt(command, args, onEvent, options);
 }
 
-async function shellSessionCreateRunner(
-  command: string,
-  args: string[],
-  cwd: string,
-  options?: CommandRunnerOptions,
-): Promise<CommandResult> {
-  return await spawnCapture(command, args, { ...options, cwd });
-}
+// shellSessionCreateRunner is imported from ../transport/acpx-spawn (unified Phase 1).
 
 export function selectLatestAcpxSessionIndexTmp(files: string[]): string | null {
   let latestTmp: string | null = null;

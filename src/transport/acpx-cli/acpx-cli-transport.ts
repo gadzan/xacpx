@@ -1,15 +1,21 @@
-import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { spawn as spawnPty } from "node-pty";
 
 import { resolveSpawnCommand } from "../../process/spawn-command";
+import {
+  defaultAcpxPtyRunner,
+  defaultAcpxRunner,
+  managementTimeoutError,
+  resolvePtyChildEnvironment,
+  runWithSpawnTimeout,
+  type AcpxSpawnOptions,
+  type AcpxSpawnResult,
+} from "../acpx-spawn";
 import {
   resolveClaudeSpawnEnvironment,
   type ClaudeExecutionSettings,
 } from "../../adapters/claude-settings-policy";
 import type { NonInteractivePermissions, PermissionMode } from "../../config/types";
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
-import { getLocale } from "../../i18n";
 import type {
   AgentCommand,
   AgentCapabilityProbeRequest,
@@ -43,8 +49,6 @@ import {
 import { assertAcpxQueueOwnerAbsent } from "../acpx-queue-owner-launcher";
 import { explainSessionSpawnFailure } from "../session-spawn-failure";
 import { nativeCatalogIdentityForLaunch } from "../../sessions/native-session-guard";
-import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
-import { terminateProcessTree } from "../../process/terminate-process-tree";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../acpx-session-argv-migration";
@@ -117,29 +121,9 @@ interface AcpxCliTransportOptions {
   inspectAgentModels?: AcpxModelInspectFn;
 }
 
-interface CommandResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-interface RunOptions {
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  stage?: AcpxCommandStage;
-  env?: NodeJS.ProcessEnv;
-}
-
-function managementTimeoutError(
-  args: string[],
-  options: RunOptions,
-  output: { stdout?: string; stderr?: string } = {},
-): CommandTimeoutError {
-  return new CommandTimeoutError(options.timeoutMs!, renderCommandForError(args), {
-    stage: options.stage,
-    ...output,
-  });
-}
+// Unified spawn types (canonical definitions live in ../acpx-spawn.ts).
+type CommandResult = AcpxSpawnResult;
+type RunOptions = AcpxSpawnOptions;
 
 interface PromptStreamProcess {
   stdout: {
@@ -166,91 +150,9 @@ interface StreamingPromptHooks {
 
 type CommandRunner = (command: string, args: string[], options?: RunOptions) => Promise<CommandResult>;
 type PtyRunner = (command: string, args: string[], options?: RunOptions) => Promise<CommandResult>;
-const require = createRequire(import.meta.url);
+const defaultRunner = defaultAcpxRunner;
 
-async function defaultRunner(command: string, args: string[], options?: RunOptions): Promise<CommandResult> {
-  return await new Promise((resolve, reject) => {
-    const spawnSpec = resolveSpawnCommand(command, args);
-    const child = spawn(spawnSpec.command, spawnSpec.args, {
-      env: options?.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-
-    const onAbort = () => {
-      void terminateProcessTree(child.pid ?? 0, { detachedProcessGroup: false });
-    };
-    options?.signal?.addEventListener("abort", onAbort, { once: true });
-
-    const timeoutId = options?.timeoutMs
-      ? setTimeout(() => {
-          onAbort();
-          reject(managementTimeoutError(args, options, { stdout, stderr }));
-        }, options.timeoutMs)
-      : undefined;
-
-    child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", (error) => {
-      options?.signal?.removeEventListener("abort", onAbort);
-      if (timeoutId) clearTimeout(timeoutId);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      options?.signal?.removeEventListener("abort", onAbort);
-      if (timeoutId) clearTimeout(timeoutId);
-      resolve({ code: code ?? 1, stdout, stderr });
-    });
-  });
-}
-
-async function defaultPtyRunner(command: string, args: string[], options?: RunOptions): Promise<CommandResult> {
-  const helperPath = resolveNodePtyHelperPath(
-    require.resolve("node-pty/package.json"),
-    process.platform,
-    process.arch,
-  );
-  await ensureNodePtyHelperExecutable(helperPath);
-
-  return await new Promise((resolve, reject) => {
-    const spawnSpec = resolveSpawnCommand(command, args);
-    const child = spawnPty(spawnSpec.command, spawnSpec.args, {
-      name: "xterm-color",
-      cols: 80,
-      rows: 24,
-      cwd: process.cwd(),
-      env: resolveChildEnvironment(process.env, options?.env, getLocale()),
-    });
-    let output = "";
-
-    const onAbort = () => {
-      child.kill();
-    };
-    options?.signal?.addEventListener("abort", onAbort, { once: true });
-
-    const timeoutId = options?.timeoutMs
-      ? setTimeout(() => {
-          onAbort();
-          reject(managementTimeoutError(args, options, { stdout: output }));
-        }, options.timeoutMs)
-      : undefined;
-
-    child.onData((chunk) => {
-      output += chunk;
-    });
-
-    child.onExit(({ exitCode }) => {
-      options?.signal?.removeEventListener("abort", onAbort);
-      if (timeoutId) clearTimeout(timeoutId);
-      resolve({ code: exitCode, stdout: output, stderr: "" });
-    });
-  });
-}
+const defaultPtyRunner = defaultAcpxPtyRunner;
 
 type QueueOwnerLaunchPort = Pick<AcpxQueueOwnerLauncher, "launch"> & {
   wouldReuse?(input: LaunchQueueOwnerInput): Promise<boolean>;
@@ -1341,33 +1243,9 @@ export class AcpxCliTransport implements SessionTransport {
     args: string[],
     options?: RunOptions,
   ): Promise<CommandResult> {
-    const spawnSpec = resolveSpawnCommand(this.command, args);
-
-    if (!options?.timeoutMs) {
-      return await runner(spawnSpec.command, spawnSpec.args, options);
-    }
-
-    const abortController = new AbortController();
-    let timeoutId: NodeJS.Timeout | undefined;
-
-    return await Promise.race([
-      runner(spawnSpec.command, spawnSpec.args, {
-        ...options,
-        signal: options.signal
-          ? AbortSignal.any([options.signal, abortController.signal])
-          : abortController.signal,
-      }).finally(() => {
-        if (timeoutId) clearTimeout(timeoutId);
-      }),
-      new Promise<CommandResult>((_, reject) => {
-        timeoutId = setTimeout(() => {
-          reject(
-            managementTimeoutError(args, options),
-          );
-          abortController.abort();
-        }, options.timeoutMs);
-      }),
-    ]);
+    // Unified abort-racing timeout (see ../acpx-spawn.ts); the rendered
+    // timeout message keeps the `--format`/`--cwd` redaction.
+    return await runWithSpawnTimeout(runner, this.command, args, options);
   }
 
   private async runStreamingPrompt(
@@ -1682,46 +1560,8 @@ function describeCleanupError(error: unknown): string {
   return message.length > 512 ? `${message.slice(0, 512)}…` : message;
 }
 
-function renderCommandForError(args: string[]): string {
-  const rendered: string[] = [];
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === undefined) {
-      continue;
-    }
-
-    if (arg === "--format") {
-      index += 1;
-      continue;
-    }
-
-    if (arg === "--cwd") {
-      index += 1;
-      continue;
-    }
-
-    rendered.push(/\s/.test(arg) || arg.includes(":") ? `"${arg}"` : arg);
-  }
-
-  return rendered.join(" ");
-}
-
-function resolveChildEnvironment(
-  baseEnv: NodeJS.ProcessEnv,
-  explicitEnv: NodeJS.ProcessEnv | undefined,
-  locale: string,
-): Record<string, string> {
-  const source = explicitEnv ?? baseEnv;
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (typeof value === "string") env[key] = value;
-  }
-  env.XACPX_LANG = locale;
-  return env;
-}
-
 export const __acpxCliTransportForTests = {
-  resolveChildEnvironment,
+  // Historic name; canonical implementation lives in ../acpx-spawn.ts.
+  resolveChildEnvironment: resolvePtyChildEnvironment,
 };
 
