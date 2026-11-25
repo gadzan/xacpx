@@ -85,6 +85,7 @@ export const MSG = {
   sessionsUnarchive: "control.sessions.unarchive",
   sessionsRename: "control.sessions.rename",
   sessionsFork: "control.sessions.fork",
+  sessionsClear: "control.sessions.clear",
   agentsList: "control.agents.list",
   workspacesList: "control.workspaces.list",
   workspacesCreate: "control.workspaces.create",
@@ -539,6 +540,18 @@ export interface SessionsRemovePayload {
 export interface SessionsRemoveResult {
   wasActive: boolean;
 }
+/** Start a fresh context for one session without removing it: the alias survives,
+ *  the transport session is replaced. Backed by the same reset the `/clear` command runs. */
+export interface SessionsClearPayload {
+  /** Server-stamped `relay:<accountId>`; scopes the alias to that channel. */
+  chatKey: string;
+  alias: string;
+}
+export interface SessionsClearResult {
+  /** Human-readable confirmation from the reset, for surfacing in the UI. */
+  output: string;
+}
+
 export interface SessionsArchivePayload {
   chatKey: string;
   alias: string;

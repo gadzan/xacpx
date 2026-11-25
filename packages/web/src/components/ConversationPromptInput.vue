@@ -27,6 +27,9 @@ import ConversationComposer from "./ConversationComposer.vue";
 import CompletionList, { type CompletionRow } from "./CompletionList.vue";
 import CompletionMenu from "./CompletionMenu.vue";
 import { useCompletionDismiss, useIsMobile } from "../lib/use-dropdown";
+import { confirm } from "../lib/use-confirm";
+import { pushToast } from "../lib/use-toasts";
+import { randomUuid } from "../lib/random-id";
 
 const props = defineProps<{
   disabled?: boolean;
@@ -95,6 +98,49 @@ const blocked = computed(
     isPromptInFlight.value ||
     isTopicRecovering.value,
 );
+
+/**
+ * Clear the current topic's context from the composer's action row.
+ *
+ * A Bot's session is owned by its Topic, so this is the Topic-level clear rather than
+ * the ordinary session reset: the Topic stays, its `contextGeneration` advances, and the
+ * Bot's runtime binding is rebuilt on the next send. The same call backs the Topic
+ * menu's "clear default topic".
+ */
+const clearingContext = ref(false);
+const canClearContext = computed(
+  () =>
+    !!directBotsStore.instanceId &&
+    !!directBotsStore.activeConversationId &&
+    !!directBotsStore.activeTopicId &&
+    !blocked.value &&
+    !isRunActive.value &&
+    !clearingContext.value,
+);
+async function clearContext(): Promise<void> {
+  const instanceId = directBotsStore.instanceId;
+  const conversationId = directBotsStore.activeConversationId;
+  const topicId = directBotsStore.activeTopicId;
+  if (!canClearContext.value || !instanceId || !conversationId || !topicId) return;
+  const ok = await confirm({
+    title: t("chat.clearContext.title"),
+    message: t("chat.clearContext.botBody"),
+    confirmLabel: t("chat.clearContext.confirm"),
+    tone: "danger",
+  });
+  if (!ok) return;
+  clearingContext.value = true;
+  try {
+    // releaseBindings: the binding still names the old runtime, and leaving it in place
+    // is exactly what keeps a broken session unrecoverable.
+    await directBotsStore.clearTopic(instanceId, conversationId, topicId, randomUuid(), true);
+    pushToast("success", "chat.clearContext.done");
+  } catch (error: unknown) {
+    pushToast("error", error instanceof Error ? error.message : String(error));
+  } finally {
+    clearingContext.value = false;
+  }
+}
 const composerPlaceholder = computed(() =>
   isBotDisabled.value
     ? t("bot.prompt.botDisabledPlaceholder")
@@ -549,6 +595,17 @@ defineExpose({ fillDraft, focusInput, hasDraft });
         />
       </template>
       <template #actions>
+        <button
+          type="button"
+          data-test="clear-context-btn"
+          :title="$t('chat.clearContext.title')"
+          :aria-label="$t('chat.clearContext.title')"
+          :disabled="!canClearContext"
+          class="flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          @click="clearContext"
+        >
+          <RotateCcw :size="15" />
+        </button>
         <ComposerAttachPicker
           v-if="directBotsStore.instanceId"
           :scope-key="attachKey"

@@ -1698,8 +1698,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     topicId: string,
     requestId: string,
     releaseBindings = false,
-  ): Promise<TopicSummaryDto> {
-    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsClear, {
+  ): Promise<TopicSummaryDto> {    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsClear, {
       conversationId,
       topicId,
       requestId,

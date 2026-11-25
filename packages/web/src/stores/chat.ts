@@ -1319,6 +1319,25 @@ export const useChatStore = defineStore("chat", () => {
     await send(message.text);
   }
 
+  /**
+   * Start a fresh context for the open session without dropping it.
+   *
+   * Backed by the same reset the `/clear` command runs, addressed by alias. The alias
+   * survives; the transport session behind it is replaced.
+   */
+  async function clearContext(): Promise<string> {
+    if (!instanceId.value || !sessionAlias.value) throw new Error("no-session");
+    const id = instanceId.value;
+    const alias = sessionAlias.value;
+    const result = await api.rpc<{ output?: string }>(id, "control.sessions.clear", {
+      alias,
+    });
+    // The reset swaps the transport session underneath the same alias, so the cached
+    // transcript no longer describes this session. History is the daemon's to refill.
+    purgeTailCache(id, alias);
+    return result?.output ?? "";
+  }
+
   async function cancel(): Promise<void> {
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
@@ -1461,5 +1480,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, historyCapped, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem, purgeTailCache, reconcileTailCache };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, historyCapped, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, clearContext, cancelQueuedItem, purgeTailCache, reconcileTailCache };
 });

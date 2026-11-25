@@ -2174,6 +2174,7 @@ export async function buildApp(
     archiveSessionWithTransport: (internalAlias) =>
       router.archiveSessionWithTransport(internalAlias),
     unarchiveSession: (internalAlias) => router.unarchiveSession(internalAlias),
+    resetSessionContext: (internalAlias) => router.resetSessionContext(internalAlias),
     activeTurns,
     ...(sessionForks ? { sessionForks } : {}),
     ...(sessionWarmth ? { sessionWarmth } : {}),

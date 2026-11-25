@@ -95,6 +95,7 @@ import {
   type SessionEffortGetPayload,
   type SessionEffortSetPayload,
   type SessionsArchivePayload,
+  type SessionsClearPayload,
   type SessionsCreatePayload,
   type SessionsListPayload,
   type SessionsNativeListPayload,
@@ -222,6 +223,10 @@ const validateSessionsRemove: Validator<SessionsRemovePayload> = (p) => {
 const validateSessionsArchive: Validator<SessionsArchivePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.alias) ? (o as unknown as SessionsArchivePayload) : null;
+};
+const validateSessionsClear: Validator<SessionsClearPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.alias) ? (o as unknown as SessionsClearPayload) : null;
 };
 const validateSessionsUnarchive: Validator<SessionsUnarchivePayload> = (p) => {
   const o = fields(p);
@@ -1274,6 +1279,7 @@ export const validateInteractionWithdraw: Validator<InteractionWithdrawPayload> 
 export type ControlRpcType =
   | typeof MSG.sessionsList | typeof MSG.sessionsCreate | typeof MSG.sessionsNativeList | typeof MSG.sessionsHistory
   | typeof MSG.sessionsRemove | typeof MSG.sessionsArchive | typeof MSG.sessionsUnarchive
+  | typeof MSG.sessionsClear
   | typeof MSG.sessionsRename | typeof MSG.sessionsFork | typeof MSG.workspacesCreate | typeof MSG.agentsCreate
   | typeof MSG.agentsRemove | typeof MSG.workspacesRemove | typeof MSG.prompt
   | typeof MSG.promptCancel | typeof MSG.queueCancel | typeof MSG.commandExecute
@@ -1333,6 +1339,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsNativeList]: validateSessionsNativeList,
   [MSG.sessionsHistory]: validateSessionsHistory,
   [MSG.sessionsRemove]: validateSessionsRemove,
+  [MSG.sessionsClear]: validateSessionsClear,
   [MSG.sessionsArchive]: validateSessionsArchive,
   [MSG.sessionsUnarchive]: validateSessionsUnarchive,
   [MSG.sessionsRename]: validateSessionsRename,

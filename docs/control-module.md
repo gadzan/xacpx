@@ -81,6 +81,8 @@ PR9 公开 handoff 走 execution-bound `group_send({to, task, expectedOutput?})`
 
 ## 方法概览
 
+`clearSessionContext(chatKey, alias)` 对应 `control.sessions.clear`，为一个会话开一段新上下文而不删除它。它按 alias 定位，而不是取 chat 的 `current_session`：Web 端自己保存选择、从不回写 chat key，按当前会话解析会清掉 daemon 恰好持有的那一个，可能不是用户正在看的那一个。重置本体复用 `/clear` 命令的实现（经由 `resetSessionContext` 注入接到 CommandRouter），因此换掉 transport 会话、释放 runtime incarnation、让 native 会话保持 native、以及每条失败路径回滚 alias 的行为都与 CLI 一致。alias 本身保留，历史不保留。Bot 会话（`bot-direct` / `group-member` / `group-controller`）与其它普通会话 API 一样被 `hidden_session` 拒绝：它们的身份属于话题，只能经由 `control.topics.clear` 重置。未接入重置接缝的嵌入环境报错而不是假装成功。
+
 `getAgentCapabilities({ agent, workspace, botId?, probe? })` 返回适配器模型与 effort 的状态，而不是字符串数组。状态是 `ready`、`unsupported`、`needs-setup` 或 `error`。`ready` 至少有一个适配器公布的 model id，id 原样传递。`unsupported`、`needs-setup` 和 `error` 都带原因和恢复提示。上下文只接受已配置的 agent、workspace，以及可选的 Bot id。返回体不含 hidden alias、启动命令或密钥。`probe: true` 才通过 transport 做冷探测。探测不发送用户任务，也不创建 Bot topic。没有探测入口时返回 `unsupported` / `probe-unavailable`。
 
 `getConversationRouterAvailability()` 对应 `control.conversations.router.get`。它返回 daemon 当前的 Router 可用性，不是布尔值。状态是 `ready`、`disabled-by-config`、`unsupported` 或 `failed`。`ready` 没有 reason。其余状态带 reason 和固定的 `configPath` `conversations.router`。读取不重新探测，也不启动 `--decide`。

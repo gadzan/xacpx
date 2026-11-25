@@ -110,6 +110,7 @@ var MSG = {
   sessionsUnarchive: "control.sessions.unarchive",
   sessionsRename: "control.sessions.rename",
   sessionsFork: "control.sessions.fork",
+  sessionsClear: "control.sessions.clear",
   agentsList: "control.agents.list",
   workspacesList: "control.workspaces.list",
   workspacesCreate: "control.workspaces.create",
@@ -1486,6 +1487,10 @@ var validateSessionsArchive = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.alias) ? o : null;
 };
+var validateSessionsClear = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.alias) ? o : null;
+};
 var validateSessionsUnarchive = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.alias) ? o : null;
@@ -2353,6 +2358,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsNativeList]: validateSessionsNativeList,
   [MSG.sessionsHistory]: validateSessionsHistory,
   [MSG.sessionsRemove]: validateSessionsRemove,
+  [MSG.sessionsClear]: validateSessionsClear,
   [MSG.sessionsArchive]: validateSessionsArchive,
   [MSG.sessionsUnarchive]: validateSessionsUnarchive,
   [MSG.sessionsRename]: validateSessionsRename,

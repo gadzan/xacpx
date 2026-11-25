@@ -198,6 +198,13 @@ export default {
   palette: { placeholder: "跳转到会话…", noMatches: "无匹配项" },
   chat: {
     emptyStateTitle: "继续上次的工作",
+    clearContext: {
+      title: "清空上下文",
+      body: "为这个会话开一段新的上下文。会话本身保留，当前历史不能恢复。",
+      botBody: "为这个话题开一段新的上下文。话题本身保留，当前历史不能恢复。",
+      confirm: "清空",
+      done: "已清空上下文",
+    },
     loadOlder: "加载更早的消息",
     historyCappedNotice: "本地历史已达上限，仅保留最近 {kept} 条（已清理 {dropped} 条）。",
     resizeComposer: "拖动调整输入框高度",

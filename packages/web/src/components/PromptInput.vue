@@ -14,6 +14,7 @@ import {
   Gauge,
   Paperclip,
   RefreshCw,
+  RotateCcw,
   SlidersHorizontal,
   X,
 } from "lucide-vue-next";
@@ -35,6 +36,7 @@ import { useInstancesStore } from "../stores/instances";
 import { formatModelLabel } from "../lib/model-label";
 import { isOmpModelRestoreFailure } from "../lib/omp-model-recovery";
 import { pushToast } from "../lib/use-toasts";
+import { confirm } from "../lib/use-confirm";
 import {
   sessionPresentationName,
   shortestUniqueSuffix,
@@ -494,6 +496,38 @@ const recordedMentions = ref<BoundMention[]>([]);
 const composerCard = ref<InstanceType<typeof ConversationComposer> | null>(null);
 const caretStart = ref(0);
 const caretEnd = ref(0);
+
+/**
+ * Clear this session's context from the composer's action row.
+ *
+ * Sits next to the attach button because both act on "this composer's session", and
+ * the composer is the one surface every pane already shares. The reset keeps the
+ * session and throws away what it remembers, so it asks first: the transcript cannot
+ * be recovered afterwards.
+ */
+const clearingContext = ref(false);
+const canClearContext = computed(() =>
+  !!props.instanceId && !!props.sessionAlias && !props.busy && !clearingContext.value,
+);
+async function clearContext(): Promise<void> {
+  if (!canClearContext.value) return;
+  const ok = await confirm({
+    title: t("chat.clearContext.title"),
+    message: t("chat.clearContext.body"),
+    confirmLabel: t("chat.clearContext.confirm"),
+    tone: "danger",
+  });
+  if (!ok) return;
+  clearingContext.value = true;
+  try {
+    await chat.clearContext();
+    pushToast("success", "chat.clearContext.done");
+  } catch (error: unknown) {
+    pushToast("error", error instanceof Error ? error.message : String(error));
+  } finally {
+    clearingContext.value = false;
+  }
+}
 function onCaret(selection: { start: number; end: number }) {
   caretStart.value = selection.start;
   caretEnd.value = selection.end;
@@ -1047,6 +1081,19 @@ function onKeydown(e: KeyboardEvent) {
       </template>
 
       <template #actions>
+        <!-- Clears this session's context. Disabled while a turn runs: the reset
+             would race the turn it is meant to discard. -->
+        <button
+          type="button"
+          data-test="clear-context-btn"
+          :title="$t('chat.clearContext.title')"
+          :aria-label="$t('chat.clearContext.title')"
+          :disabled="!canClearContext"
+          class="flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          @click="clearContext"
+        >
+          <RotateCcw :size="15" />
+        </button>
         <!-- attach button -->
         <button
           type="button"

@@ -7,8 +7,15 @@ export async function handleSessionResetCommand(
   context: CommandRouterContext,
   ops: SessionResetOps,
   chatKey: string,
+  /** Explicit target; omitted means "the chat's current session" (the CLI `/clear`).
+   *  A dashboard addresses the session it is showing, which is not necessarily the
+   *  one the chat key happens to hold. */
+  targetAlias?: string,
 ): Promise<RouterResponse> {
-  const previous = await context.sessions.getCurrentSession(chatKey);
+  const previous = targetAlias
+    ? context.sessions.getResolvedSessionByInternalAlias(targetAlias)
+      ?? await context.sessions.getSession(targetAlias)
+    : await context.sessions.getCurrentSession(chatKey);
   if (!previous) {
     return { text: t().misc.sessionResetNoCurrentSession };
   }
@@ -101,7 +108,12 @@ export async function handleSessionResetCommand(
         );
       }
       await ops.refreshSessionTransportAgentCommand(persistedSession.alias);
-      await context.sessions.useSession(chatKey, persistedSession.alias);
+      // Only adopt the reset session when it IS the chat's current one. A dashboard
+      // resets the session it is showing; redirecting the chat key there would move
+      // the CLI's `/clear` target as a side effect of pressing a dashboard button.
+      if (!targetAlias) {
+        await context.sessions.useSession(chatKey, persistedSession.alias);
+      }
       await context.logger.info("session.reset", "reset current logical session", {
         alias: persistedSession.alias,
         agent: persistedSession.agent,

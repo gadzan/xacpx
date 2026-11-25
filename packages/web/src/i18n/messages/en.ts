@@ -202,6 +202,13 @@ export default {
   palette: { placeholder: "Jump to a session…", noMatches: "no matches" },
   chat: {
     emptyStateTitle: "Continue where you left off",
+    clearContext: {
+      title: "Clear context",
+      body: "Start a fresh context for this session. The session stays; the current history cannot be restored.",
+      botBody: "Start a fresh context for this topic. The topic stays; the current history cannot be restored.",
+      confirm: "Clear",
+      done: "Context cleared",
+    },
     loadOlder: "Load earlier messages",
     historyCappedNotice: "Local history reached its limit — keeping the newest {kept} (trimmed {dropped}).",
     resizeComposer: "Drag to resize input height",

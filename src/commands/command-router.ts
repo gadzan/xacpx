@@ -613,6 +613,24 @@ export class CommandRouter {
   }
 
   /**
+   * Start a fresh context for one session, addressed by alias.
+   *
+   * Runs the same reset the `/clear` command does, which is why the Control layer
+   * routes here instead of reimplementing it: the transport session is replaced, a
+   * runtime incarnation is released, a native session stays native, and every failure
+   * rolls the alias back. The alias itself survives.
+   */
+  async resetSessionContext(internalAlias: string): Promise<string> {
+    const response = await handleSessionResetCommand(
+      this.createHandlerContext(),
+      this.createSessionResetOps(undefined, undefined),
+      "",
+      internalAlias,
+    );
+    return response.text ?? "";
+  }
+
+  /**
    * List the agent-native (acpx-owned) sessions for a given agent + workspace, for the
    * web "attach a native session" picker. Resolves the workspace's cwd from config and
    * the agent's runtime command, then queries the transport, filtered to that cwd.

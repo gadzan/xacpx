@@ -362,6 +362,15 @@ async function dispatchControlRequest(
       await control.archiveSession(input.chatKey, input.alias);
       return {};
     }
+    case MSG.sessionsClear: {
+      const input = parseControlPayload(MSG.sessionsClear, payload);
+      if (!input)
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.sessionsClear}: malformed payload`,
+        );
+      return await control.clearSessionContext(input.chatKey, input.alias);
+    }
     case MSG.sessionsUnarchive: {
       const input = parseControlPayload(MSG.sessionsUnarchive, payload);
       if (!input)

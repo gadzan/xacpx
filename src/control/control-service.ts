@@ -340,6 +340,16 @@ export interface ControlServiceDeps {
   ) => Promise<{ wasActive: boolean }>;
   archiveSessionWithTransport: (internalAlias: string) => Promise<void>;
   unarchiveSession: (internalAlias: string) => Promise<void>;
+  /**
+   * Start a fresh context for one logical session, keeping its alias.
+   *
+   * Wired to the CommandRouter's `/clear` so the web path and the chat path run the
+   * same reset: transport session swapped, runtime incarnation released, a native
+   * (agent-side) session kept native, and every failure path rolling the alias back.
+   * Absent ⇒ `control.sessions.clear` reports `not-supported` rather than inventing
+   * a second, weaker reset here.
+   */
+  resetSessionContext?: (internalAlias: string) => Promise<string>;
   // List the agent-native sessions for an agent + workspace (web native-attach picker).
   listNativeSessions: (
     agent: string,
@@ -2426,6 +2436,34 @@ export class ControlService {
     } finally {
       this.turnQueue.finishClear(chatKey, alias, internalAlias);
     }
+  }
+
+  /**
+   * Start a fresh context for one session without removing it.
+   *
+   * Addressed by alias rather than by "the chat's current session": the web client
+   * keeps its own selection and never writes it back to the chat key, so resolving
+   * through `current_session` would clear whichever session the daemon happened to
+   * hold — possibly a different one than the reader is looking at.
+   */
+  async clearSessionContext(
+    chatKey: string,
+    alias: string,
+  ): Promise<{ output: string }> {
+    if (!this.deps.resetSessionContext) {
+      throw new Error("session reset is not available on this transport");
+    }
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(
+      chatKey,
+      alias,
+    );
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
+    const output = await this.deps.resetSessionContext(internalAlias);
+    // The alias keeps its identity but now names a different transport session, so the
+    // dashboard's transport/native binding columns are stale until it refreshes.
+    this.deps.events.emit({ type: "sessions-changed" });
+    return { output };
   }
 
   async archiveSession(chatKey: string, alias: string): Promise<void> {
