@@ -62,6 +62,13 @@ function toolEvent(seq: number, index: number): ConversationRunTraceEventDto {
 }
 
 const detail = (page: Page) => page.locator('[data-test="group-detail-card"], [data-test="group-detail-sheet"]');
+/**
+ * The live "what is happening now" line, which lives in the transcript bubble that
+ * the member's reply will land in — not in the drawer. Opening the drawer is what
+ * these tests used to assert against, back when the stack was duplicated there.
+ */
+const liveLine = (page: Page) => page.getByTestId("conversation-timeline-scroller")
+  .locator('[data-test="trace-live-stack"]');
 /** The live member has no durable message, so it surfaces as one timeline
  *  activity row. Above lg its avatar opens the Run-wide drawer; below lg the
  *  row's identity is hidden on purpose, so the status bar speaker is the same
@@ -182,6 +189,12 @@ async function openLiveFeed(page: Page, hub: MockHub) {
     },
   });
   const triggerRefetch = () => sendStep(triggerStep());
+  // The live line is fed by streamed parts, and the fixture member starts with none,
+  // so push one before anything asserts on it. This is also what a real turn does
+  // first: a Bot reports a tool step before it writes prose.
+  sendStep({ ...triggerStep(), status: "success", title: "Tool 36" });
+  await expect(page.getByTestId("conversation-timeline-scroller").locator('[data-test="trace-live-row"]'))
+    .toHaveCount(1);
   /** Real new events for the >10/s animation gate. */
   const sendBurst = (from: number, to: number) => {
     for (let index = from; index <= to; index++) sendStep(burstStep(index));
@@ -209,24 +222,19 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   const fixture = await openLiveFeed(page, hub);
   const detailEl = detail(page);
   const scroll = scroller(page, mobile);
-  const stackRows = page.locator('[data-test="trace-live-item"]');
+  const line = liveLine(page);
+  const lineRows = line.locator('[data-test="trace-live-row"]');
 
   await expect(detailEl).toContainText("Tool 01");
   await expect(detailEl).toContainText("Tool 36");
   await expect(detailEl.getByTestId("group-trace-step")).toHaveCount(36);
   await expect(detailEl.getByTestId("run-detail")).toBeVisible();
 
-  await expect(stackRows).toHaveCount(mobile ? 2 : 3);
-  await expect(stackRows.first()).toContainText("Tool 36");
-  await expect(stackRows.nth(1)).toContainText("Tool 35");
-  await scroll.evaluate((el) => { el.scrollTop = 900; });
-  const stackDelta = await page.getByTestId("trace-live-stack").evaluate((el) => {
-    const owner = el.closest(".group-detail-scroll, .thin-scroll")!;
-    return el.getBoundingClientRect().top - owner.getBoundingClientRect().top;
-  });
-  expect(stackDelta).toBeGreaterThanOrEqual(0);
-  expect(stackDelta).toBeLessThanOrEqual(40);
-  await scroll.evaluate((el) => { el.scrollTop = 0; });
+  // The live line reports the newest activity in the bubble, one row only: the
+  // reply is what the reader waits for, so a rolling log above it competes.
+  await expect(line).toBeVisible();
+  await expect(lineRows).toHaveCount(1);
+  await expect(lineRows.first()).toContainText("Tool 36");
   await screenshot(page, info, mobile ? "mobile-live-stack" : "desktop-live-stack");
 
   const plainRow = detailEl.locator('[data-trace-key="tool:tool-20"]');
@@ -242,7 +250,6 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   await expect(detailEl.getByTestId("group-trace-step")).toHaveCount(56);
   await expect(detailEl.getByTestId("tool-step-body")).toContainText("output 1");
   await expect(detailEl.locator('[data-trace-key="tool:tool-01"]')).toHaveAttribute("data-state", "success");
-  await expect(stackRows.first()).toContainText("Tool 56");
   await screenshot(page, info, mobile ? "mobile-expanded-after-append" : "desktop-expanded-after-append");
 
   const newEvents = page.getByTestId("group-trace-new-events");
@@ -314,8 +321,9 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
 
   fixture.appendEvents(77, 77);
   fixture.finish("completed");
-  await expect(page.getByTestId("trace-live-summary")).toContainText("Run complete");
-  await expect(page.getByTestId("trace-live-item")).toHaveCount(0);
+  // A settled turn takes the live line with it, so nothing is left behind above a
+  // reply that is already in the transcript.
+  await expect(liveLine(page)).toHaveCount(0);
   await expect(detail(page).getByTestId("group-trace-step")).toHaveCount(77);
   await expect(detail(page).getByTestId("tool-step-body")).toContainText("output 1");
   await screenshot(page, info, mobile ? "mobile-terminal-summary" : "desktop-terminal-summary");
@@ -344,15 +352,16 @@ async function expectResidualFeed(page: Page, hub: MockHub, info: TestInfo, mobi
   const fixture = await openLiveFeed(page, hub);
   const detailEl = detail(page);
   const scroll = scroller(page, mobile);
-  const stackRows = page.locator('[data-test="trace-live-item"]');
-  const stack = page.getByTestId("trace-live-stack");
-  const rows = mobile ? 2 : 3;
+  const line = liveLine(page);
+  const lineRows = line.locator('[data-test="trace-live-row"]');
 
-  // --- Fixed-height stack: 2 rows on mobile, 3 on desktop ----------------
-  const stackBox = await stack.boundingBox();
-  expect(stackBox).not.toBeNull();
-  expect(stackBox!.height).toBeGreaterThanOrEqual(rows * 34);
-  expect(stackBox!.height).toBeLessThanOrEqual(rows * 34 + 32);
+  // --- One line, one fixed box, whatever the activity is -----------------
+  // A box sized by its text resized on every new tool and pushed the reply around
+  // while the reader was watching, so the height and width are pinned.
+  await expect(lineRows).toHaveCount(1);
+  const shortBox = await line.boundingBox();
+  expect(shortBox).not.toBeNull();
+  expect(shortBox!.height).toBeCloseTo(36, 0);
   if (mobile) {
     // The sheet owns the scroll; the page body must not be pushed or occluded.
     expect(await page.evaluate(() => document.scrollingElement!.scrollHeight <= window.innerHeight + 1)).toBe(true);
@@ -374,25 +383,33 @@ async function expectResidualFeed(page: Page, hub: MockHub, info: TestInfo, mobi
   console.log("EXPANDED_DRIFT", mobile ? "mobile" : "desktop", await drift());
   await screenshot(page, info, mobile ? "mobile-long-output-append" : "desktop-long-output-append");
 
-  // --- >10 events/s: content updates, animations stop --------------------
+  // --- A burst still leaves exactly one row -----------------------------
+  // The line reports the newest activity, so a fast run cannot grow it into a log.
   fixture.sendBurst(1, 12);
-  await expect(page.locator(".trace-live--static")).toHaveCount(1, { timeout: 5_000 });
-  await expect(stackRows.first()).toContainText("Burst 12");
-  // The gate clears by rate once the window drains, with no further event.
-  await expect(page.locator(".trace-live--static")).toHaveCount(0, { timeout: 15_000 });
+  await expect(lineRows).toHaveCount(1);
+  await expect(lineRows.first()).toContainText("Burst 12");
+  const burstBox = await line.boundingBox();
+  expect(burstBox!.height).toBeCloseTo(shortBox!.height, 0);
+  expect(burstBox!.width).toBeCloseTo(shortBox!.width, 0);
 
-  // --- Clicking a live row scrolls to and flashes the full-list row ------
-  await stackRows.first().click();
-  const burstRow = detailEl.locator('[data-trace-key="tool:burst-12"]');
-  await expect(burstRow).toHaveAttribute("data-highlight", "true");
-  await expect(burstRow).toHaveClass(/trace-row--flash/);
+  // --- Clicking the line opens the full process --------------------------
+  // The drawer from openLiveFeed covers the transcript, so close it first: the line
+  // lives in the bubble now, and a click must reach it.
+  if (await detail(page).count()) {
+    const close = page.getByTestId("detail-close").or(page.getByRole("button", { name: /close detail/i }));
+    if (await close.count()) await close.first().click();
+    else await page.keyboard.press("Escape");
+    await expect(detail(page)).toHaveCount(0);
+  }
+  await expect(line).toBeVisible();
+  await lineRows.first().click();
+  await expect(detailEl).toBeVisible();
   await screenshot(page, info, mobile ? "mobile-reveal-flash" : "desktop-reveal-flash");
 
-  // --- Reduced motion: the flash and the stack transitions go away -------
+  // --- Reduced motion ----------------------------------------------------
+  // The line itself has no entrance animation, but the shared reduced-motion
+  // rule must still be present for the drawer's stack.
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await stackRows.nth(1).click();
-  await expect.poll(() => detailEl.locator('[data-trace-key="tool:burst-11"]')
-    .evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
   const reducedRules = await page.evaluate(() => {
     const found: string[] = [];
     for (const sheet of Array.from(document.styleSheets)) {
@@ -427,9 +444,9 @@ async function expectTerminal(page: Page, hub: MockHub, state: "failed" | "cance
   const fixture = await openLiveFeed(page, hub);
   await expect(detail(page).getByTestId("group-trace-step")).toHaveCount(36);
   fixture.finish(state);
-  await expect(page.getByTestId("trace-live-summary"))
-    .toContainText(state === "failed" ? "Run failed" : "Run cancelled");
-  await expect(page.getByTestId("trace-live-item")).toHaveCount(0);
+  // The line belongs to the live turn: settling removes it along with the turn, so a
+  // finished run leaves no progress row above a reply that is already written.
+  await expect(liveLine(page)).toHaveCount(0);
   // The full process survives the terminal summary.
   await expect(detail(page).getByTestId("group-trace-step")).toHaveCount(36);
 }
