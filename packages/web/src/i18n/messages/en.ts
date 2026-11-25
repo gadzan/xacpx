@@ -1317,6 +1317,7 @@ export default {
         text: "Reply",
         reasoning: "Reasoning",
         message: "Message",
+        working: "Working…",
         done: "Run complete",
         failed: "Run failed",
         cancelled: "Run cancelled",

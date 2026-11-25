@@ -8,6 +8,7 @@ import {
   Brain,
   CircleCheck,
   FileText,
+  Loader2,
   MessageSquare,
   Wrench,
 } from "lucide-vue-next";
@@ -92,6 +93,17 @@ let arrivals: number[] = [];
 let lastNodeIds: string[] | null = null;
 
 const stackHeight = computed(() => `${limit.value * ROW_HEIGHT}px`);
+
+/**
+ * The one line the inline variant shows.
+ *
+ * Inline exists to answer "what is it doing right now" in a single glance, so it
+ * always renders exactly one row: the newest activity, or a working placeholder
+ * before the first part arrives. Keeping the row present from the first moment of
+ * the turn is what makes the box a constant size — a box that appears later pushes
+ * the reply down mid-stream.
+ */
+const inlineItem = computed<TraceLiveItem | null>(() => snapshot.value[0] ?? null);
 
 function flush(): void {
   throttleTimer = undefined;
@@ -195,13 +207,69 @@ function rowIcon(item: TraceLiveItem) {
 
 <template>
   <section
-    v-if="terminal || snapshot.length"
+    v-if="variant === 'inline'"
     data-test="trace-live-stack"
-    :data-variant="variant"
-    class="-mx-1 mb-1 rounded-lg px-1.5 py-1"
-    :class="variant === 'drawer'
-      ? 'sticky top-0 z-20 bg-surface/85 shadow-sm backdrop-blur-sm'
-      : 'bg-fg/[0.035]'"
+    data-variant="inline"
+    class="mb-1.5 flex h-9 w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-hairline bg-fg/[0.03] px-2"
+  >
+    <!-- One row, one height, one width. Everything is committed before the first
+         part arrives, so the box never resizes mid-stream: a box that grows, or that
+         appears once the Bot starts a tool, moves the reply underneath it while the
+         reader is watching. -->
+    <component
+      :is="inlineItem ? rowIcon(inlineItem) : Loader2"
+      :size="13"
+      class="shrink-0 text-fg-muted"
+      :class="inlineItem ? '' : 'animate-spin motion-reduce:animate-none'"
+      aria-hidden="true"
+    />
+    <template v-if="inlineItem">
+      <button
+        type="button"
+        data-test="trace-live-row"
+        class="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-transparent"
+        @click="emit('reveal', inlineItem.targetKey)"
+      >
+        <span
+          data-test="trace-live-title"
+          class="min-w-0 shrink truncate text-ui font-medium text-fg"
+        >{{ inlineItem.title }}</span>
+        <span
+          v-if="inlineItem.preview"
+          data-test="trace-live-preview"
+          class="min-w-0 flex-1 truncate text-xs text-fg-muted"
+        >{{ inlineItem.preview }}</span>
+        <!-- Status and duration are fixed-width slots, so a row going from running to
+             finished (dot appears, duration appears) never shifts the text beside it. -->
+        <span
+          data-test="trace-live-status"
+          :data-status="inlineItem.status ?? 'none'"
+          class="h-1.5 w-1.5 shrink-0 rounded-full"
+          :class="!inlineItem.status ? 'invisible'
+            : inlineItem.status === 'running' ? 'bg-accent animate-pulse motion-reduce:animate-none'
+            : inlineItem.status === 'error' ? 'bg-danger' : 'bg-run'"
+          :aria-label="inlineItem.status
+            ? $t(`tools.${inlineItem.status === 'running' ? 'running' : inlineItem.status === 'error' ? 'failed' : 'finished'}`)
+            : undefined"
+        />
+        <span
+          data-test="trace-live-duration"
+          class="w-9 shrink-0 text-right font-mono text-xs tabular-nums text-fg-muted"
+        >{{ inlineItem.duration ?? "" }}</span>
+      </button>
+    </template>
+    <span
+      v-else
+      data-test="trace-live-placeholder"
+      class="min-w-0 flex-1 truncate text-ui text-fg-muted"
+    >{{ $t("group.detail.live.working") }}</span>
+  </section>
+
+  <section
+    v-else-if="terminal || snapshot.length"
+    data-test="trace-live-stack"
+    data-variant="drawer"
+    class="-mx-1 mb-1 sticky top-0 z-20 rounded-lg bg-surface/85 px-1.5 py-1 shadow-sm backdrop-blur-sm"
   >
     <div
       v-if="summary"

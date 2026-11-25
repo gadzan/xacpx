@@ -1313,6 +1313,7 @@ export default {
         text: "回复",
         reasoning: "推理",
         message: "消息",
+        working: "正在处理…",
         done: "执行完成",
         failed: "执行失败",
         cancelled: "已取消",
