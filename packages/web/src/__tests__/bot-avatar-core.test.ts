@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BOT_AVATAR_COLORS, BOT_AVATAR_EXPRESSIONS, BOT_AVATAR_SHAPES, type CharacterAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 import { AVATAR_EXPRESSIONS, EYE_CENTER_PULL, EYE_SCALE_H, EYE_SCALE_W, EYE_SPREAD } from "../lib/bot-avatar/catalog";
-import { avatarTransition, sampleAvatar, sampleTransition, shouldCelebrate } from "../lib/bot-avatar/core";
+import { avatarTransition, blinkRhythmFor, BLINK_INTERVAL_MAX, BLINK_INTERVAL_MIN, createBlinkRhythm, DEFAULT_BLINK_RHYTHM, sampleAvatar, sampleTransition, shouldCelebrate } from "../lib/bot-avatar/core";
 import { eyePoses, radiusAtAngle } from "../lib/bot-avatar/geometry";
 import type { BotAvatarState } from "../lib/bot-avatar-state";
 
@@ -74,6 +74,62 @@ describe("avatar geometry and deterministic sampling", () => {
       const closed = sampleAvatar(target, start + 1.48).eyes[0];
       expect(Math.hypot(closed.b, closed.d)).toBeLessThan(Math.hypot(open.b, open.d) * 0.25);
     }
+  });
+  it("gives every avatar its own blink rhythm between the shortest and longest interval", () => {
+    const target = { config, state: "idle" as const, motion: true };
+    const starts = (rhythm: { seed: number; first: number }) => {
+      const times: number[] = [];
+      let previous = 1;
+      for (let t = 0; t < 120; t += 0.01) {
+        const open = sampleAvatar({ ...target, blink: rhythm }, t).eyes[0];
+        const closed = sampleAvatar({ ...target, blink: rhythm }, t + 0.08).eyes[0];
+        const shutting = Math.hypot(closed.b, closed.d) < Math.hypot(open.b, open.d) * 0.8;
+        if (shutting && !previous) times.push(t);
+        previous = shutting ? 1 : 0;
+      }
+      return times;
+    };
+    const rhythms = Array.from({ length: 8 }, () => createBlinkRhythm());
+    for (const rhythm of rhythms) {
+      const times = starts(rhythm);
+      expect(times.length).toBeGreaterThan(1);
+      for (let i = 1; i < times.length; i += 1) {
+        const gap = times[i]! - times[i - 1]!;
+        expect(gap).toBeGreaterThanOrEqual(BLINK_INTERVAL_MIN - 0.2);
+        expect(gap).toBeLessThanOrEqual(BLINK_INTERVAL_MAX + 0.2);
+      }
+    }
+    // Two avatars drawing different rhythms must not blink in step: their first blinks
+    // land at different times, so the sidebar reads as many faces, not one metronome.
+    const firsts = new Set(rhythms.map((rhythm) => starts(rhythm)[0]?.toFixed(1)));
+    expect(firsts.size).toBeGreaterThan(1);
+    // A rhythm is stable: the same seed always produces the same schedule.
+    const rhythm = rhythms[0]!;
+    expect(starts({ ...rhythm })).toEqual(starts({ ...rhythm }));
+    // The fallback rhythm keeps the historical schedule, so tests and frozen previews
+    // stay reproducible instead of blinking differently on every run.
+    expect(DEFAULT_BLINK_RHYTHM.first).toBeCloseTo(1.4, 6);
+  });
+  it("keeps one Bot's blink rhythm across remounts and gives different Bots different rhythms", () => {
+    const target = { config, state: "idle" as const, motion: true };
+    const firstBlink = (key: string) => {
+      const rhythm = blinkRhythmFor(key);
+      for (let t = 0; t < 40; t += 0.01) {
+        const open = sampleAvatar({ ...target, blink: rhythm }, t).eyes[0];
+        const closed = sampleAvatar({ ...target, blink: rhythm }, t + 0.08).eyes[0];
+        if (Math.hypot(closed.b, closed.d) < Math.hypot(open.b, open.d) * 0.8) return t;
+      }
+      return -1;
+    };
+    // Same Bot, same rhythm: its sidebar row and its conversation header stay one character.
+    expect(blinkRhythmFor("inst-1:bot-1")).toEqual(blinkRhythmFor("inst-1:bot-1"));
+    expect(firstBlink("inst-1:bot-1")).toBe(firstBlink("inst-1:bot-1"));
+    // Different Bots, different rhythms: the sidebar reads as many faces, not one metronome.
+    const keys = ["inst-1:bot-1", "inst-1:bot-2", "inst-1:bot-3", "inst-1:bot-4", "inst-2:bot-1"];
+    for (const key of keys) {
+      expect(blinkRhythmFor(key)).not.toEqual(blinkRhythmFor("inst-9:bot-9"));
+    }
+    expect(new Set(keys.map(firstBlink)).size).toBeGreaterThan(1);
   });
   it("makes working, streaming, queued and observed completion distinct controlled poses", () => {
     const idle = sampleAvatar({ config, state: "idle", motion: true }, 0.35);

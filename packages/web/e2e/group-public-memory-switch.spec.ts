@@ -210,7 +210,7 @@ test("switching public memory off keeps Group messages out of Direct prompts, an
   await loginAndShowInstances(page);
 
   // 1. Switch projection off from Group settings.
-  await page.getByTestId("instance-nav-groups").click();
+  await page.getByTestId("instance-nav-bots").click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
   await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
   await openGroupSettings(page);
@@ -241,7 +241,7 @@ test("switching public memory off keeps Group messages out of Direct prompts, an
 
   // 4. Switch projection back on.
   await leavePane(page);
-  await page.getByTestId("instance-nav-groups").click();
+  await page.getByTestId("instance-nav-bots").click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
   await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
   await openGroupSettings(page);

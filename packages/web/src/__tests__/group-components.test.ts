@@ -2380,7 +2380,7 @@ describe("Group Components", () => {
       groups.groupsByInstance["i1"] = [GROUP];
       groups.groupsLoaded["i1"] = true;
       const wrapper = mount(InstanceTree, { global: { plugins: [i18n] } });
-      await wrapper.find('[data-test="instance-nav-groups"]').trigger("click");
+      await wrapper.find('[data-test="instance-nav-bots"]').trigger("click");
       const rows = wrapper.findAll('[data-test="group-row"]');
       expect(rows).toHaveLength(1);
       expect(rows[0]?.text()).toContain("Release Team");

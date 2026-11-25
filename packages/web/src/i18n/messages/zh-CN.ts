@@ -870,6 +870,7 @@ export default {
     },
     list: {
       empty: "该实例暂无 Bot。",
+      emptyMixed: "该实例暂无 Bot 或群组。",
       disabledToggle: "已禁用（{count}）",
       allDisabled: "此实例的 Bot 均已禁用。展开已禁用列表即可重新启用。",
     },
@@ -879,6 +880,8 @@ export default {
     },
     actions: {
       newBot: "新建 Bot",
+      pin: "置顶",
+      unpin: "取消置顶",
       edit: "编辑 Bot",
       disable: "禁用",
       delete: "删除 Bot",

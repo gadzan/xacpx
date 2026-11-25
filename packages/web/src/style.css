@@ -349,9 +349,23 @@ select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 
+/* Conversation skeleton bars (ConversationSkeleton.vue). Global rather than scoped
+   because the placeholder is its own component, used by both the session transcript
+   and the Bot/Group timeline. Each row sets --sk-delay so the pulse cascades
+   top-to-bottom instead of breathing in unison. */
+.sk-bar {
+  animation: sk-pulse 1.8s ease-in-out infinite;
+  animation-delay: var(--sk-delay, 0ms);
+}
+@keyframes sk-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pulse-dot,
   .shimmer-text,
+  .sk-bar,
   .stream-md.caret > :last-child::after { animation: none !important; }
 
   .stream-md.caret:has(> hr:last-child)::after { animation: none !important; }

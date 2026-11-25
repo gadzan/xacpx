@@ -4,6 +4,7 @@ import { GitFork, Loader2, MessagesSquare } from "lucide-vue-next";
 import type { ConversationTimelineDto, TopicForkDto } from "@ganglion/xacpx-relay-protocol";
 import TimelineRow from "./TimelineRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
+import ConversationSkeleton from "./ConversationSkeleton.vue";
 import {
   buildTimelineRows,
   timelineHasMoreBefore,
@@ -26,6 +27,13 @@ const props = defineProps<{
   timeline: ConversationTimelineDto | null;
   /** Unpersisted streamed text, keyed by MemberTurn (design §4.3 invariant 7). */
   liveOverlay?: TimelineLiveTurn[];
+  /** The room itself is not resolved yet (capabilities probing, the Topic still
+   *  loading). Distinct from `loading`, which covers a first page in flight for a
+   *  room we already know. While this is true the pane does not yet know whether the
+   *  room is empty, so it must not say so. */
+  pending?: boolean;
+  /** The feed's own first-page flag; it also covers a refetch of a room that has no
+   *  rows yet, where the empty state would be a guess for the duration. */
   loading?: boolean;
   loadingOlder?: boolean;
   error?: string | null;
@@ -64,6 +72,21 @@ const rows = computed(() => buildTimelineRows({
 }));
 
 const hasMoreBefore = computed(() => timelineHasMoreBefore(props.timeline));
+/**
+ * The pane knows what this room holds only once the room resolved AND its first page
+ * landed. Before that, "no messages yet" would be a guess, so the pane holds the
+ * same skeleton the session transcript uses and opening a Bot never flashes an empty
+ * page first.
+ *
+ * A room that resolved with zero Topics is a real answer, not a wait: `pending` goes
+ * false and the empty state (with its composer intro) shows at once. `showSkeleton`
+ * stops at the first row, so a page that lands with content paints it directly with
+ * no placeholder in between, and a live overlay is content too.
+ */
+const waitingForFirstPage = computed(() =>
+  props.pending === true
+  || (props.loading === true && (props.timeline?.entries.length ?? 0) === 0));
+const showSkeleton = computed(() => waitingForFirstPage.value && rows.value.length === 0);
 const liveRevision = computed(() =>
   (props.liveOverlay ?? []).reduce((sum, live) => sum + (live.revision ?? 0), 0));
 
@@ -195,7 +218,16 @@ defineExpose({ scrollToBottom });
       </div>
 
       <div
-        v-if="!loading && rows.length === 0"
+        v-if="showSkeleton"
+        data-test="timeline-skeleton"
+        aria-hidden="true"
+        class="min-h-full"
+      >
+        <ConversationSkeleton />
+      </div>
+
+      <div
+        v-else-if="!loading && rows.length === 0"
         data-test="timeline-empty"
         class="flex min-h-full flex-col items-center justify-center gap-2 py-12 text-center"
       >

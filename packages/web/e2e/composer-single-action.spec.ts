@@ -63,7 +63,7 @@ async function openLiveGroup(page: Page): Promise<void> {
     await route.fulfill({ json: { result } });
   });
   await loginAndShowInstances(page);
-  await page.getByTestId("instance-nav-groups").click();
+  await page.getByTestId("instance-nav-bots").click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
   await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
 }

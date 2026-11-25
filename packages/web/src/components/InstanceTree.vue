@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, GitFork, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
+import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, GitFork, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Pin, PinOff, Plus, Settings2, SquareTerminal, Trash2, Unplug, Filter } from "lucide-vue-next";
 import { useInstancesStore, groupArchivedKey, nextSessionForkAlias, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop, supportsSessionForkAgent, supportsSessionForkHandoff } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
@@ -70,7 +70,7 @@ const botDialogFor = ref<{
 } | null>(null);
 const groupDialogFor = ref<{ instanceId: string; instanceName: string; group?: GroupSummaryDto } | null>(null);
 
-type NavMode = "sessions" | "bots" | "groups";
+type NavMode = "sessions" | "bots";
 /** One mode for the whole sidebar: the tab row sits above the instance cards, so
  *  switching it switches every instance's section at once. */
 const navMode = ref<NavMode>("sessions");
@@ -90,7 +90,7 @@ const modePinned = ref(false);
 watch(
   () => [directBotsStore.isBotSelected, groupsStore.isGroupSelected] as const,
   ([botSelected, groupSelected]) => {
-    const next: NavMode = botSelected ? "bots" : groupSelected ? "groups" : "sessions";
+    const next: NavMode = botSelected || groupSelected ? "bots" : "sessions";
     // A different selection than the pinned tab was made: the reader moved on, so
     // the pin no longer describes anything and the tabs follow the center again.
     if (modePinned.value && next !== navMode.value) modePinned.value = false;
@@ -101,22 +101,17 @@ watch(
   { immediate: true },
 );
 /** Bot and Group lists are per-instance facts fetched on demand, so entering the
- *  mode for the whole list means fetching the rows of every online instance. */
+ *  Bots mode for the whole list means fetching both rows of every online instance. */
 function loadModeData(): void {
   if (navMode.value === "sessions") return;
   for (const inst of store.instances) {
     if (!inst.online) continue;
-    if (navMode.value === "bots" && !directBotsStore.botsLoaded[inst.id]) {
+    if (!directBotsStore.botsLoaded[inst.id]) {
       void directBotsStore.loadBots(inst.id).catch(() => {});
     }
-    if (navMode.value === "groups") {
-      if (!groupsStore.groupsLoaded[inst.id]) void groupsStore.loadGroups(inst.id).catch(() => {});
-      // The group rows draw their members' avatars, so the catalog has to load
-      // with the list - not only when the Bot list itself is open.
-      if (!directBotsStore.botsLoaded[inst.id]) {
-        void directBotsStore.loadBots(inst.id).catch(() => {});
-      }
-    }
+    // The mixed rows draw the groups with their members' avatars, so the catalog
+    // has to load with the list - not only for the Bot rows themselves.
+    if (!groupsStore.groupsLoaded[inst.id]) void groupsStore.loadGroups(inst.id).catch(() => {});
   }
 }
 function setMode(mode: NavMode): void {
@@ -127,8 +122,120 @@ function setMode(mode: NavMode): void {
   modePinned.value = true;
   loadModeData();
 }
-// An instance that appears or comes back online while the sidebar shows Bots or
-// Groups has no rows yet, so its card would render an empty section.
+// ── Mixed Bots + Groups list with pins ─────────────────────────────────────
+// Groups live inside the Bots tab now: one mixed list per instance, pinned rows
+// first, then the rest alphabetically. Pins are per-instance browser state
+// (localStorage) — they only reorder the sidebar, never server data.
+type MixedPin = string;
+function pinnedKey(instanceId: string): string {
+  return `xacpx.pinned.${instanceId}`;
+}
+function loadPinned(instanceId: string): MixedPin[] {
+  try {
+    const raw = localStorage.getItem(pinnedKey(instanceId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is string => typeof v === "string");
+  } catch { return []; }
+}
+const pinnedByInstance = ref<Record<string, MixedPin[]>>({});
+function pinnedOf(instanceId: string): MixedPin[] {
+  if (!pinnedByInstance.value[instanceId]) {
+    pinnedByInstance.value = { ...pinnedByInstance.value, [instanceId]: loadPinned(instanceId) };
+  }
+  return pinnedByInstance.value[instanceId];
+}
+function savePinned(instanceId: string, pins: MixedPin[]): void {
+  pinnedByInstance.value = { ...pinnedByInstance.value, [instanceId]: pins };
+  try { localStorage.setItem(pinnedKey(instanceId), JSON.stringify(pins)); } catch { /* best-effort */ }
+}
+function botPinOf(botId: string): MixedPin { return `bot:${botId}`; }
+function groupPinOf(groupId: string): MixedPin { return `group:${groupId}`; }
+function isPinned(instanceId: string, pin: MixedPin): boolean {
+  return pinnedOf(instanceId).includes(pin);
+}
+function togglePin(instanceId: string, pin: MixedPin): void {
+  const cur = pinnedOf(instanceId);
+  savePinned(instanceId, cur.includes(pin) ? cur.filter((p) => p !== pin) : [...cur, pin]);
+}
+function isBotPinned(instanceId: string, botId: string): boolean {
+  return isPinned(instanceId, botPinOf(botId));
+}
+function isGroupPinned(instanceId: string, groupId: string): boolean {
+  return isPinned(instanceId, groupPinOf(groupId));
+}
+type MixedEntry =
+  | { kind: "bot"; bot: BotSummaryDto }
+  | { kind: "group"; group: GroupSummaryDto }
+  | { kind: "disabled-toggle" };
+/** Pinned rows first (in pin order), then unpinned Bots + Groups mixed by name. */
+function mixedEntries(instanceId: string): MixedEntry[] {
+  const bots = (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.retired !== true);
+  const groups = groupsStore.groupsByInstance[instanceId] ?? [];
+  const pins = pinnedOf(instanceId);
+  const botById = new Map(bots.map((b) => [b.id, b]));
+  const groupById = new Map(groups.map((g) => [g.id, g]));
+  const pinnedEntries: MixedEntry[] = [];
+  for (const pin of pins) {
+    if (pin.startsWith("bot:")) {
+      const bot = botById.get(pin.slice(4));
+      if (bot && bot.enabled) pinnedEntries.push({ kind: "bot", bot });
+      else if (bot && !bot.enabled) pinnedEntries.push({ kind: "bot", bot });
+    } else if (pin.startsWith("group:")) {
+      const group = groupById.get(pin.slice(6));
+      if (group) pinnedEntries.push({ kind: "group", group });
+    }
+  }
+  const pinnedIds = new Set(pins);
+  const unpinnedBots = bots.filter((b) => b.enabled && !pinnedIds.has(botPinOf(b.id)));
+  const unpinnedGroups = groups.filter((g) => !pinnedIds.has(groupPinOf(g.id)));
+  const mixed: Array<Extract<MixedEntry, { kind: "bot" | "group" }>> = [
+    ...unpinnedBots.map((bot) => ({ kind: "bot" as const, bot })),
+    ...unpinnedGroups.map((group) => ({ kind: "group" as const, group })),
+  ];
+  mixed.sort((a, b) => {
+    const an = a.kind === "bot" ? a.bot.name : a.group.title;
+    const bn = b.kind === "bot" ? b.bot.name : b.group.title;
+    return an.localeCompare(bn, undefined, { sensitivity: "base" });
+  });
+  const entries: MixedEntry[] = [...pinnedEntries, ...mixed];
+  const disabledUnpinned = bots.filter((b) => !b.enabled && !pinnedIds.has(botPinOf(b.id)));
+  if (disabledUnpinned.length || pinnedEntries.some((e) => e.kind === "bot" && !e.bot.enabled)) {
+    // Keep the collapsed Disabled section for the rest; pinned disabled Bots
+    // already render at the top so they never vanish.
+    const hiddenDisabled = disabledUnpinned.filter((b) => !disabledBotsOpen.value.has(instanceId) ? true : false);
+    void hiddenDisabled;
+    if (disabledUnpinned.length) entries.push({ kind: "disabled-toggle" });
+    if (disabledBotsOpen.value.has(instanceId)) {
+      for (const bot of disabledUnpinned) entries.push({ kind: "bot", bot });
+    } else {
+      // Still show a disabled Bot when it is the current selection.
+      for (const bot of disabledUnpinned) {
+        if (isBotSelected(instanceId, bot.id)) entries.push({ kind: "bot", bot });
+      }
+    }
+  }
+  return entries;
+}
+function mixedListCount(instanceId: string): number {
+  const bots = (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.retired !== true);
+  return bots.length + (groupsStore.groupsByInstance[instanceId] ?? []).length;
+}
+function mixedEmpty(instanceId: string): boolean {
+  return mixedListCount(instanceId) === 0;
+}
+/** All Bots disabled (and no Groups / pins to show): keep the old Disabled
+ *  explanation instead of an empty list. Groups present suppress it — the
+ *  list is not empty then. */
+function showAllDisabled(instanceId: string): boolean {
+  if (!directBotsStore.botsLoaded[instanceId]) return false;
+  if (disabledBotsOpen.value.has(instanceId)) return false;
+  if (pinnedOf(instanceId).length) return false;
+  if ((groupsStore.groupsByInstance[instanceId] ?? []).length) return false;
+  return !botsWithEnabled(instanceId, true).length && !!botsWithEnabled(instanceId, false).length;
+}
+// An instance that appears or comes back online while the sidebar shows Bots has
 watch(
   () => store.instances.filter((i) => i.online).map((i) => i.id).join("\u0000"),
   () => loadModeData(),
@@ -189,34 +296,14 @@ function groupDisabledCount(instanceId: string, group: GroupSummaryDto): number 
 function isBotSelected(instanceId: string, botId: string): boolean {
   return directBotsStore.instanceId === instanceId && directBotsStore.selectedBotId === botId;
 }
-// The enabled Bots render in the list; the disabled ones live under the 已禁用
-// group title row below it (collapsed by default). The selected Bot keeps its
-// row while the Disabled list is collapsed, so disabling the open Bot does not
-// make it vanish from the sidebar.
-function enabledBots(instanceId: string): BotSummaryDto[] {
-  return botsWithEnabled(instanceId, true);
-}
-function shownDisabledBots(instanceId: string): BotSummaryDto[] {
-  const disabled = botsWithEnabled(instanceId, false);
-  if (disabledBotsOpen.value.has(instanceId)) return disabled;
-  return disabled.filter((b) => isBotSelected(instanceId, b.id));
-}
+// Disabled Bots live under the collapsed Disabled toggle; the mixed list
+// renders them via mixedEntries (pinned disabled stay visible at the top,
+// the selected one stays even while collapsed).
 function toggleDisabledBots(instanceId: string): void {
   const next = new Set(disabledBotsOpen.value);
   if (next.has(instanceId)) next.delete(instanceId);
   else next.add(instanceId);
   disabledBotsOpen.value = next;
-}
-// One render list for both sections: enabled rows, then the Disabled title row
-// (present whenever a disabled Bot exists, even while its rows stay hidden), then
-// the disabled rows. Sharing the list is what lets the template keep a single
-// Bot row instead of two near-identical copies.
-type BotListEntry = { kind: "bot"; bot: BotSummaryDto } | { kind: "disabled-toggle" };
-function botListEntries(instanceId: string): BotListEntry[] {
-  const entries: BotListEntry[] = enabledBots(instanceId).map((bot) => ({ kind: "bot", bot }));
-  if (!botsWithEnabled(instanceId, false).length) return entries;
-  entries.push({ kind: "disabled-toggle" });
-  return [...entries, ...shownDisabledBots(instanceId).map((bot): BotListEntry => ({ kind: "bot", bot }))];
 }
 // Enabling and disabling are the same persisted patch (`enabled` on the Bot);
 // only the feedback copy differs. Queued work may start on re-enable, so the
@@ -274,13 +361,20 @@ function toggleBotMenu(instanceId: string, botId: string, el: HTMLElement): void
   botMenuFor.value = key;
   botMenuDd.openMenu();
 }
-/** Edit / enable-or-disable / remove. A removed Bot can do neither of the last two. */
+/** Edit / pin / enable-or-disable / remove. A removed Bot can do neither of the last two. */
 function botMenuGroups(instanceId: string, bot: BotSummaryDto): DropdownGroup[] {
   const pending = enablingBots.value.has(`${instanceId}:${bot.id}`);
+  const pinned = isBotPinned(instanceId, bot.id);
   return [
     {
       rows: [
         { value: "edit", label: t("bot.actions.edit"), icon: Pencil, testId: "bot-menu-edit" },
+        {
+          value: "pin",
+          label: t(pinned ? "bot.actions.unpin" : "bot.actions.pin"),
+          icon: pinned ? PinOff : Pin,
+          testId: "bot-menu-pin",
+        },
         {
           value: "toggle",
           label: t(bot.enabled ? "bot.actions.disable" : "bot.actions.enable"),
@@ -304,8 +398,49 @@ function botMenuGroups(instanceId: string, bot: BotSummaryDto): DropdownGroup[] 
 function onBotMenuSelect(instanceId: string, instanceName: string, bot: BotSummaryDto, value: string): void {
   botMenuDd.closeMenu();
   if (value === "edit") botDialogFor.value = { instanceId, instanceName, bot };
+  else if (value === "pin") togglePin(instanceId, botPinOf(bot.id));
   else if (value === "toggle") void setBotEnabled(instanceId, bot, !bot.enabled);
   else if (value === "delete") openBotRemoval(instanceId, bot);
+}
+// ── Per-Group menu (pin + edit) ────────────────────────────────────────────
+const groupMenuDd = useDropdown();
+const groupMenuFor = ref<string | null>(null);
+function groupMenuKey(instanceId: string, groupId: string): string {
+  return `${instanceId}:group:${groupId}`;
+}
+function groupMenuOpen(instanceId: string, groupId: string): boolean {
+  return groupMenuDd.open && groupMenuFor.value === groupMenuKey(instanceId, groupId);
+}
+function toggleGroupMenu(instanceId: string, groupId: string, el: HTMLElement): void {
+  const key = groupMenuKey(instanceId, groupId);
+  groupMenuDd.trigger = el;
+  if (groupMenuDd.open && groupMenuFor.value === key) {
+    groupMenuDd.closeMenu();
+    return;
+  }
+  groupMenuFor.value = key;
+  groupMenuDd.openMenu();
+}
+function groupMenuGroups(instanceId: string, group: GroupSummaryDto): DropdownGroup[] {
+  const pinned = isGroupPinned(instanceId, group.id);
+  return [
+    {
+      rows: [
+        { value: "edit", label: t("group.manage.editTitle"), icon: Pencil, testId: "group-menu-edit" },
+        {
+          value: "pin",
+          label: t(pinned ? "bot.actions.unpin" : "bot.actions.pin"),
+          icon: pinned ? PinOff : Pin,
+          testId: "group-menu-pin",
+        },
+      ],
+    },
+  ];
+}
+function onGroupMenuSelect(instanceId: string, instanceName: string, group: GroupSummaryDto, value: string): void {
+  groupMenuDd.closeMenu();
+  if (value === "edit") groupDialogFor.value = { instanceId, instanceName, group };
+  else if (value === "pin") togglePin(instanceId, groupPinOf(group.id));
 }
 
 // 1Hz clock so working-session elapsed badges tick.
@@ -909,7 +1044,7 @@ const rowSwipes = computed(() => {
            selected pill keep their 32 and 28 visual heights. `px-0.5` is the
            rail's uniform 2px inset: 2 + 28 + 2 vertically, and the same 2px
            left/right, so the first and last pill never touch the rail edge.
-           The thirds divide the content box (after that padding), never the
+           The halves divide the content box (after that padding), never the
            padded width, and the 44 hit boxes stay unpainted. -->
       <div data-test="instance-nav-track" class="relative flex min-w-0 items-center gap-0.5 px-0.5 [@media(pointer:coarse)]:h-11">
         <span aria-hidden="true" data-test="instance-nav-rail"
@@ -940,20 +1075,6 @@ const rowSwipes = computed(() => {
                 :class="navMode === 'bots' ? 'bg-raised shadow-press' : 'hover:bg-fill-hover'">
             <Bot :size="11" class="shrink-0" />
             <span class="truncate" :title="$t('nav.bots')">{{ $t("nav.bots") }}</span>
-          </span>
-        </button>
-        <button
-          type="button"
-          data-test="instance-nav-groups"
-          class="relative flex h-7 min-w-0 flex-1 items-center justify-center text-xs font-medium [@media(pointer:coarse)]:h-11"
-          :class="navMode === 'groups' ? 'font-semibold text-fg' : 'text-fg-muted'"
-          @click="setMode('groups')"
-        >
-          <span data-test="instance-nav-pill"
-                class="flex h-7 w-full min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 transition-colors"
-                :class="navMode === 'groups' ? 'bg-raised shadow-press' : 'hover:bg-fill-hover'">
-            <Users :size="11" class="shrink-0" />
-            <span class="truncate" :title="$t('nav.groups')">{{ $t("nav.groups") }}</span>
           </span>
         </button>
       </div>
@@ -1033,30 +1154,41 @@ const rowSwipes = computed(() => {
            Instead of a border-l indent rail, hierarchy reads from background tint +
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
-        <!-- BOTS MODE -->
+        <!-- BOTS MODE (mixed Bots + Groups, pinned first) -->
         <div v-if="inst.online && navMode === 'bots'" class="space-y-0.5">
-          <div v-if="directBotsStore.botsByInstance[inst.id]?.length"
+          <div v-if="mixedListCount(inst.id)"
                data-test="bots-list-count"
                class="flex items-center gap-1.5 py-1 pl-2.5 text-xs text-fg-muted">
             <span>{{ $t("nav.bots") }}</span>
-            <span class="font-mono tabular-nums">{{ directBotsStore.botsByInstance[inst.id].length }}</span>
+            <span class="font-mono tabular-nums">{{ mixedListCount(inst.id) }}</span>
           </div>
-          <div v-if="(directBotsStore.loadingBotsByInstance[inst.id] ?? 0) > 0 && !directBotsStore.botsLoaded[inst.id]"
+          <div v-if="((directBotsStore.loadingBotsByInstance[inst.id] ?? 0) > 0 && !directBotsStore.botsLoaded[inst.id]) || ((groupsStore.loadingGroupsByInstance[inst.id] ?? 0) > 0 && !groupsStore.groupsLoaded[inst.id])"
                data-test="bots-loading"
                class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("instance.loading") }}
           </div>
-          <div v-else-if="!(directBotsStore.botsByInstance[inst.id] ?? []).length"
+          <div v-else-if="directBotsStore.botsLoaded[inst.id] && groupsStore.groupsLoaded[inst.id] && mixedEmpty(inst.id)"
                data-test="no-bots"
                class="py-1 pl-2.5 text-xs text-fg-muted">
-            {{ $t("bot.list.empty") }}
+            {{ $t("bot.list.emptyMixed") }}
           </div>
-          <div v-else-if="!botsWithEnabled(inst.id, true).length && !disabledBotsOpen.has(inst.id)"
+          <div v-if="groupsStore.groupsListErrorByInstance[inst.id] !== undefined && !groupsStore.groupsLoaded[inst.id]"
+               data-test="groups-load-error"
+               class="py-1 pl-2.5 text-xs text-fg-muted">
+            <span>{{ $t("group.list.loadFailed") }}</span>
+            <button type="button"
+                    data-test="groups-retry"
+                    class="ml-1.5 font-medium text-accent-text hover:underline"
+                    @click="retryGroupsLoad(inst.id)">
+              {{ $t("common.retry") }}
+            </button>
+          </div>
+          <div v-if="showAllDisabled(inst.id)"
                data-test="no-enabled-bots"
                class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("bot.list.allDisabled") }}
           </div>
-          <template v-for="entry in botListEntries(inst.id)" :key="entry.kind === 'bot' ? entry.bot.id : 'disabled-toggle'">
+          <template v-for="entry in mixedEntries(inst.id)" :key="entry.kind === 'disabled-toggle' ? 'disabled-toggle' : entry.kind === 'bot' ? `bot:${entry.bot.id}` : `group:${entry.group.id}`">
             <button
               v-if="entry.kind === 'disabled-toggle'"
               type="button"
@@ -1069,7 +1201,7 @@ const rowSwipes = computed(() => {
               <span>{{ $t("bot.list.disabledToggle", { count: botsWithEnabled(inst.id, false).length }) }}</span>
             </button>
             <div
-              v-else
+              v-else-if="entry.kind === 'bot'"
               data-test="bot-row"
               class="bot-sidebar-row group relative flex min-h-10 items-center rounded-sm py-1.5 transition-colors"
               :class="isBotSelected(inst.id, entry.bot.id) ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'"
@@ -1079,16 +1211,19 @@ const rowSwipes = computed(() => {
                 class="flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1.5 text-left"
                 @click="onBotTap(inst.id, entry.bot.id)"
               >
-                <BotAvatar :avatar="entry.bot.avatar" :driver="driverForAgentName(inst, entry.bot.agent)" :name="entry.bot.name" :size="40" crop
+                <BotAvatar :avatar="entry.bot.avatar" :driver="driverForAgentName(inst, entry.bot.agent)" :name="entry.bot.name" :size="40" crop :blink-key="`${inst.id}:${entry.bot.id}`"
                            :disabled="!entry.bot.enabled" :retired="entry.bot.retired" :state="inst.online ? 'idle' : 'offline'"
                            :class="!entry.bot.enabled ? 'opacity-50' : ''" />
                 <span class="flex min-w-0 flex-1 flex-col">
                   <span v-if="entry.bot.retired" data-test="bot-removed" class="truncate text-xs text-fg-muted">{{ $t("bot.removal.removed") }}</span>
-                  <span data-test="bot-name" class="min-w-0 truncate text-ui font-medium"
-                        :class="!entry.bot.enabled ? 'text-fg-muted' : (isBotSelected(inst.id, entry.bot.id) ? 'font-semibold text-fg' : 'text-fg')">
-                    {{ entry.bot.name }}
+                  <span class="flex min-w-0 items-center gap-1">
+                    <span data-test="bot-name" class="min-w-0 truncate text-ui font-medium"
+                          :class="!entry.bot.enabled ? 'text-fg-muted' : (isBotSelected(inst.id, entry.bot.id) ? 'font-semibold text-fg' : 'text-fg')">
+                      {{ entry.bot.name }}
+                    </span>
+                    <Pin v-if="isBotPinned(inst.id, entry.bot.id)" :size="11" class="shrink-0 text-accent-text" data-test="bot-pinned" />
                   </span>
-                  <span v-if="entry.bot.role && !entry.bot.retired" class="truncate text-xs text-fg-muted">{{ entry.bot.role }}</span>
+                  <span v-if="entry.bot.role && !entry.bot.retired" data-test="bot-role" class="truncate text-xs text-fg-muted">{{ entry.bot.role }}</span>
                 </span>
               </button>
               <button
@@ -1115,9 +1250,62 @@ const rowSwipes = computed(() => {
                 @select="onBotMenuSelect(inst.id, inst.name, entry.bot, $event)"
               />
             </div>
+            <div
+              v-else-if="entry.kind === 'group'"
+              data-test="group-row"
+              class="group relative flex items-center rounded-sm transition-colors"
+              :class="groupsStore.selectedGroupId === entry.group.id && groupsStore.instanceId === inst.id ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'">
+              <button
+                class="relative flex min-h-10 min-w-0 flex-1 items-center gap-2 py-1 pl-2.5 pr-1.5 text-left"
+                @click="onGroupTap(inst.id, entry.group.id)"
+              >
+                <GroupAvatarStack :bots="groupMemberBots(inst.id, entry.group)" :instance-id="inst.id" :size="40" :name="entry.group.title"
+                                  :total-count="entry.group.botIds.length" :disabled-count="groupDisabledCount(inst.id, entry.group)"
+                                  decorative
+                                  :style="{ '--avatar-ring': groupsStore.selectedGroupId === entry.group.id && groupsStore.instanceId === inst.id ? 'rgb(var(--c-raised))' : 'rgb(var(--c-surface))' }" />
+                <div class="flex min-w-0 flex-1 flex-col">
+                  <span class="flex min-w-0 items-center gap-1">
+                    <span data-test="group-name" class="min-w-0 truncate text-ui font-medium"
+                          :class="groupsStore.selectedGroupId === entry.group.id && groupsStore.instanceId === inst.id ? 'font-semibold text-fg' : 'text-fg'">
+                      {{ entry.group.title }}
+                    </span>
+                    <Pin v-if="isGroupPinned(inst.id, entry.group.id)" :size="11" class="shrink-0 text-accent-text" data-test="group-pinned" />
+                  </span>
+                  <span class="truncate text-xs text-fg-muted">{{ $t("group.header.members", entry.group.botIds.length) }}</span>
+                </div>
+                <span v-if="entry.group.lifecycle === 'deleting'"
+                      data-test="group-deleting-badge"
+                      class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
+                  {{ $t("group.list.deleting") }}
+                </span>
+              </button>
+              <button
+                type="button"
+                data-test="group-menu-button"
+                :aria-label="$t('common.more')"
+                aria-haspopup="menu"
+                :aria-expanded="groupMenuOpen(inst.id, entry.group.id)"
+                class="mr-1 grid h-10 w-10 shrink-0 place-items-center rounded-sm text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:h-7 lg:w-7 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100"
+                @click.stop="toggleGroupMenu(inst.id, entry.group.id, $event.currentTarget as HTMLElement)"
+              >
+                <span class="grid h-7 w-7 place-items-center rounded-sm transition-colors hover:bg-surface-2 hover:text-fg">
+                  <MoreHorizontal :size="16" />
+                </span>
+              </button>
+              <DropdownPanel
+                v-if="groupMenuOpen(inst.id, entry.group.id)"
+                :dd="groupMenuDd"
+                :groups="groupMenuGroups(inst.id, entry.group)"
+                placement="bottom-end"
+                role="menu"
+                :title="entry.group.title"
+                test-id="group-menu"
+                @select="onGroupMenuSelect(inst.id, inst.name, entry.group, $event)"
+              />
+            </div>
           </template>
 
-          <!-- Bots footer: New Bot and manage instance. -->
+          <!-- Mixed footer: New Bot + New Group side by side, then manage. -->
           <div class="flex items-center gap-0.5 pb-px pl-2 pt-1">
             <button
               type="button"
@@ -1129,87 +1317,6 @@ const rowSwipes = computed(() => {
               <span>{{ $t("bot.actions.newBot") }}</span>
             </button>
             <button
-              data-test="manage-instance-from-bots"
-              :title="$t('instance.manage')"
-              :aria-label="$t('instance.manage')"
-              class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
-              @click="manageFor = { id: inst.id, name: inst.name }"
-            >
-              <Settings2 :size="13" />
-            </button>
-          </div>
-        </div>
-        <!-- GROUPS MODE -->
-        <div v-if="inst.online && navMode === 'groups'" class="space-y-px">
-          <div v-if="groupsStore.groupsByInstance[inst.id]?.length"
-               data-test="groups-list-count"
-               class="flex items-center gap-1.5 py-1 pl-2.5 text-xs text-fg-muted">
-            <span>{{ $t("nav.groups") }}</span>
-            <span class="font-mono tabular-nums">{{ groupsStore.groupsByInstance[inst.id].length }}</span>
-          </div>
-          <div v-if="(groupsStore.loadingGroupsByInstance[inst.id] ?? 0) > 0 && !groupsStore.groupsLoaded[inst.id]"
-               data-test="groups-loading"
-               class="py-1 pl-2.5 text-xs text-fg-muted">
-            {{ $t("instance.loading") }}
-          </div>
-          <div v-else-if="groupsStore.groupsListErrorByInstance[inst.id] !== undefined && !groupsStore.groupsLoaded[inst.id]"
-               data-test="groups-load-error"
-               class="py-1 pl-2.5 text-xs text-fg-muted">
-            <span>{{ $t("group.list.loadFailed") }}</span>
-            <button type="button"
-                    data-test="groups-retry"
-                    class="ml-1.5 font-medium text-accent-text hover:underline"
-                    @click="retryGroupsLoad(inst.id)">
-              {{ $t("common.retry") }}
-            </button>
-          </div>
-          <div v-else-if="groupsStore.groupsLoaded[inst.id] && !(groupsStore.groupsByInstance[inst.id] ?? []).length"
-               data-test="no-groups"
-               class="py-1 pl-2.5 text-xs text-fg-muted">
-            {{ $t("group.list.empty") }}
-          </div>
-          <div v-for="g in (groupsStore.groupsByInstance[inst.id] ?? [])"
-               :key="g.id"
-               data-test="group-row"
-               class="group relative flex items-center rounded-sm transition-colors"
-               :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'">
-            <button
-              class="relative flex min-h-10 min-w-0 flex-1 items-center gap-2 py-1 pl-2.5 pr-1.5 text-left"
-              @click="onGroupTap(inst.id, g.id)"
-            >
-              <GroupAvatarStack :bots="groupMemberBots(inst.id, g)" :instance-id="inst.id" :size="40" :name="g.title"
-                                :total-count="g.botIds.length" :disabled-count="groupDisabledCount(inst.id, g)"
-                                decorative
-                                :style="{ '--avatar-ring': groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'rgb(var(--c-raised))' : 'rgb(var(--c-surface))' }" />
-              <div class="flex min-w-0 flex-1 flex-col">
-                <span data-test="group-name" class="min-w-0 truncate text-ui font-medium"
-                      :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'font-semibold text-fg' : 'text-fg'">
-                  {{ g.title }}
-                </span>
-                <span class="truncate text-xs text-fg-muted">{{ $t("group.header.members", g.botIds.length) }}</span>
-              </div>
-              <span v-if="g.lifecycle === 'deleting'"
-                    data-test="group-deleting-badge"
-                    class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
-                {{ $t("group.list.deleting") }}
-              </span>
-            </button>
-            <div class="flex items-center gap-0.5 pr-1 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-within:opacity-100">
-              <button
-                type="button"
-                data-test="edit-group-tree-button"
-                :title="$t('group.manage.editTitle')"
-                :aria-label="$t('group.manage.editTitle')"
-                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg"
-                @click.stop="groupDialogFor = { instanceId: inst.id, instanceName: inst.name, group: g }"
-              >
-                <Pencil :size="11" />
-              </button>
-            </div>
-          </div>
-
-          <div class="flex items-center justify-between pb-px pl-2 pt-1">
-            <button
               type="button"
               data-test="new-group-button"
               class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent-text transition-colors hover:bg-accent-soft"
@@ -1217,6 +1324,15 @@ const rowSwipes = computed(() => {
             >
               <Plus :size="12" />
               <span>{{ $t("group.manage.newGroup") }}</span>
+            </button>
+            <button
+              data-test="manage-instance-from-bots"
+              :title="$t('instance.manage')"
+              :aria-label="$t('instance.manage')"
+              class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+              @click="manageFor = { id: inst.id, name: inst.name }"
+            >
+              <Settings2 :size="13" />
             </button>
           </div>
         </div>

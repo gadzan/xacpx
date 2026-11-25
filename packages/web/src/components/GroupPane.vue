@@ -366,6 +366,7 @@ const timelineFeed = useConversationTimelineFeed({
   conversationId: computed(() => groupsStore.activeConversationId),
   topicId: computed(() => groupsStore.activeTopicId),
   enabled: timelineSupported,
+  roomReady: computed(() => groupsStore.topicReady),
   reloadKey: timelineReloadKey,
 });
 
@@ -810,6 +811,7 @@ const worktreeRunId = computed(() => {
       :room="roomView"
       :timeline="timelineFeed.timeline.value"
       :live-overlay="liveOverlay"
+      :pending="timelineFeed.pending.value"
       :loading="timelineFeed.loading.value"
       :loading-older="timelineFeed.loadingOlder.value"
       :error="timelineFeed.error.value"

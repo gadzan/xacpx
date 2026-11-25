@@ -59,6 +59,14 @@ async function openEmptyBot(page: import("@playwright/test").Page): Promise<stri
       case "control.conversation.history":
         result = { conversationId: "c1", topicId: "t1", messages: [], hasMoreBefore: false, hasMoreAfter: false };
         break;
+      case "control.conversation.timeline":
+        // The timeline is the pane's conversation surface: without an answer the
+        // pane keeps its first-page skeleton and never reaches the empty state.
+        result = {
+          conversationId: "c1", topicId: "t1", entries: [],
+          oldestSeq: 0, newestSeq: 0, hasMoreBefore: false, hasMoreAfter: false,
+        };
+        break;
       case "control.runs.list":
         result = { runs: [] };
         break;

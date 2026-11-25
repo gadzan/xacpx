@@ -372,6 +372,56 @@ describe("ConversationTimeline.vue", () => {
     expect(wrapper.find('[data-test="timeline-load-older"]').exists()).toBe(true);
     wrapper.unmount();
   });
+
+  it("holds a skeleton instead of claiming an empty room while the room resolves", async () => {
+    // Opening a Bot: capabilities and the Topic are still resolving, so there is no
+    // timeline yet. The pane must not announce "no messages" for that window.
+    const wrapper = mount(ConversationTimeline, {
+      props: { room: GROUP_ROOM, timeline: null, pending: true },
+      global: { plugins: [i18n] },
+    });
+    const skeleton = wrapper.find('[data-test="timeline-skeleton"]');
+    expect(skeleton.exists()).toBe(true);
+    expect(skeleton.attributes("aria-hidden")).toBe("true");
+    expect(wrapper.find('[data-test="timeline-empty"]').exists()).toBe(false);
+
+    // The first page lands with rows: the skeleton yields to them directly, so the
+    // pane never paints an empty page in between.
+    await wrapper.setProps({ timeline: timeline([messageEntry(1, { content: "on it" })]), pending: false });
+    expect(wrapper.find('[data-test="timeline-skeleton"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="timeline-empty"]').exists()).toBe(false);
+    expect(wrapper.findAll("[data-row-key]")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("settles a genuinely empty room on the empty state, not a permanent skeleton", async () => {
+    // A Bot with zero Topics never fetches, so `pending` must go false for it;
+    // otherwise the skeleton would spin forever.
+    const wrapper = mount(ConversationTimeline, {
+      props: { room: GROUP_ROOM, timeline: null, pending: false },
+      global: { plugins: [i18n] },
+    });
+    expect(wrapper.find('[data-test="timeline-skeleton"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="timeline-empty"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps a live overlay above the skeleton so a streaming room is never masked", async () => {
+    const live: TimelineLiveTurn = {
+      memberTurnId: "turn_live",
+      botId: "bot_b",
+      text: "already speaking",
+      status: "streaming",
+      revision: 1,
+    };
+    const wrapper = mount(ConversationTimeline, {
+      props: { room: GROUP_ROOM, timeline: null, pending: true, liveOverlay: [live] },
+      global: { plugins: [i18n] },
+    });
+    expect(wrapper.find('[data-test="timeline-skeleton"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="timeline-live-bubble"]').text()).toContain("already speaking");
+    wrapper.unmount();
+  });
 });
 
 describe("ConversationStatusBar.vue", () => {

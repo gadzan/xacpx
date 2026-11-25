@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import InstanceTree from "../components/InstanceTree.vue";
 import ManageInstanceDialog from "../components/ManageInstanceDialog.vue";
 import { useInstancesStore } from "../stores/instances";
+import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { loadGroupMode } from "../lib/sidebar-group-mode";
@@ -49,7 +50,7 @@ describe("InstanceTree groups loading states", () => {
     // Groups-mode entry fires the real loadGroups("") RPC, which the
     // beforeEach mock rejects: the store records the error state and the
     // template must render it as retryable, never as an empty list.
-    await w.find('[data-test="instance-nav-groups"]').trigger("click");
+    await w.find('[data-test="instance-nav-bots"]').trigger("click");
     await flushPromises();
     expect(w.find('[data-test="groups-load-error"]').exists()).toBe(true);
     expect(w.find('[data-test="groups-retry"]').exists()).toBe(true);
@@ -69,16 +70,19 @@ describe("InstanceTree groups loading states", () => {
 
   it("shows the empty text only after a successful empty listing", async () => {
     const groups = useGroupsStore();
+    const direct = useDirectBotsStore();
     const instances = useInstancesStore();
     instances.instances = [instance([])] as never;
-    // Successful empty listing: loaded true, no rows, no error.
+    // Successful empty listing: both catalogs loaded, no rows, no error.
     groups.groupsLoaded["i1"] = true;
     groups.groupsByInstance["i1"] = [];
+    direct.botsLoaded["i1"] = true;
+    direct.botsByInstance["i1"] = [];
     const w = mountTree();
-    await w.find('[data-test="instance-nav-groups"]').trigger("click");
+    await w.find('[data-test="instance-nav-bots"]').trigger("click");
     await w.vm.$nextTick();
     expect(w.find('[data-test="groups-load-error"]').exists()).toBe(false);
-    expect(w.find('[data-test="no-groups"]').exists()).toBe(true);
+    expect(w.find('[data-test="no-bots"]').exists()).toBe(true);
   });
 });
 describe("InstanceTree grouped rendering", () => {

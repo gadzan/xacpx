@@ -137,7 +137,7 @@ async function installRoutes(page: Page, hub: { port: number }): Promise<void> {
 async function openGroup(page: Page, hub: { port: number }): Promise<void> {
   await installRoutes(page, hub);
   await loginAndShowInstances(page);
-  await page.getByTestId("instance-nav-groups").click();
+  await page.getByTestId("instance-nav-bots").click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
   await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
   await expect(page.locator(".conversation-row").first()).toBeVisible();
@@ -251,7 +251,7 @@ test("sidebar segments keep 32 and 28 while the hit boxes are 44", async ({ page
   const measured = await page.evaluate(() => {
     const rect = (el: Element | null) => el ? el.getBoundingClientRect().toJSON() : null;
     const rail = document.querySelector('[data-test="instance-nav-rail"]');
-    const selected = document.querySelector('[data-test="instance-nav-groups"] [data-test="instance-nav-pill"]');
+    const selected = document.querySelector('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]');
     const segments = Array.from(document.querySelectorAll('[data-test="instance-nav-track"] > button')).map(rect);
     const card = document.querySelector('[data-test="instance-card"]');
     return { rail: rect(rail), selected: rect(selected), segments, card: rect(card) };
@@ -259,20 +259,19 @@ test("sidebar segments keep 32 and 28 while the hit boxes are 44", async ({ page
 
   expect(measured.rail!.height).toBe(32);
   expect(measured.selected!.height).toBe(28);
-  expect(measured.segments).toHaveLength(3);
+  expect(measured.segments).toHaveLength(2);
   for (const segment of measured.segments) {
     expect(segment!.height).toBeGreaterThanOrEqual(44);
     expect(segment!.width).toBeGreaterThanOrEqual(44);
   }
   // No two hit boxes overlap horizontally.
-  const [first, second, third] = measured.segments as Array<{ x: number; width: number }>;
+  const [first, second] = measured.segments as Array<{ x: number; width: number }>;
   expect(first!.x + first!.width).toBeLessThanOrEqual(second!.x + 0.5);
-  expect(second!.x + second!.width).toBeLessThanOrEqual(third!.x + 0.5);
   // The 44px boxes stay above the first instance card, not on top of it.
   const bottom = Math.max(...measured.segments.map((segment) => segment!.y + segment!.height));
   expect(bottom).toBeLessThanOrEqual(measured.card!.y + 0.5);
   // Real targets: each edge midpoint resolves back to its own segment.
-  for (const id of ["instance-nav-sessions", "instance-nav-bots", "instance-nav-groups"]) {
+  for (const id of ["instance-nav-sessions", "instance-nav-bots"]) {
     await expectTouchTarget(page, id);
   }
 });
@@ -309,7 +308,9 @@ test("bots rows paint a 40px avatar that fills its box", async ({ page, hub }, t
     const bbox = body?.getBBox();
     const viewBoxWidth = 80;
     const name = row.querySelector('[data-test="bot-name"]') as HTMLElement;
-    const role = name.nextElementSibling as HTMLElement | null;
+    // The name sits in a wrapper that also holds the pin marker, so the role is the
+    // row's last text line rather than the name's immediate sibling.
+    const role = row.querySelector('[data-test="bot-role"]') as HTMLElement | null;
     return {
       avatar: box.width,
       painted: bbox ? Math.round((bbox.width / viewBoxWidth) * box.width * 10) / 10 : null,
@@ -333,7 +334,7 @@ test("one collage layout serves the sidebar and the top bar", async ({ page, hub
   await page.setViewportSize({ width: 390, height: 844 });
   await installRoutes(page, hub);
   await loginAndShowInstances(page);
-  await page.getByTestId("instance-nav-groups").click();
+  await page.getByTestId("instance-nav-bots").click();
 
   const read = async (selector: string) => page.evaluate((sel) => {
     const stack = document.querySelector(sel) as HTMLElement | null;
@@ -381,8 +382,8 @@ test("one collage layout serves the sidebar and the top bar", async ({ page, hub
   state.bots = members(5);
   await page.getByTestId("mobile-back").click();
   await page.reload();
-  await expect(page.getByTestId("instance-nav-groups")).toBeVisible();
-  await page.getByTestId("instance-nav-groups").click();
+  await expect(page.getByTestId("instance-nav-bots")).toBeVisible();
+  await page.getByTestId("instance-nav-bots").click();
   await expect.poll(async () => (await read('[data-test="group-row"] [data-test="group-avatar-stack"]'))?.items.length ?? 0)
     .toBe(3);
   const overflowSidebar = await read('[data-test="group-row"] [data-test="group-avatar-stack"]');
