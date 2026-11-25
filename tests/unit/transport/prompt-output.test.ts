@@ -119,3 +119,41 @@ test("uses error.message when error.data.message is absent", () => {
     expect(err.message).toBe("Internal error");
   }
 });
+
+test("surfaces the ACP data.details reason instead of the generic message", () => {
+  // omp reports the real cause in data.details while the outer message is a
+  // blanket "Internal error". Only showing the outer one hides the answer.
+  const stderr = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 3,
+    error: {
+      code: -32603,
+      message: "Internal error",
+      data: { details: "ACP session not found: 01a1aed8-579e-72a6-8047-bb2d1e6b47ee" },
+    },
+  });
+  expect(normalizeCommandError({ stdout: "", stderr }))
+    .toBe("ACP session not found: 01a1aed8-579e-72a6-8047-bb2d1e6b47ee");
+});
+
+test("keeps preferring data.message over data.details when both are present", () => {
+  const stderr = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    error: {
+      code: -32602,
+      message: "Internal error",
+      data: { message: "Invalid params: cwd", details: "stack trace here" },
+    },
+  });
+  expect(normalizeCommandError({ stdout: "", stderr })).toBe("Invalid params: cwd");
+});
+
+test("falls back to data.details when data.message is empty", () => {
+  const stderr = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    error: { code: -32603, message: "Internal error", data: { message: "", details: "agent crashed" } },
+  });
+  expect(normalizeCommandError({ stdout: "", stderr })).toBe("agent crashed");
+});

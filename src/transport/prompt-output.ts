@@ -174,19 +174,23 @@ function extractJsonRpcErrorMessages(output: string): string[] {
         const payload = JSON.parse(line) as {
           error?: {
             message?: string;
-            data?: { message?: string };
+            data?: { message?: string; details?: string };
           };
         };
 
         const err = payload.error;
-        const dataMsg = typeof err?.data?.message === "string" && err.data.message.length > 0
-          ? err.data.message
-          : undefined;
+        // ACP servers disagree on where the specific reason lives. `data.message`
+        // is the ACP-typed field; `data.details` is what omp sends, and it is
+        // usually the only place the real cause appears — the outer `message` is
+        // a generic "Internal error". Reading only `data.message` surfaced
+        // "Internal error" while "ACP session not found: <id>" sat one field
+        // away. Accept either, preferring whichever says more than the base.
+        const dataMsg = firstNonEmpty(err?.data?.message, err?.data?.details);
         const baseMsg = typeof err?.message === "string" && err.message.length > 0
           ? err.message
           : undefined;
 
-        // Prefer error.data.message when it's more specific than error.message
+        // Prefer the data payload when it's more specific than error.message
         const chosen = dataMsg && dataMsg !== baseMsg ? dataMsg : baseMsg;
         if (chosen) {
           return [chosen];
@@ -197,4 +201,11 @@ function extractJsonRpcErrorMessages(output: string): string[] {
 
       return [];
     });
+}
+
+function firstNonEmpty(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
 }
