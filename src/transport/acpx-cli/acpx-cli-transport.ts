@@ -82,6 +82,16 @@ import {
 import { MessageInjectionError } from "../message-injection";
 import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../acpx-queue-overflow";
 import { resolveAcpxHostPolicyEnv, resolveEffectiveAcpxEnv } from "../acpx-host-policy";
+import {
+  buildQueueOwnerLaunchInput,
+  cleanupOverflowedOwnerFlow,
+  coolQueueOwnerWith,
+  ensureMcpQueueOwnerLaunched,
+  probeInspectTimeout,
+  queueOwnerRefFromResolvedSession,
+  syncPersistedSessionEffortFlow,
+  willReplaceQueueOwner,
+} from "../acpx-session-ops";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -766,7 +776,7 @@ export class AcpxCliTransport implements SessionTransport {
 
   async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
     return probeAgentCapabilitiesViaInspector(input, {
-      timeoutMs: Math.min(this.sessionInitTimeoutMs, ACPX_MODEL_INSPECT_TIMEOUT_MS),
+      timeoutMs: probeInspectTimeout(this.sessionInitTimeoutMs),
       ...(this.probeLoadAgentRegistry ? { loadAgentRegistry: this.probeLoadAgentRegistry } : {}),
       ...(this.probeInspectAgentModels ? { inspectAgentModels: this.probeInspectAgentModels } : {}),
     });
@@ -796,61 +806,43 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   private async syncPersistedSessionEffort(session: ResolvedSession): Promise<void> {
-    const persisted = session.effort?.trim();
-    if (!persisted) return;
-    const record = await this.readSessionEffortRecord(session);
-    const observed = parseSessionEffortRecord(record);
-    const acpxRecordId = parseAcpxSessionRecordId(record)?.acpxRecordId;
-    const effort = sessionEffortToReapply({
-      persisted,
-      observedCurrent: observed?.current,
-      advertised: observed?.available,
-      ownerWillBeReplaced: await this.queueOwnerWillBeReplaced(session, acpxRecordId),
-    });
-    if (!effort) return;
-    if (acpxRecordId) await this.coolQueueOwner(acpxRecordId);
-    await this.applyAdvertisedSessionEffort(session, effort, record);
+    // Orchestration lives in ../acpx-session-ops.ts; only the I/O is lane-specific.
+    await syncPersistedSessionEffortFlow(
+      session.effort,
+      (record) => parseAcpxSessionRecordId(record)?.acpxRecordId,
+      {
+        readRecord: () => this.readSessionEffortRecord(session),
+        ownerWillBeReplaced: (recordId) => this.queueOwnerWillBeReplaced(session, recordId),
+        coolOwner: (recordId) => this.coolQueueOwner(recordId),
+        applyEffort: (effort, record) => this.applyAdvertisedSessionEffort(session, effort, record),
+      },
+    );
   }
 
   private async coolQueueOwner(acpxRecordId: string): Promise<void> {
-    if (this.queueOwnerLauncher.cool) {
-      await this.queueOwnerLauncher.cool(acpxRecordId);
-      return;
-    }
-    await terminateAcpxQueueOwnerVerified(acpxRecordId);
+    await coolQueueOwnerWith(this.queueOwnerLauncher, acpxRecordId);
   }
 
   private async queueOwnerWillBeReplaced(
     session: ResolvedSession,
     acpxRecordId: string | undefined,
   ): Promise<boolean> {
-    if (!session.mcpCoordinatorSession || !acpxRecordId) return false;
-    const wouldReuse = this.queueOwnerLauncher.wouldReuse?.bind(this.queueOwnerLauncher);
-    if (!wouldReuse) return true;
-    return !(await wouldReuse(this.queueOwnerLaunchInput(session, acpxRecordId)));
+    return await willReplaceQueueOwner({
+      coordinatorSession: session.mcpCoordinatorSession,
+      acpxRecordId,
+      wouldReuse: this.queueOwnerLauncher.wouldReuse?.bind(this.queueOwnerLauncher),
+      buildLaunchInput: (recordId) => this.queueOwnerLaunchInput(session, recordId),
+    });
   }
 
   private queueOwnerLaunchInput(session: ResolvedSession, acpxRecordId: string): LaunchQueueOwnerInput {
-    const agentEnv = this.spawnEnvironment(session);
-    const adapterId = classifyPreinstalledAdapterCommandShape(session.agentCommand);
-    const adapterContext = adapterId && session.agentCommand
-      ? this.createAdapterContext?.({ id: adapterId, sessionKey: session.alias, agentCommand: session.agentCommand })
-      : undefined;
-    return {
-      acpxRecordId,
-      coordinatorSession: session.mcpCoordinatorSession!,
-      ...(session.mcpSourceHandle ? { sourceHandle: session.mcpSourceHandle } : {}),
+    return buildQueueOwnerLaunchInput(queueOwnerRefFromResolvedSession(session), acpxRecordId, {
+      agentEnv: this.spawnEnvironment(session),
+      hostPolicyEnv: this.hostPolicyEnv,
       permissionMode: this.permissionMode,
       nonInteractivePermissions: this.nonInteractivePermissions,
-      ...(adapterId && session.agentCommand ? { agentCommand: session.agentCommand } : {}),
-      ...(adapterContext ? { adapterContext } : {}),
-      ...(session.model?.trim() ? { sessionOptions: { model: session.model.trim() } } : {}),
-      // Agent env wins the base, but an explicitly set agent env must not
-      // drop the host ceilings (launcher uses input.env ?? baseEnv verbatim).
-      // Agent-undefined stays omitted so warm-owner fingerprinting keeps
-      // riding the construction-time baseEnv.
-      ...(agentEnv ? { env: { ...agentEnv, ...this.hostPolicyEnv } } : {}),
-    };
+      ...(this.createAdapterContext ? { createAdapterContext: this.createAdapterContext } : {}),
+    });
   }
 
   private async readSessionEffortRecord(session: ResolvedSession): Promise<string> {
@@ -1030,12 +1022,15 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   private async launchMcpQueueOwnerIfNeeded(session: ResolvedSession): Promise<void> {
-    if (!session.mcpCoordinatorSession) {
-      return;
-    }
-    const record = await this.readOwnedSessionRecord(session);
-    const prepared = await this.queueOwnerLauncher.launch(this.queueOwnerLaunchInput(session, record.acpxRecordId));
-    if (prepared?.agentCommand) session.agentCommand = prepared.agentCommand;
+    // Bot-owned logical sessions auto-ensure their record here (readOwned
+    // keeps that CLI-only behavior); the bridge reads strictly instead.
+    await ensureMcpQueueOwnerLaunched({
+      coordinatorSession: session.mcpCoordinatorSession,
+      readRecord: () => this.readOwnedSessionRecord(session),
+      launch: (input) => this.queueOwnerLauncher.launch(input),
+      onPreparedAgentCommand: (agentCommand) => { session.agentCommand = agentCommand; },
+      buildLaunchInput: (recordId) => this.queueOwnerLaunchInput(session, recordId),
+    });
   }
 
   // A bot-owned Conversation session (Direct or Group member) is created as a
@@ -1089,36 +1084,11 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   private async cleanupOverflowedOwner(session: ResolvedSession): Promise<AcpxQueueCleanupResult> {
-    const diagnostics: string[] = [];
-    let cancelSucceeded = false;
-    try {
-      await this.cancel(session);
-      cancelSucceeded = true;
-    } catch (error) {
-      diagnostics.push(`cancel failed: ${describeCleanupError(error)}`);
-    }
-    let record: { acpxRecordId: string } | undefined;
-    try {
-      record = await this.readSessionRecord(session);
-    } catch (error) {
-      diagnostics.push(`could not resolve the queue owner record: ${describeCleanupError(error)}`);
-    }
-    let ownerTerminationSucceeded = false;
-    if (record) {
-      try {
-        await terminateAcpxQueueOwnerVerified(record.acpxRecordId);
-        ownerTerminationSucceeded = true;
-      } catch (error) {
-        diagnostics.push(`owner termination failed: ${describeCleanupError(error)}`);
-      }
-    }
-    return {
-      cancelAttempted: true,
-      cancelSucceeded,
-      ownerTerminationAttempted: Boolean(record),
-      ownerTerminationSucceeded,
-      ...(diagnostics.length > 0 ? { diagnostic: diagnostics.join("; ") } : {}),
-    };
+    return await cleanupOverflowedOwnerFlow({
+      cancel: () => this.cancel(session).then(() => {}),
+      readRecordId: () => this.readSessionRecord(session).then((record) => record.acpxRecordId),
+      terminate: (recordId) => terminateAcpxQueueOwnerVerified(recordId),
+    });
   }
 
   /**
@@ -1553,11 +1523,6 @@ export class AcpxCliTransport implements SessionTransport {
   private buildPermissionArgs(): string[] {
     return sharedBuildPermissionArgs(this.permissionInput());
   }
-}
-
-function describeCleanupError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.length > 512 ? `${message.slice(0, 512)}…` : message;
 }
 
 export const __acpxCliTransportForTests = {

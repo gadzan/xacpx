@@ -59,7 +59,17 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
-import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../transport/session-effort";
+import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../transport/session-effort";
+import {
+  buildQueueOwnerLaunchInput,
+  cleanupOverflowedOwnerFlow,
+  coolQueueOwnerWith,
+  ensureMcpQueueOwnerLaunched,
+  probeInspectTimeout,
+  queueOwnerRefFromBridgeInput,
+  syncPersistedSessionEffortFlow,
+  willReplaceQueueOwner,
+} from "../transport/acpx-session-ops";
 import { parseSessionStatusCatalog } from "../transport/session-model-catalog";
 import { runAcpxControlCommand } from "../transport/acpx-owner-control-retry";
 import { MessageInjectionError } from "../transport/message-injection";
@@ -266,7 +276,7 @@ export class BridgeRuntime {
           timeoutMs: this.sessionInitTimeoutMs(),
         }));
       },
-      formatError: (result) => result.stderr || result.stdout || `sessions list failed with exit code ${result.code}`,
+      formatError: (result) => normalizeCommandError(result) ?? `command failed with exit code ${result.code}`,
       // Codex's session list leaks native subagent threads; hide them (fail-open).
       // Gate on driver so custom-named codex agents (driver "codex") are covered too.
       isSubagentSession: (input.driver ?? input.agent) === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
@@ -310,7 +320,8 @@ export class BridgeRuntime {
       throw error;
     }
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "sessions resume failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
     return {};
   }
@@ -390,8 +401,10 @@ export class BridgeRuntime {
       lastResult = result;
     }
 
-    const message = lastResult?.stderr || lastResult?.stdout || "sessions history failed";
-    throw new Error(message);
+    const detail = lastResult
+      ? normalizeCommandError(lastResult) ?? `command failed with exit code ${lastResult.code}`
+      : "command failed";
+    throw new Error(detail);
   }
 
   async ensureSession(
@@ -671,11 +684,7 @@ export class BridgeRuntime {
       }),
     );
     if (result.code !== 0) {
-      const detail =
-        normalizeCommandError(result) ??
-        (result.stderr ||
-          result.stdout ||
-          `inject-message failed with exit code ${result.code}`);
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);
     }
     return { status: "queued", modeUsed: "queue" };
@@ -689,48 +698,24 @@ export class BridgeRuntime {
    * turn. Neither step is allowed to replace the original overflow diagnosis.
    */
   private async cleanupOverflowedOwner(input: BridgeSessionInput): Promise<AcpxQueueCleanupResult> {
-    const diagnostics: string[] = [];
-    let cancelSucceeded = false;
-    try {
-      await this.cancel(input);
-      cancelSucceeded = true;
-    } catch (error) {
-      diagnostics.push(`cancel failed: ${describeCleanupError(error)}`);
-    }
-
-    let record: { acpxRecordId: string } | undefined;
-    try {
-      record = await this.readSessionRecord(input);
-    } catch (error) {
-      diagnostics.push(`could not resolve the queue owner record: ${describeCleanupError(error)}`);
-    }
-
-    let ownerTerminationSucceeded = false;
-    if (record) {
-      try {
-        await (this.options.terminateQueueOwner ?? terminateAcpxQueueOwnerVerified)(record.acpxRecordId);
-        ownerTerminationSucceeded = true;
-      } catch (error) {
-        diagnostics.push(`owner termination failed: ${describeCleanupError(error)}`);
-      }
-    }
-
-    return {
-      cancelAttempted: true,
-      cancelSucceeded,
-      ownerTerminationAttempted: Boolean(record),
-      ownerTerminationSucceeded,
-      ...(diagnostics.length > 0 ? { diagnostic: diagnostics.join("; ") } : {}),
-    };
+    // The bridge honors its terminateQueueOwner override; the CLI always verifies.
+    const terminate = this.options.terminateQueueOwner ?? terminateAcpxQueueOwnerVerified;
+    return await cleanupOverflowedOwnerFlow({
+      cancel: () => this.cancel(input).then(() => {}),
+      readRecordId: () => this.readSessionRecord(input).then((record) => record.acpxRecordId),
+      terminate: (recordId) => terminate(recordId),
+    });
   }
 
   private async launchMcpQueueOwnerIfNeeded(input: BridgeSessionInput): Promise<void> {
-    if (!input.mcpCoordinatorSession) {
-      return;
-    }
-    const record = await this.readSessionRecord(input);
-    const prepared = await this.queueOwnerLauncher.launch(this.queueOwnerLaunchInput(input, record.acpxRecordId));
-    if (prepared?.agentCommand) input.agentCommand = prepared.agentCommand;
+    // Strict record read (no Bot auto-ensure — that stays a CLI-only behavior).
+    await ensureMcpQueueOwnerLaunched({
+      coordinatorSession: input.mcpCoordinatorSession,
+      readRecord: () => this.readSessionRecord(input),
+      launch: (launchInput) => this.queueOwnerLauncher.launch(launchInput),
+      onPreparedAgentCommand: (agentCommand) => { input.agentCommand = agentCommand; },
+      buildLaunchInput: (recordId) => this.queueOwnerLaunchInput(input, recordId),
+    });
   }
 
   private async readRawSessionRecord(
@@ -748,7 +733,8 @@ export class BridgeRuntime {
       stage,
     }));
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "sessions show failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
     return result.stdout;
   }
@@ -846,7 +832,8 @@ export class BridgeRuntime {
     })));
 
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "set-mode failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
 
     return {};
@@ -878,7 +865,8 @@ export class BridgeRuntime {
     })));
 
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "set-model failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
 
     return {};
@@ -888,7 +876,10 @@ export class BridgeRuntime {
     await this.ensureSession(input);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, ['status','-s',input.name], {format:'json'}));
     const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {timeoutMs:this.managementCommandTimeoutMs(),stage:'get-session-model'}));
-    if(result.code !== 0) throw new Error('command advertisement read failed');
+    if(result.code !== 0) {
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
+    }
     const raw = JSON.parse(result.stdout) as {availableCommands?: import('../transport/types').AgentCommand[]};
     return raw.availableCommands;
   }
@@ -915,7 +906,8 @@ export class BridgeRuntime {
     }));
 
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "status failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
 
     return parseSessionStatusCatalog(result.stdout, `session "${input.name}"`);
@@ -923,7 +915,7 @@ export class BridgeRuntime {
 
   async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
     return probeAgentCapabilitiesViaInspector(input, {
-      timeoutMs: Math.min(this.sessionInitTimeoutMs(), ACPX_MODEL_INSPECT_TIMEOUT_MS),
+      timeoutMs: probeInspectTimeout(this.sessionInitTimeoutMs()),
       ...(this.options.loadAgentRegistry ? { loadAgentRegistry: this.options.loadAgentRegistry } : {}),
       ...(this.options.inspectAgentModels ? { inspectAgentModels: this.options.inspectAgentModels } : {}),
     });
@@ -965,63 +957,43 @@ export class BridgeRuntime {
   }
 
   private async syncPersistedSessionEffort(input: BridgeSessionInput): Promise<void> {
-    const persisted = input.effort?.trim();
-    if (!persisted) return;
-    const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
-    const observed = parseSessionEffortRecord(record);
-    const acpxRecordId = parseAcpxSessionRecordId(record)?.acpxRecordId;
-    const effort = sessionEffortToReapply({
-      persisted,
-      observedCurrent: observed?.current,
-      advertised: observed?.available,
-      ownerWillBeReplaced: await this.queueOwnerWillBeReplaced(input, acpxRecordId),
-    });
-    if (!effort) return;
-    if (acpxRecordId) await this.coolQueueOwner(acpxRecordId);
-    await this.applyAdvertisedSessionEffort(input, effort, record);
+    // Orchestration lives in ../transport/acpx-session-ops.ts; only the I/O is lane-specific.
+    await syncPersistedSessionEffortFlow(
+      input.effort,
+      (record) => parseAcpxSessionRecordId(record)?.acpxRecordId,
+      {
+        readRecord: () => this.readRawSessionRecord(input, "get-session-effort", "json"),
+        ownerWillBeReplaced: (recordId) => this.queueOwnerWillBeReplaced(input, recordId),
+        coolOwner: (recordId) => this.coolQueueOwner(recordId),
+        applyEffort: (effort, record) => this.applyAdvertisedSessionEffort(input, effort, record),
+      },
+    );
   }
 
   private async coolQueueOwner(acpxRecordId: string): Promise<void> {
-    if (this.queueOwnerLauncher.cool) {
-      await this.queueOwnerLauncher.cool(acpxRecordId);
-      return;
-    }
-    await terminateAcpxQueueOwnerVerified(acpxRecordId);
+    await coolQueueOwnerWith(this.queueOwnerLauncher, acpxRecordId);
   }
 
   private async queueOwnerWillBeReplaced(
     input: BridgeSessionInput,
     acpxRecordId: string | undefined,
   ): Promise<boolean> {
-    if (!input.mcpCoordinatorSession || !acpxRecordId) return false;
-    const wouldReuse = this.queueOwnerLauncher.wouldReuse?.bind(this.queueOwnerLauncher);
-    if (!wouldReuse) return true;
-    return !(await wouldReuse(this.queueOwnerLaunchInput(input, acpxRecordId)));
+    return await willReplaceQueueOwner({
+      coordinatorSession: input.mcpCoordinatorSession,
+      acpxRecordId,
+      wouldReuse: this.queueOwnerLauncher.wouldReuse?.bind(this.queueOwnerLauncher),
+      buildLaunchInput: (recordId) => this.queueOwnerLaunchInput(input, recordId),
+    });
   }
 
   private queueOwnerLaunchInput(input: BridgeSessionInput, acpxRecordId: string): LaunchQueueOwnerInput {
-    const env = this.spawnEnvironment(input);
-    const adapterId = classifyPreinstalledAdapterCommandShape(input.agentCommand);
-    const adapterContext = adapterId && input.agentCommand
-      ? this.options.createAdapterContext?.({
-          id: adapterId,
-          sessionKey: input.sessionKey ?? input.name,
-          agentCommand: input.agentCommand,
-        })
-      : undefined;
-    return {
-      acpxRecordId,
-      coordinatorSession: input.mcpCoordinatorSession!,
-      ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
+    return buildQueueOwnerLaunchInput(queueOwnerRefFromBridgeInput(input), acpxRecordId, {
+      agentEnv: this.spawnEnvironment(input),
+      hostPolicyEnv: this.hostPolicyEnv,
       permissionMode: this.options.permissionMode ?? "approve-all",
       nonInteractivePermissions: this.options.nonInteractivePermissions ?? "deny",
-      ...(input.model?.trim() ? { sessionOptions: { model: input.model.trim() } } : {}),
-      ...(adapterId && input.agentCommand ? { agentCommand: input.agentCommand } : {}),
-      ...(adapterContext ? { adapterContext } : {}),
-      // Same bypass guard as the CLI lane: explicit agent env must not drop
-      // the host ceilings; agent-undefined stays omitted (baseEnv covers it).
-      ...(env ? { env: { ...env, ...this.hostPolicyEnv } } : {}),
-    };
+      ...(this.options.createAdapterContext ? { createAdapterContext: this.options.createAdapterContext } : {}),
+    });
   }
 
   private async applyAdvertisedSessionEffort(
@@ -1042,7 +1014,8 @@ export class BridgeRuntime {
       stage: "set-session-effort",
     })));
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "set effort failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
   }
 
@@ -1068,7 +1041,8 @@ export class BridgeRuntime {
     })));
 
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "cancel failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
 
     return {
@@ -1105,7 +1079,7 @@ export class BridgeRuntime {
     if (isMissingAcpxSessionError(result.stderr, result.stdout)) {
       return {};
     }
-    throw new Error(result.stderr || result.stdout || "sessions close failed");
+    throw new Error(normalizeCommandError(result) ?? `command failed with exit code ${result.code}`);
   }
 
   async deleteSession(input: {
@@ -1495,7 +1469,4 @@ function isUnknownVerboseOption(stderr: string, stdout: string): boolean {
   return /(unknown|unrecognized)\b[^\n]*--verbose/i.test(combined);
 }
 
-function describeCleanupError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.length > 512 ? `${message.slice(0, 512)}…` : message;
-}
+// describeCleanupError lives in ../transport/acpx-session-ops.ts (shared).
