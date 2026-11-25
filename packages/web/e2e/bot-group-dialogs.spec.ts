@@ -90,14 +90,15 @@ test("group dialog offers the handoff-memory opt-in only when the core advertise
   await expect(dialog).toHaveCount(0);
 });
 
-test("bot dialog flags a name with no letters or digits while New workspace is selected", async ({ page }) => {
+test("bot dialog flags a name with no letters or digits on a core that allocates a workspace", async ({ page }) => {
+  // The empty-name rule stands on its own: a new Bot's workspace is named after it,
+  // so a name with no letter or digit has nothing to derive one from.
   const dialog = await openDialog(page, "bot");
-  await expect(dialog.locator("#bot-workspace")).toHaveText("New workspace");
+  await expect(dialog.getByTestId("bot-dedicated-workspace-hint")).toHaveCount(1);
   await dialog.locator("#bot-name").fill("🤖");
   await expect(dialog.getByTestId("bot-name-error")).toHaveText("Name needs a letter or number, or pick a workspace.");
   await expect(dialog.getByRole("button", { name: "Create", exact: true })).toBeDisabled();
-  await dialog.locator("#bot-workspace").click();
-  await page.locator('[data-value="repo"]').click();
+  await dialog.locator("#bot-name").fill("helper 1");
   await expect(dialog.getByTestId("bot-name-error")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Create", exact: true })).toBeEnabled();
 });
@@ -163,10 +164,9 @@ for (const kind of ["bot", "group"] as const) {
     if (kind === "bot") {
       await dialog.locator("#bot-name").fill("Review assistant");
       await expect(dialog.locator("#bot-agent")).toHaveAttribute("data-selected", "codex");
-      // New Bots default to an auto-created dedicated workspace: the empty value is a
-      // real, labelled option, and the hint explains where it will be created.
-      await expect(dialog.locator("#bot-workspace")).toHaveAttribute("data-selected", "");
-      await expect(dialog.locator("#bot-workspace")).toHaveText("New workspace");
+      // New Bots default to an auto-created dedicated workspace: there is no picker to
+      // fit, only the hint naming where it will be created.
+      await expect(dialog.locator("#bot-workspace")).toHaveCount(0);
       await expect(dialog.getByTestId("bot-dedicated-workspace-hint")).toBeVisible();
     } else {
       await dialog.getByTestId("group-dialog-title").fill("Release team");

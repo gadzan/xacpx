@@ -1289,6 +1289,40 @@ describe("Group Components", () => {
       } } });
       await flushPromises(); expect(wrapper.find('[data-test="restored-worktree"]').text()).toBe("settled-run"); wrapper.unmount();
     });
+    it("carries the member's parts into the live bubble, not just its text", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "r1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      } as never;
+      groups.memberTurnsById["turn_1"] = {
+        id: "turn_1", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "b1", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+        state: "running", createdAt: "now",
+      } as never;
+      groups.liveTurnsByMember["turn_1"] = {
+        parts: [{
+          type: "tool",
+          step: {
+            toolCallId: "t1", toolName: "Bash", kind: "execute", status: "running",
+            title: "npm test", detail: { type: "command", command: "npm test", output: "" },
+          },
+        }],
+        status: "streaming",
+        revision: 1,
+      } as never;
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      // Reducing the parts to text first left a Bot that was running tools looking
+      // idle: the bubble showed a working indicator and reported nothing.
+      const timeline = wrapper.findComponent({ name: "ConversationTimeline" });
+      const overlay = timeline.props("liveOverlay") as Array<{ parts?: unknown[] }>;
+      expect(overlay).toHaveLength(1);
+      expect(overlay[0]!.parts).toHaveLength(1);
+      wrapper.unmount();
+    });
+
     it("binds transcript, composer, and topic switcher without touching Direct state", async () => {
       seedGroupSelection();
       const direct = useDirectBotsStore();

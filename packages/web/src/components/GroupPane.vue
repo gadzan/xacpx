@@ -334,7 +334,9 @@ const roomView = computed<RoomView>(() => ({
 }));
 
 /** Live text keyed by MemberTurn: coalesced streamed prose only. The durable
- *  message removes the overlay (the timeline dedupes by memberTurnId). */
+ *  message removes the overlay (the timeline dedupes by memberTurnId). The parts
+ *  travel with it: the bubble renders them as the "what is happening now" line, and
+ *  reducing them to text first would leave a Bot that is running tools looking idle. */
 const liveOverlay = computed<TimelineLiveTurn[]>(() =>
   Object.entries(groupsStore.liveTurnsByMember).map(([memberTurnId, live]) => {
     const member = groupsStore.memberTurns.find((turn) => turn.id === memberTurnId);
@@ -342,6 +344,7 @@ const liveOverlay = computed<TimelineLiveTurn[]>(() =>
       memberTurnId,
       ...(member?.botId ? { botId: member.botId } : {}),
       text: textBubblesOf(live.parts).join("\n\n"),
+      parts: live.parts,
       status: live.status === "streaming" ? "streaming" : "working",
       revision: live.revision,
     } satisfies TimelineLiveTurn;
