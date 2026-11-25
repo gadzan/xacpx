@@ -481,7 +481,18 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
         : "no-cache");
     });
     app.use("/*", serveStatic({ root }));
-    app.get("/*", serveStatic({ path: "index.html", root }));
+    // SPA fallback: an unknown route is a client-side navigation and gets the app shell.
+    // A missing /assets/* file must NOT: answering it with index.html returns 200 + HTML
+    // for a script, so the browser runs markup as JavaScript and a service worker
+    // precaches the junk under the old file's name. A stale worker then keeps serving a
+    // dead chunk forever, because nothing ever saw a 404 for it.
+    app.get("/*", async (c, next) => {
+      if (c.req.path.startsWith("/assets/")) {
+        await next();
+        return;
+      }
+      return await serveStatic({ path: "index.html", root })(c, next);
+    });
   }
 
   return {
