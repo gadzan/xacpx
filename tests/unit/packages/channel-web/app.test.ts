@@ -172,6 +172,38 @@ describe("local web app", () => {
     expect(instance.capabilities).not.toContain(RELAY_CAPABILITIES.conversationTimelineV1);
   });
 
+  test("offers a dedicated Bot workspace when the core allocates one", async () => {
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
+      control: {
+        events: { subscribe: () => () => undefined },
+        supportsBotDedicatedWorkspace: () => true,
+        supportsBotDedicatedWorkspaceUpdate: () => true,
+        supportsBotDedicatedWorkspaceCleanup: () => true,
+      } as never,
+    });
+    const response = await local.app.request("/api/instances", { headers: headers() });
+    const [instance] = (await response.json()).instances;
+    // Without these the create dialog asks the user to pick a workspace, which is
+    // how two Bots could end up sharing one tree.
+    expect(instance.capabilities).toContain(RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
+    expect(instance.capabilities).toContain(RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1);
+    expect(instance.capabilities).toContain(RELAY_CAPABILITIES.botsDedicatedWorkspaceCleanupV1);
+  });
+
+  test("offers no dedicated Bot workspace when the core predates it", async () => {
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
+      control: { events: { subscribe: () => () => undefined } } as never,
+    });
+    const response = await local.app.request("/api/instances", { headers: headers() });
+    const [instance] = (await response.json()).instances;
+    // An older core still requires `workspace` on create, so the picker must stay.
+    expect(instance.capabilities).not.toContain(RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
+  });
+
   test("keeps a prompt that starts before the queue reply is known", async () => {
     let finish: (value: unknown) => void = () => undefined;
     let reached: () => void = () => undefined;

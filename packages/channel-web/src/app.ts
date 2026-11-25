@@ -107,6 +107,36 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
    * projects `control.conversation.timeline`, and our own validator must accept
    * the payload before we advertise it.
    */
+  /**
+   * A Bot's own workspace is allocated by the core, so the create dialog must not
+   * ask the user to pick one. The core gates this behind a probe (an older core
+   * still requires `workspace`); advertising the capability tells the dashboard it
+   * may omit the field. Both halves are required — the probe AND our validator
+   * accepting the payload — because either one alone would let the web send a
+   * request this instance rejects.
+   */
+  const botWorkspaceCapabilities = (): string[] => {
+    const capabilities: string[] = [];
+    const create = (control as { supportsBotDedicatedWorkspace?: unknown }).supportsBotDedicatedWorkspace;
+    if (typeof create === "function" && (create as () => unknown).call(control) === true
+      && parseControlPayload(MSG.botsCreate, { name: "probe", agent: "probe" }) !== null) {
+      capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
+    }
+    const update = (control as { supportsBotDedicatedWorkspaceUpdate?: unknown }).supportsBotDedicatedWorkspaceUpdate;
+    if (typeof update === "function" && (update as () => unknown).call(control) === true
+      && parseControlPayload(MSG.botsUpdate, { id: "probe", dedicatedWorkspace: true }) !== null) {
+      capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1);
+    }
+    const cleanup = (control as { supportsBotDedicatedWorkspaceCleanup?: unknown }).supportsBotDedicatedWorkspaceCleanup;
+    if (typeof cleanup === "function" && (cleanup as () => unknown).call(control) === true
+      && parseControlPayload(MSG.botsRemove, {
+        id: "probe", requestId: "probe", previewRevision: "probe", deleteDedicatedWorkspace: true,
+      }) !== null) {
+      capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceCleanupV1);
+    }
+    return capabilities;
+  };
+
   const instanceCapabilities = (): string[] => {
     const capabilities: string[] = [];
     if (options.terminal?.ready === true) {
@@ -119,6 +149,7 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
       }) !== null;
       if (accepted) capabilities.push(RELAY_CAPABILITIES.conversationTimelineV1);
     }
+    capabilities.push(...botWorkspaceCapabilities());
     return capabilities;
   };
 
