@@ -406,6 +406,19 @@ describe("InstanceTree session management", () => {
     expect(w.find('[data-test="no-sessions"]').exists()).toBe(false);
   });
 
+  it("keeps the loading hint on the load row instead of adding one", () => {
+    const store = useInstancesStore();
+    const [row] = [instance([], false)];
+    store.instances = [{ ...(row as object), sessionsLoading: true }] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    // One element, two states: adding a second row for the hint pushed every
+    // session below it down, which read as the sidebar jumping while it loaded.
+    expect(w.find('[data-test="sessions-loading"]').exists()).toBe(true);
+    const loadRow = w.find('[data-test="load-sessions"]');
+    expect(loadRow.exists()).toBe(true);
+    expect(loadRow.find('[data-test="sessions-loading"]').exists()).toBe(true);
+  });
+
   it("renders an elapsed badge for a working session", () => {
     const instances = useInstancesStore();
     instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;

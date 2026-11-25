@@ -1193,13 +1193,17 @@ const rowSwipes = computed(() => {
 
         <!-- SESSIONS MODE -->
         <template v-else-if="navMode === 'sessions'">
-        <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
-                class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs font-medium text-accent-text hover:bg-accent-soft"
+        <!-- "Load sessions" and its in-flight hint occupy ONE line: they are the same
+             affordance before and during the fetch. Rendering the hint as a second
+             row pushed every session below it down, which read as the tree jumping. -->
+        <button v-if="inst.online && !inst.sessionsLoaded" data-test="load-sessions"
+                :disabled="inst.sessionsLoading"
+                class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs leading-4 font-medium text-accent-text hover:bg-accent-soft disabled:text-fg-muted disabled:hover:bg-transparent"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
-          <ChevronRight :size="11" />{{ $t("instance.loadSessions") }}
+          <ChevronRight v-if="!inst.sessionsLoading" :size="11" />
+          <span v-if="inst.sessionsLoading" data-test="sessions-loading">{{ $t("instance.loading") }}</span>
+          <template v-else>{{ $t("instance.loadSessions") }}</template>
         </button>
-        <div v-if="inst.online && inst.sessionsLoading" data-test="sessions-loading"
-             class="py-1 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
         <div v-for="grp in sectionsFor(inst)" :key="grp.key ?? '~flat'"
              :class="grp.key !== null ? 'rounded-sm bg-fg/[0.035] p-0.5' : 'space-y-px'"
              :data-test="grp.key !== null ? 'session-group' : undefined">
@@ -1385,7 +1389,7 @@ const rowSwipes = computed(() => {
           {{ $t("instance.loadMoreSessions") }}
         </button>
         <div v-if="inst.sessionsLoaded && !activeSessions(inst).length && !archivedIsExpanded(inst.id)" data-test="no-sessions"
-             class="py-1 pl-2.5 text-xs text-fg-muted">{{ $t("instance.noSessions") }}</div>
+             class="px-2.5 py-1 text-xs leading-4 text-fg-muted">{{ $t("instance.noSessions") }}</div>
 
         <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria.
              The sleeping-sessions toggle lives in the instance header's filter menu. -->
