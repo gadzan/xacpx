@@ -1296,11 +1296,11 @@ describe("Group Components", () => {
         requestMessageId: "m1", requestId: "r1", mode: "explicit", state: "running",
         profileRevision: 1, createdAt: "now",
       } as never;
-      groups.memberTurns = [{
+      groups.memberTurnsById["turn_1"] = {
         id: "turn_1", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
         botId: "b1", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
         state: "running", createdAt: "now",
-      }] as never;
+      } as never;
       groups.liveTurnsByMember["turn_1"] = {
         parts: [{
           type: "tool",
