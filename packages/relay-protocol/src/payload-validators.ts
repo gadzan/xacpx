@@ -98,6 +98,7 @@ import {
   type SessionsCreatePayload,
   type SessionsListPayload,
   type SessionsNativeListPayload,
+  type SessionsHistoryPayload,
   type SessionsRemovePayload,
   type SessionsForkPayload,
   type SessionsRenamePayload,
@@ -207,6 +208,12 @@ const validateSessionsCreate: Validator<SessionsCreatePayload> = (p) => {
 const validateSessionsNativeList: Validator<SessionsNativeListPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.agent) && isStr(o.workspace) ? (o as unknown as SessionsNativeListPayload) : null;
+};
+const validateSessionsHistory: Validator<SessionsHistoryPayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.chatKey) || !isStr(o.sessionAlias)) return null;
+  if (o.limit !== undefined && (typeof o.limit !== "number" || !Number.isInteger(o.limit) || o.limit <= 0)) return null;
+  return o as unknown as SessionsHistoryPayload;
 };
 const validateSessionsRemove: Validator<SessionsRemovePayload> = (p) => {
   const o = fields(p);
@@ -1265,7 +1272,7 @@ export const validateInteractionWithdraw: Validator<InteractionWithdrawPayload> 
  *  parseTerminalEventPayload), and the no-payload list RPCs
  *  (agentsList/workspacesList/agentsCatalog/orchestrationList/botsList). */
 export type ControlRpcType =
-  | typeof MSG.sessionsList | typeof MSG.sessionsCreate | typeof MSG.sessionsNativeList
+  | typeof MSG.sessionsList | typeof MSG.sessionsCreate | typeof MSG.sessionsNativeList | typeof MSG.sessionsHistory
   | typeof MSG.sessionsRemove | typeof MSG.sessionsArchive | typeof MSG.sessionsUnarchive
   | typeof MSG.sessionsRename | typeof MSG.sessionsFork | typeof MSG.workspacesCreate | typeof MSG.agentsCreate
   | typeof MSG.agentsRemove | typeof MSG.workspacesRemove | typeof MSG.prompt
@@ -1324,6 +1331,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsList]: validateSessionsList,
   [MSG.sessionsCreate]: validateSessionsCreate,
   [MSG.sessionsNativeList]: validateSessionsNativeList,
+  [MSG.sessionsHistory]: validateSessionsHistory,
   [MSG.sessionsRemove]: validateSessionsRemove,
   [MSG.sessionsArchive]: validateSessionsArchive,
   [MSG.sessionsUnarchive]: validateSessionsUnarchive,

@@ -30,7 +30,7 @@ const LOCAL_CHAT_KEY = "web:local";
 const CHAT_SCOPED = new Set<string>([
   MSG.prompt, MSG.promptCancel, MSG.commandExecute, MSG.queueCancel,
   MSG.scheduledList, MSG.scheduledCreate, MSG.scheduledCancel,
-  MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsNativeList, MSG.sessionsRemove,
+  MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsNativeList, MSG.sessionsHistory, MSG.sessionsRemove,
   MSG.sessionsArchive, MSG.sessionsUnarchive, MSG.sessionsRename, MSG.sessionsFork,
   MSG.sessionModelGet, MSG.sessionModelSet, MSG.sessionEffortGet, MSG.sessionEffortSet,
 ]);
@@ -120,6 +120,41 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
       if (accepted) capabilities.push(RELAY_CAPABILITIES.conversationTimelineV1);
     }
     return capabilities;
+  };
+
+  /**
+   * Recover a session's transcript from the daemon when this console holds none.
+   *
+   * The daemon reads the agent's own on-disk record, so a session created before
+   * this process started still has its turns. Rows land in the in-memory store so
+   * later reads and the event projection see them too; a failure yields null and
+   * the caller reports the (empty) in-memory page, which is the old behavior.
+   */
+  const seedFromDaemon = async (alias: string, limit: number): Promise<boolean> => {
+    const result = await new Promise<unknown>((resolve) => {
+      bridge(
+        {
+          protocolVersion: 1,
+          kind: "request",
+          type: MSG.sessionsHistory,
+          payload: { chatKey: LOCAL_CHAT_KEY, sessionAlias: alias, limit },
+        } as never,
+        resolve,
+      );
+    });
+    if (!result || typeof result !== "object" || isErrorPayload(result)) return false;
+    const rows = (result as { messages?: unknown }).messages;
+    if (!Array.isArray(rows) || rows.length === 0) return false;
+    let appended = 0;
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const entry = row as { direction?: unknown; text?: unknown };
+      const direction = entry.direction === "in" || entry.direction === "out" ? entry.direction : undefined;
+      if (!direction || typeof entry.text !== "string" || entry.text.length === 0) continue;
+      messages.append(LOCAL_INSTANCE_ID, alias, direction, entry.text);
+      appended += 1;
+    }
+    return appended > 0;
   };
   const project = (event: ControlEventDto): void => {
     if (!("sessionAlias" in event) || typeof event.sessionAlias !== "string") return;
@@ -272,7 +307,7 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
     return c.json({ message });
   });
 
-  app.get("/api/instances/:id/sessions/:alias/messages", (c) => {
+  app.get("/api/instances/:id/sessions/:alias/messages", async (c) => {
     if (c.req.param("id") !== LOCAL_INSTANCE_ID) return c.json({ error: "not-found" }, 404);
     const alias = c.req.param("alias");
     if (c.req.query("view") === "pending") {
@@ -287,10 +322,16 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
       limit,
       ...(before !== undefined ? { before } : {}),
     });
+    // An empty in-memory transcript does not mean the session has no history: the
+    // daemon can still read the agent's own record. The browser cache only speeds
+    // up rendering, so recover from the daemon rather than reporting "no messages".
+    const effective = page.messages.length === 0 && before === undefined && await seedFromDaemon(alias, limit)
+      ? messages.listBySession(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, alias, { limit })
+      : page;
     if (c.req.query("view") === "compact") {
-      return c.json({ ...page, messages: page.messages.map(compactHistoryMessage) });
+      return c.json({ ...effective, messages: effective.messages.map(compactHistoryMessage) });
     }
-    return c.json(page);
+    return c.json(effective);
   });
 
   app.post("/api/instances/:id/rpc", async (c) => {

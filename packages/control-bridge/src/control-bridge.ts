@@ -330,6 +330,19 @@ async function dispatchControlRequest(
         ),
       };
     }
+    case MSG.sessionsHistory: {
+      const input = parseControlPayload(MSG.sessionsHistory, payload);
+      if (!input)
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.sessionsHistory}: malformed payload`,
+        );
+      return await control.readSessionHistory(
+        input.chatKey,
+        input.sessionAlias,
+        input.limit,
+      );
+    }
     case MSG.sessionsRemove: {
       const input = parseControlPayload(MSG.sessionsRemove, payload);
       if (!input)

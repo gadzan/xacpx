@@ -273,6 +273,22 @@ export interface ControlNativeSessionInfo {
   cwd?: string;
 }
 
+/** One recovered turn, in the same shape the dashboard already renders. */
+export interface ControlSessionHistoryMessage {
+  direction: "in" | "out";
+  text: string;
+  parts?: Array<{ kind: string; text?: string }>;
+}
+
+export interface ControlSessionHistoryResult {
+  messages: ControlSessionHistoryMessage[];
+  hasMore: boolean;
+}
+
+/** Default page of recovered turns; a session can carry thousands. */
+const DEFAULT_SESSION_HISTORY_LIMIT = 200;
+const MAX_SESSION_HISTORY_LIMIT = 1000;
+
 export interface ControlWorkspaceInfo {
   name: string;
   cwd: string;
@@ -358,6 +374,13 @@ export interface ControlServiceDeps {
   sessionForks?: SessionForkStore;
   /** Test seam for the acpx-record history read; production uses the canonical scan. */
   readSessionForkHistory?: typeof readTransportSessionHistory;
+  /**
+   * Reads an ordinary session's prior transcript off the agent's own record.
+   *
+   * Injected so tests can stand in for the disk; production uses
+   * `readTransportSessionHistory`.
+   */
+  readSessionHistory?: typeof readTransportSessionHistory;
   // Read-only config views + a persisting workspace creator. Supplied by main.ts
   // where the live AppConfig and ConfigStore are in scope; created workspaces are
   // written back into the live config so SessionService validation sees them.
@@ -1669,6 +1692,63 @@ export class ControlService {
       ...(s.updatedAt !== undefined ? { updatedAt: s.updatedAt } : {}),
       ...(s.cwd !== undefined ? { cwd: s.cwd } : {}),
     }));
+  }
+
+  /**
+   * Recover an ordinary session's prior transcript from the agent's own record.
+   *
+   * The dashboard's cache only speeds up rendering; the daemon is the source of
+   * truth. A session opened in a fresh browser, or one whose in-memory transcript
+   * was lost, still has its turns on disk and this is the way back to them.
+   *
+   * Deliberately best-effort: an agent whose records this daemon cannot read
+   * yields an empty transcript rather than an error, because a session without
+   * recovered history is still a usable session.
+   */
+  async readSessionHistory(
+    chatKey: string,
+    sessionAlias: string,
+    limit?: number,
+  ): Promise<ControlSessionHistoryResult> {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias = this.lookupInternalAlias(channelId, sessionAlias);
+    const record = this.deps.sessions.getLogicalSessionRecord?.(internalAlias);
+    const transportSession = record?.transport_session;
+    if (!record || !transportSession) {
+      return { messages: [], hasMore: false };
+    }
+    // `cwd` is NOT passed: the record's cwd and the session's workspace disagree
+    // often enough that filtering on it silently drops every message. The
+    // transport session name is already unique per agent launch.
+    const history: NativeHistoryMessage[] = await (
+      this.deps.readSessionHistory ?? readTransportSessionHistory
+    )({
+      transportSession,
+      onDiagnostic: (diagnostic) =>
+        this.deps.logger?.debug("control.session.history", diagnostic, {
+          sessionAlias,
+        }),
+    });
+    const cap = Math.min(Math.max(limit ?? DEFAULT_SESSION_HISTORY_LIMIT, 1), MAX_SESSION_HISTORY_LIMIT);
+    const kept = history.length > cap ? history.slice(-cap) : history;
+    return {
+      messages: kept.map((message) => ({
+        direction: message.role === "user" ? "in" : "out",
+        text: message.text,
+        ...(message.parts && message.parts.length > 0
+          ? {
+              parts: message.parts.map((part) =>
+                part.kind === "text"
+                  ? { kind: "text", text: part.text }
+                  : part.kind === "reasoning"
+                    ? { kind: "reasoning", text: part.text }
+                    : { kind: "tool" },
+              ),
+            }
+          : {}),
+      })),
+      hasMore: history.length > kept.length,
+    };
   }
 
   async createSession(

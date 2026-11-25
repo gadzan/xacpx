@@ -104,6 +104,7 @@ var MSG = {
   sessionsList: "control.sessions.list",
   sessionsCreate: "control.sessions.create",
   sessionsNativeList: "control.sessions.native.list",
+  sessionsHistory: "control.sessions.history",
   sessionsRemove: "control.sessions.remove",
   sessionsArchive: "control.sessions.archive",
   sessionsUnarchive: "control.sessions.unarchive",
@@ -1469,6 +1470,14 @@ var validateSessionsNativeList = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.agent) && isStr(o.workspace) ? o : null;
 };
+var validateSessionsHistory = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.chatKey) || !isStr(o.sessionAlias))
+    return null;
+  if (o.limit !== undefined && (typeof o.limit !== "number" || !Number.isInteger(o.limit) || o.limit <= 0))
+    return null;
+  return o;
+};
 var validateSessionsRemove = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.alias) ? o : null;
@@ -2342,6 +2351,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsList]: validateSessionsList,
   [MSG.sessionsCreate]: validateSessionsCreate,
   [MSG.sessionsNativeList]: validateSessionsNativeList,
+  [MSG.sessionsHistory]: validateSessionsHistory,
   [MSG.sessionsRemove]: validateSessionsRemove,
   [MSG.sessionsArchive]: validateSessionsArchive,
   [MSG.sessionsUnarchive]: validateSessionsUnarchive,

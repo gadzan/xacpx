@@ -18,6 +18,16 @@ export declare const MSG: {
     readonly sessionsList: "control.sessions.list";
     readonly sessionsCreate: "control.sessions.create";
     readonly sessionsNativeList: "control.sessions.native.list";
+    /**
+     * Recover an ordinary session's prior transcript from the agent's own on-disk
+     * record.
+     *
+     * The dashboard keeps a client-side cache, but that cache is only a speed-up:
+     * the daemon is the source of truth. Without this request a session opened on a
+     * fresh browser (or after the in-memory transcript was lost) has no way back to
+     * history the daemon can still read.
+     */
+    readonly sessionsHistory: "control.sessions.history";
     readonly sessionsRemove: "control.sessions.remove";
     readonly sessionsArchive: "control.sessions.archive";
     readonly sessionsUnarchive: "control.sessions.unarchive";
@@ -407,6 +417,28 @@ export interface SessionsNativeListPayload {
 }
 export interface SessionsNativeListResult {
     sessions: NativeSessionDto[];
+}
+/** One recovered turn, shaped for rendering. */
+export interface SessionHistoryMessageDto {
+    direction: "in" | "out";
+    text: string;
+    /** Ordered transcript for agent turns; absent when only flat text is known. */
+    parts?: Array<{
+        kind: string;
+        text?: string;
+    }>;
+}
+export interface SessionsHistoryPayload {
+    /** Server-stamped `relay:<accountId>`; scopes the alias to that channel. */
+    chatKey: string;
+    sessionAlias: string;
+    /** Return at most this many of the most recent messages. */
+    limit?: number;
+}
+export interface SessionsHistoryResult {
+    messages: SessionHistoryMessageDto[];
+    /** True when older messages exist beyond `limit`. */
+    hasMore: boolean;
 }
 export interface SessionsRemovePayload {
     /** Server-stamped `relay:<accountId>`; scopes the alias to that channel. */
