@@ -62,116 +62,121 @@ async function copyCommand() {
     <div aria-hidden="true" class="login-glow"></div>
     <div aria-hidden="true" class="login-grid"></div>
 
-    <div class="relative flex w-[22rem] max-w-full flex-col items-center">
-      <!-- brand lockup above the card; the window chrome is gone -->
-      <div class="mb-5 flex flex-col items-center gap-2">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <div class="relative flex w-[23rem] max-w-full flex-col items-center">
+      <!-- Brand lockup: the gradient mark is the product's identity, so it is the one
+           saturated element on the page. Everything below stays neutral. -->
+      <div class="mb-6 flex flex-col items-center gap-2.5">
+        <svg width="52" height="52" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <defs>
             <linearGradient id="loginBrandX" x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse">
-              <stop stop-color="#4F9BF5" />
-              <stop offset="1" stop-color="#69D689" />
+              <stop style="stop-color: rgb(var(--c-accent))" />
+              <stop offset=".55" style="stop-color: rgb(var(--c-info))" />
+              <stop offset="1" style="stop-color: rgb(var(--c-run-bright))" />
             </linearGradient>
           </defs>
-          <path d="M5 5 L19 19 M19 5 L5 19" stroke="url(#loginBrandX)" stroke-width="3.4" stroke-linecap="round" />
+          <path d="M5.5 5.5 L18.5 18.5 M18.5 5.5 L5.5 18.5" stroke="url(#loginBrandX)" stroke-width="4" stroke-linecap="round" />
         </svg>
-        <h1 class="text-ui font-semibold tracking-tight text-fg">{{ localMode ? $t("login.localTitle") : "xacpx relay" }}</h1>
+        <div class="flex flex-col items-center gap-1.5">
+          <h1 class="text-base font-semibold tracking-tight text-fg">{{ localMode ? $t("login.localTitle") : "xacpx relay" }}</h1>
+          <p class="text-xs text-fg-muted">{{ localMode ? $t("login.localSubtitle") : $t("login.subtitle") }}</p>
+        </div>
       </div>
 
       <form
         data-test="login-window"
-        class="relative w-full overflow-hidden rounded-2xl bg-surface font-mono"
+        class="relative w-full rounded-card bg-surface p-6 shadow-card ring-1 ring-hairline-strong"
         @submit.prevent="submit"
       >
-        <!-- body -->
-        <div class="px-4 pb-5 pt-4">
-          <!-- command hint + copy -->
-          <div v-if="!localMode" class="flex items-center gap-2">
-            <p class="flex-1 text-ui text-fg"><span class="select-none text-run">$</span> {{ ADD_TOKEN_CMD }}</p>
+        <!-- Setup hint: what to do on the host, with the command it names. -->
+        <div v-if="!localMode" class="mb-5 rounded-input bg-surface-2 p-3">
+          <p class="mb-2 text-xs font-medium text-fg">{{ $t("login.setupHeading") }}</p>
+          <div class="flex items-center gap-2">
+            <code class="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">{{ ADD_TOKEN_CMD }}</code>
             <button
               type="button"
               data-test="copy-command"
               :title="$t('login.copyCommand')"
               :aria-label="$t('login.copyCommand')"
-              class="flex h-10 w-10 items-center justify-center rounded-sm transition-colors hover:bg-bg lg:h-8 lg:w-8"
-              :class="copied ? 'text-run' : 'text-fg-muted hover:text-fg'"
+              class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="copyCommand"
             >
-              <svg v-if="!copied" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="9" y="9" width="13" height="13" rx="2" />
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
               </svg>
-              <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M20 6 9 17l-5-5" />
               </svg>
             </button>
           </div>
-          <p id="login-hint" class="mb-5 mt-1 text-xs leading-relaxed text-fg-muted">{{ localMode ? $t("login.localRunHint") : $t("login.runHint") }}</p>
+          <p id="login-hint" class="mt-2 text-xs leading-relaxed text-fg-muted">{{ $t("login.runHint") }}</p>
+        </div>
+        <p v-else id="login-hint" class="mb-5 text-xs leading-relaxed text-fg-muted">{{ $t("login.localRunHint") }}</p>
 
-          <!-- prompt label -->
-          <div aria-hidden="true" class="mb-2 flex items-center gap-1.5 text-xs text-fg-muted">
-            <span class="text-run">▸</span> access-token
-          </div>
+        <label for="access-token" class="mb-2 block text-xs font-medium text-fg">{{ $t("login.tokenLabel") }}</label>
 
-          <!-- token input -->
-          <div class="relative">
-            <input
-              id="access-token"
-              v-model="token"
-              data-test="token-input"
-              :type="revealed ? 'text' : 'password'"
-              :placeholder="$t('login.tokenPlaceholder')"
-              :aria-label="$t('login.tokenLabel')"
-              aria-describedby="login-hint"
-              autocomplete="off"
-              :disabled="pending"
-              class="w-full rounded-lg bg-surface-2 py-2.5 pl-3 pr-12 text-sm tracking-[0.05em] text-fg placeholder:tracking-normal placeholder:text-fg-muted disabled:opacity-50"
-            />
-            <button
-              type="button"
-              data-test="toggle-visibility"
-              :title="$t('login.toggleVisibility')"
-              :aria-label="$t('login.toggleVisibility')"
-              :aria-pressed="revealed"
-              class="absolute right-1.5 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-sm text-fg-muted transition-colors hover:bg-surface hover:text-fg lg:h-8 lg:w-8"
-              @click="revealed = !revealed"
-            >
-              <svg v-if="!revealed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-              <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M9.9 4.2A11 11 0 0 1 12 4c6.5 0 10 7 10 7a13 13 0 0 1-1.7 2.7M6.6 6.6A13 13 0 0 0 2 11s3.5 7 10 7a11 11 0 0 0 3.4-.5M3 3l18 18M9.9 9.9a3 3 0 0 0 4.2 4.2" />
-              </svg>
-            </button>
-          </div>
-
-          <label class="mt-3 flex cursor-pointer items-center gap-2 text-xs text-fg-muted">
-            <input
-              v-model="remember"
-              data-test="remember-token"
-              type="checkbox"
-              class="accent-accent"
-              :disabled="pending"
-            />
-            {{ $t("login.remember") }}
-          </label>
-
-          <!-- error -->
-          <p v-if="auth.error" data-test="login-error" role="alert" class="mt-3 flex items-start gap-1.5 text-xs text-danger-text">
-            <span class="font-bold">!</span><span>{{ errorText }}</span>
-          </p>
-
-          <!-- submit: solid accent primary action -->
-          <button
-            type="submit"
-            data-test="signin"
+        <!-- token input -->
+        <div class="relative">
+          <input
+            id="access-token"
+            v-model="token"
+            data-test="token-input"
+            :type="revealed ? 'text' : 'password'"
+            :placeholder="$t('login.tokenPlaceholder')"
+            aria-describedby="login-hint"
+            autocomplete="off"
             :disabled="pending"
-            class="login-btn group mt-5 flex w-full items-center gap-2.5 rounded-lg bg-accent px-3 py-2.5 text-sm font-semibold text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-default disabled:opacity-50"
+            class="w-full rounded-input bg-bg py-2.5 pl-3 pr-11 font-mono text-sm tracking-[0.05em] text-fg ring-1 ring-hairline placeholder:font-sans placeholder:tracking-normal placeholder:text-fg-muted transition-shadow focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+          />
+          <button
+            type="button"
+            data-test="toggle-visibility"
+            :title="$t('login.toggleVisibility')"
+            :aria-label="$t('login.toggleVisibility')"
+            :aria-pressed="revealed"
+            class="absolute right-1 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            @click="revealed = !revealed"
           >
-            <span class="login-arrow group-hover:translate-x-0.5" :class="pending ? 'opacity-60' : ''">▸</span>
-            <span>{{ pending ? $t("login.signingIn") : $t("login.signIn") }}</span>
+            <svg v-if="!revealed" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+            <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9.9 4.2A11 11 0 0 1 12 4c6.5 0 10 7 10 7a13 13 0 0 1-1.7 2.7M6.6 6.6A13 13 0 0 0 2 11s3.5 7 10 7a11 11 0 0 0 3.4-.5M3 3l18 18M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+            </svg>
           </button>
         </div>
+
+        <label class="mt-3 flex cursor-pointer items-center gap-2 text-xs text-fg-muted">
+          <input
+            v-model="remember"
+            data-test="remember-token"
+            type="checkbox"
+            class="accent-accent"
+            :disabled="pending"
+          />
+          {{ $t("login.remember") }}
+        </label>
+
+        <!-- error -->
+        <p v-if="auth.error" data-test="login-error" role="alert" class="mt-3 flex items-start gap-1.5 rounded-input bg-danger/10 px-2.5 py-2 text-xs leading-relaxed text-danger-text">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="mt-0.5 shrink-0" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" /><path d="M12 7v6M12 17h.01" />
+          </svg>
+          <span>{{ errorText }}</span>
+        </p>
+
+        <button
+          type="submit"
+          data-test="signin"
+          :disabled="pending"
+          class="mt-5 flex w-full items-center justify-center gap-2 rounded-input bg-accent px-3 py-2.5 text-sm font-semibold text-on-accent shadow-press transition-colors hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 disabled:cursor-default disabled:opacity-50"
+        >
+          <svg v-if="pending" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" class="animate-spin" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-6.2-8.6" />
+          </svg>
+          <span>{{ pending ? $t("login.signingIn") : $t("login.signIn") }}</span>
+        </button>
       </form>
     </div>
   </div>
@@ -205,12 +210,4 @@ async function copyCommand() {
 /* Focus rings come from the global 2px solid accent rule in style.css; the
    login surface no longer overrides them now that the primary action is
    accent-filled rather than green. */
-.login-arrow {
-  transition: transform var(--dur-fast) var(--ease);
-}
-@media (prefers-reduced-motion: reduce) {
-  .login-arrow {
-    transition: none;
-  }
-}
 </style>

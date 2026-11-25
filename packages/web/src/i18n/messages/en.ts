@@ -674,8 +674,11 @@ export default {
   login: {
     tokenLabel: "Access token",
     tokenPlaceholder: "paste token…",
+    subtitle: "Sign in to reach your machines",
+    setupHeading: "Mint an access token on the host",
     runHint: "Run this on the host to mint a token, then paste it below.",
     localTitle: "xacpx",
+    localSubtitle: "Local console",
     localRunHint: "Paste the access token configured for this local dashboard.",
     localInvalid: "That token is invalid. Check the token configured for this local dashboard.",
     signIn: "Sign in",

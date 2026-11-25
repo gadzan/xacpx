@@ -670,8 +670,11 @@ export default {
   login: {
     tokenLabel: "访问令牌",
     tokenPlaceholder: "粘贴 token…",
+    subtitle: "登录以继续访问你的机器",
+    setupHeading: "在主机上生成访问令牌",
     runHint: "在主机上运行以生成 token，然后粘贴到下面。",
     localTitle: "xacpx",
+    localSubtitle: "本地控制台",
     localRunHint: "粘贴为本机看板配置的访问令牌。",
     localInvalid: "令牌无效。请核对本机看板配置的访问令牌。",
     signIn: "登录",
