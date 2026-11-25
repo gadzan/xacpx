@@ -22,7 +22,7 @@
  *   node ./scripts/dev-channel-web.mjs --unlink  # go back to the npm package
  */
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,11 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_HOME = process.env.XACPX_PLUGIN_HOME ?? join(homedir(), ".xacpx", "plugins");
 const SCOPE = join(PLUGIN_HOME, "node_modules", "@ganglion");
-const PACKAGES = ["channel-web", "channel-relay"];
+// `web` is the dashboard the local console serves: `channel-web` resolves its
+// webRoot through `@ganglion/xacpx-web`, so leaving it out serves whatever the
+// last npm install left behind and every dashboard build in this checkout is
+// silently ignored.
+const PACKAGES = ["channel-web", "channel-relay", "web"];
 const BACKUP_SUFFIX = ".npm-backup";
 const SHIM_DIR = join(PLUGIN_HOME, "node_modules", "xacpx");
 
@@ -74,6 +78,16 @@ function link(source, target) {
   execFileSync("ln", ["-s", source, target], { stdio: "pipe" });
 }
 
+/** True when `target` is already a link whose destination is `source`. */
+function isLinkedTo(target, source) {
+  try {
+    const resolved = realpathSync(target);
+    return resolved === realpathSync(source);
+  } catch {
+    return false;
+  }
+}
+
 function linkPackages() {
   if (options.has("--build")) {
     log("building channel-web (which builds the dashboard, control bridge and channel-relay first)");
@@ -81,15 +95,33 @@ function linkPackages() {
   }
   for (const name of PACKAGES) {
     const source = join(ROOT, "packages", name);
-    if (!existsSync(join(source, "dist", "index.js"))) {
+    // `web` ships its entry at the package root (index.js) and the dashboard under
+    // dist/; the channel packages build their entry into dist/index.js.
+    const entry = name === "web"
+      ? join(source, "dist", "index.html")
+      : join(source, "dist", "index.js");
+    if (!existsSync(entry)) {
       throw new Error(`${name} is not built; run with --build or \`bun run build:channel-web\``);
     }
     const target = join(SCOPE, `xacpx-${name}`);
+    const backup = `${target}${BACKUP_SUFFIX}`;
+    // Re-linking an already-linked package must be a no-op. Renaming it again would
+    // collide with the backup kept on the first run (EPERM) and, worse, leave the
+    // checkout's build replaced by its own backup.
+    if (isLinkedTo(target, source)) {
+      log(`${name} already linked -> ${source}`);
+      continue;
+    }
     // A junction to a path that no longer exists looks like a file to some
-    // tools, so remove without following it.
+    // tools, so remove without following it. Only keep a backup when there is a
+    // real npm copy to keep.
     if (existsSync(target) || readdirSync(SCOPE).includes(`xacpx-${name}`)) {
-      renameSync(target, `${target}${BACKUP_SUFFIX}`);
-      log(`kept the npm copy as ${name}${BACKUP_SUFFIX}`);
+      if (!existsSync(backup)) {
+        renameSync(target, backup);
+        log(`kept the npm copy as ${name}${BACKUP_SUFFIX}`);
+      } else {
+        rmSync(target, { recursive: true, force: true });
+      }
     }
     link(source, target);
     log(`linked ${name} -> ${source}`);
