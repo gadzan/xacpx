@@ -48,17 +48,25 @@ const props = withDefaults(defineProps<{
    * provides the surface — so it drops the floating chrome and the shadow.
    */
   variant?: "drawer" | "inline";
+  /** Hard cap on visible rows, applied after the viewport limit. `1` turns the stack
+   *  into a single current-activity line for surfaces that only want the latest. */
+  maxItems?: number;
 }>(), {
   streaming: false,
   terminal: null,
   variant: "drawer",
+  maxItems: undefined,
 });
 
 const emit = defineEmits<{ reveal: [key: string] }>();
 
 const { t } = useI18n();
 const isMobile = useIsMobile();
-const limit = computed(() => traceLiveLimit(isMobile.value));
+const limit = computed(() => {
+  const viewport = traceLiveLimit(isMobile.value);
+  const capped = props.maxItems === undefined ? viewport : Math.min(viewport, props.maxItems);
+  return Math.max(capped, 0);
+});
 
 const THROTTLE_MS = TRACE_LIVE_THROTTLE_MS;
 const ROW_HEIGHT = 34;

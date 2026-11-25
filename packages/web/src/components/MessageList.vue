@@ -809,6 +809,7 @@ watch(
                 variant="inline"
                 :nodes="liveStackNodes"
                 :streaming="true"
+                :max-items="1"
                 @reveal="emit('openDetail', {})"
               />
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
@@ -827,6 +828,7 @@ watch(
               variant="inline"
               :nodes="liveStackNodes"
               :streaming="true"
+              :max-items="1"
               @reveal="emit('openDetail', {})"
             />
             <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />

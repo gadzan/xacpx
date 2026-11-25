@@ -370,21 +370,24 @@ const noticeToneClass = computed(() => {
       <span data-test="timeline-activity-state" class="text-xs text-fg-muted">
         {{ $t(activityStateLabel) }}
       </span>
+      <!-- The single latest activity, above the bubble rather than inside it. Inside,
+           it read as part of the reply that had not been written yet; here it is a
+           separate progress line that disappears with the live turn. Only the newest
+           row is shown: the reply is what the reader is waiting for, and a scrolling
+           log above it competes with that. -->
+      <TraceLiveStack
+        v-if="live && liveStackNodes.length"
+        variant="inline"
+        :nodes="liveStackNodes"
+        :streaming="true"
+        :max-items="1"
+        @reveal="emit('openDetail', messageDetail)"
+      />
       <div
         v-if="live"
         data-test="timeline-live-bubble"
         class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
       >
-        <!-- What the Bot is doing right now, in the bubble the reply will land in.
-             Above the text because it explains the wait; it disappears with the live
-             turn, so a settled conversation never accumulates progress noise. -->
-        <TraceLiveStack
-          v-if="liveStackNodes.length"
-          variant="inline"
-          :nodes="liveStackNodes"
-          :streaming="true"
-          @reveal="emit('openDetail', messageDetail)"
-        />
         <StreamMarkdown
           v-if="live.text"
           :text="live.text"

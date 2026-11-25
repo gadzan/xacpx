@@ -37,7 +37,6 @@ import MobileSheet from "./MobileSheet.vue";
 import MobileConnStrip from "./MobileConnStrip.vue";
 import { avatarHasOpenInteraction, botAvatarState } from "../lib/bot-avatar-state";
 import ConversationTimeline from "./ConversationTimeline.vue";
-import ConversationStatusBar from "./ConversationStatusBar.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
 import TraceOverlay from "./TraceOverlay.vue";
@@ -598,15 +597,6 @@ const timelineFeed = useConversationTimelineFeed({
   reloadKey: timelineReloadKey,
 });
 
-const timelineSpeakerName = computed(() => {
-  const id = activeSpeakerTurnId(undefined, directBotsStore.activeMemberTurn ? [directBotsStore.activeMemberTurn] : []);
-  return id ? bot.value?.name : undefined;
-});
-
-
-function handleStopAll(): void {
-  void directBotsStore.stopCurrentAndQueued();
-}
 </script>
 
 <template>
@@ -887,18 +877,11 @@ function handleStopAll(): void {
       <PlanPanel :entries="directBotsStore.planEntries" class="w-full" />
     </div>
 
-    <ConversationStatusBar
-      v-if="timelineSupported"
-      :run="directBotsStore.activeRun"
-      :member-turns="directBotsStore.activeMemberTurn ? [directBotsStore.activeMemberTurn] : []"
-      :active-speaker-name="timelineSpeakerName"
-      :stopping="!!directBotsStore.cancellingRunId"
-      hide-stop-all
-      @stop-all="handleStopAll"
-      @open-detail="openTimelineDetail"
-    />
+    <!-- No status bar on a Direct Bot. It only ever had one speaker, so its one line
+         read "<Bot> is speaking" — a caption repeating what the bubble already shows —
+         and Stop now lives in the composer. The Group pane keeps its bar: there the
+         round/speaker progress is real information. -->
 
-    <!-- Prompt Composer -->
     <ConversationPromptInput
       ref="composerRef"
       :disabled="!timelineSupported || bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
