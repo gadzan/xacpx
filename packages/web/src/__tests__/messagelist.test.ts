@@ -142,6 +142,38 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="cmd-output"]').exists()).toBe(false);
   });
 
+  it("reports what a working Bot is doing in the transcript, and only while it works", async () => {
+    const parts = [{
+      type: "tool" as const,
+      step: {
+        toolCallId: "t1",
+        toolName: "Bash",
+        kind: "execute" as const,
+        status: "running" as const,
+        title: "npm test",
+        detail: { type: "command" as const, command: "npm test", output: "" },
+      },
+    }];
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: { parts, startedAt: "now" } as never,
+      },
+    });
+    await wrapper.vm.$nextTick();
+
+    // The live stack sits in the transcript, so the reader does not have to open
+    // the run drawer to see the Bot working.
+    const stack = wrapper.find('[data-test="trace-live-stack"]');
+    expect(stack.exists()).toBe(true);
+    expect(stack.attributes("data-variant")).toBe("inline");
+    expect(wrapper.find('[data-test="trace-live-row"]').exists()).toBe(true);
+
+    // Clicking it opens the drawer, which owns the full process and Run controls.
+    await wrapper.find('[data-test="trace-live-row"]').trigger("click");
+    expect(wrapper.emitted("openDetail")).toBeTruthy();
+  });
+
   it("renders agent output as markdown without a message-level expand step", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [msg({ direction: "out", text: "**bold**" })], liveTurn: null },

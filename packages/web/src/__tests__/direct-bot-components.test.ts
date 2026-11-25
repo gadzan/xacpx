@@ -430,11 +430,10 @@ describe("Direct Bot Components", () => {
       expect(values).toEqual(["reviewer"]);
     });
 
-    it.each([
-      { label: "dedicated workspace by default", workspaces: [{ name: "repo", cwd: "/repo" }], selectedWorkspace: undefined },
-      { label: "dedicated workspace with no registered workspaces", workspaces: [], selectedWorkspace: undefined },
-      { label: "an explicitly selected workspace", workspaces: [{ name: "repo", cwd: "/repo" }], selectedWorkspace: "repo" },
-    ])("submits create bot with $label", async ({ workspaces, selectedWorkspace }) => {
+    it("creates every new Bot in a daemon-allocated dedicated workspace", async () => {
+      // A Bot owns its directory: offering a shared workspace at create time let two
+      // Bots land in the same tree. The picker is edit-only now, so create always
+      // omits `workspace` and the daemon names the directory after the Bot.
       const instances = useInstancesStore();
       instances.instances = [
         {
@@ -445,7 +444,7 @@ describe("Direct Bot Components", () => {
           sessions: [],
           capabilities: [RELAY_CAPABILITIES.botsDedicatedWorkspaceV1],
           agents: [{ name: "codex", driver: "codex" }],
-          workspaces,
+          workspaces: [{ name: "repo", cwd: "/repo" }],
           agentCatalog: [],
         } as never,
       ];
@@ -456,7 +455,7 @@ describe("Direct Bot Components", () => {
         id: "bot_1",
         name: "Code Reviewer",
         agent: "codex",
-        workspace: selectedWorkspace ?? "code-reviewer",
+        workspace: "code-reviewer",
         instructions: "Look for bugs",
         enabled: true,
         profileRevision: 1,
@@ -465,32 +464,14 @@ describe("Direct Bot Components", () => {
       });
 
       const wrapper = mount(BotDialog, {
-        props: {
-          instanceId: "i1",
-          instanceName: "Local",
-        },
-        global: {
-          plugins: [i18n],
-        },
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
       });
 
       await flushPromises();
-      expect(wrapper.find("#bot-workspace").attributes("data-selected")).toBe("");
-      expect(wrapper.find("#bot-workspace").text()).toContain(i18n.global.t("bot.fields.dedicatedWorkspace"));
+      // No picker at create time; the form says where the directory will come from.
+      expect(wrapper.find("#bot-workspace").exists()).toBe(false);
       expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').text()).toContain("~/.xacpx/bots/");
-      if (selectedWorkspace) {
-        await wrapper.find("#bot-workspace").trigger("click");
-        await wrapper.find(`[data-value="${selectedWorkspace}"]`).trigger("click");
-        expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
-      }
-      if (workspaces.length > 0) {
-        expect(instances.getAgentCapabilities).toHaveBeenCalledWith("i1", { agent: "codex", workspace: "repo" });
-      } else {
-        expect(instances.getAgentCapabilities).not.toHaveBeenCalled();
-        // The no-preview state is reported by the icon, not a prose line.
-        expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("title"))
-          .toContain(i18n.global.t("bot.fields.workspacePreviewHint"));
-      }
 
       await wrapper.find("#bot-name").setValue("Code Reviewer");
       await wrapper.find("#bot-instructions").setValue("Look for bugs");
@@ -502,16 +483,14 @@ describe("Direct Bot Components", () => {
       expect(createSpy).toHaveBeenCalledWith("i1", expect.objectContaining({
         name: "Code Reviewer",
         agent: "codex",
-        // The create-time avatar is drawn at random; only its character shape is contractual.
         avatar: expect.objectContaining({ version: 1, kind: "character", motion: "auto" }),
         instructions: "Look for bugs",
         model: "custom-model",
         effort: "high",
         enabled: true,
       }));
-      const payload = createSpy.mock.calls[0]![1];
-      if (selectedWorkspace) expect(payload.workspace).toBe(selectedWorkspace);
-      else expect(payload).not.toHaveProperty("workspace");
+      // Omitting `workspace` is what makes the daemon allocate the directory.
+      expect(createSpy.mock.calls[0]![1]).not.toHaveProperty("workspace");
       expect(wrapper.emitted("saved")).toBeTruthy();
       expect(wrapper.emitted("close")).toBeTruthy();
     });
@@ -602,11 +581,11 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain(i18n.global.t("bot.validation.workspaceRequired"));
     });
 
-    it("with the capability defaults to a new dedicated workspace and omits workspace from the payload", async () => {
+    it("with the capability always allocates a new dedicated workspace and omits workspace from the payload", async () => {
       const { wrapper, createSpy } = mountCreateDialog({ dedicated: true });
       await flushPromises();
-      expect(wrapper.find("#bot-workspace").attributes("data-selected")).toBe("");
-      expect(wrapper.find("#bot-workspace").text()).toBe(i18n.global.t("bot.fields.dedicatedWorkspace"));
+      // No picker at all: the daemon names the directory after the Bot.
+      expect(wrapper.find("#bot-workspace").exists()).toBe(false);
       expect(wrapper.find('label[for="bot-workspace"]').text()).not.toContain("*");
       expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(true);
       await wrapper.find("#bot-name").setValue("Reviewer");
@@ -615,7 +594,10 @@ describe("Direct Bot Components", () => {
       expect(createSpy.mock.calls[0]![1]).not.toHaveProperty("workspace");
     });
 
-    it.each(["!!!", "🤖"])("name %s with New workspace shows a live error under the name and disables Create", async (botName) => {
+    it.each(["!!!", "🤖"])("name %s cannot be turned into a workspace name, so Create stays disabled", async (botName) => {
+      // The directory is derived from the Bot name, so a name with no letter or
+      // digit has no directory to create. There is no workspace picker to escape
+      // through any more: the error is the only feedback and the fix is the name.
       const { wrapper, createSpy, createButton } = mountCreateDialog({ dedicated: true });
       await flushPromises();
       const invalid = i18n.global.t("bot.validation.dedicatedWorkspaceNameInvalid");
@@ -632,15 +614,11 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       expect(createSpy).not.toHaveBeenCalled();
 
-      // Picking an explicit workspace clears the error and enables Create.
-      await wrapper.find("#bot-workspace").trigger("click");
-      await wrapper.find('[data-value="repo"]').trigger("click");
+      // A usable name clears the error and enables Create.
+      await wrapper.find("#bot-name").setValue("Reviewer");
       await flushPromises();
       expect(wrapper.find('[data-test="bot-name-error"]').exists()).toBe(false);
       expect((createButton().element as HTMLButtonElement).disabled).toBe(false);
-      await createButton().trigger("click");
-      await flushPromises();
-      expect(createSpy.mock.calls[0]![1]).toMatchObject({ name: botName, workspace: "repo" });
     });
 
     it("a new Bot does not show the applies-to-later-turns note under system instructions", async () => {
@@ -822,8 +800,11 @@ describe("Direct Bot Components", () => {
       return { wrapper, updateSpy };
     }
 
-    it("offers a fresh dedicated workspace while editing a Bot that has none", async () => {
-      const { wrapper, updateSpy } = mountEditDialog({
+    it("does not offer a second dedicated workspace while editing a Bot that has none", async () => {
+      // Requesting a fresh directory would orphan the one the Bot already owns: the
+      // daemon refuses it, so the form must not offer it. The picker stays for
+      // choosing among shared workspaces.
+      const { wrapper } = mountEditDialog({
         capabilities: [
           RELAY_CAPABILITIES.botsDedicatedWorkspaceV1,
           RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1,
@@ -831,13 +812,9 @@ describe("Direct Bot Components", () => {
       });
       await flushPromises();
       await flushPromises();
+      expect(wrapper.find("#bot-workspace").exists()).toBe(true);
       await wrapper.find("#bot-workspace").trigger("click");
-      expect(wrapper.findAll("[data-value]").map((option) => option.attributes("data-value"))).toEqual(["", "repo"]);
-      await wrapper.find('[data-value=""]').trigger("click");
-      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(true);
-      await wrapper.find("form").trigger("submit.prevent");
-      await flushPromises();
-      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", { dedicatedWorkspace: true });
+      expect(wrapper.findAll("[data-value]").map((option) => option.attributes("data-value"))).toEqual(["repo"]);
     });
 
     it("labels the Bot's own dedicated workspace instead of listing it as a workspace option", async () => {
@@ -867,6 +844,46 @@ describe("Direct Bot Components", () => {
       const patch = updateSpy.mock.calls[0]?.[2];
       expect(patch).not.toHaveProperty("workspace");
       expect(patch).not.toHaveProperty("dedicatedWorkspace");
+    });
+
+    it("lets a Bot come back to its own dedicated workspace after switching away", async () => {
+      // Editing may move the Bot to a shared workspace, and must always be able to
+      // move it back: the owned directory stays registered, so leaving is not a
+      // one-way trip.
+      const { wrapper, updateSpy } = mountEditDialog({
+        capabilities: [
+          RELAY_CAPABILITIES.botsDedicatedWorkspaceV1,
+          RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1,
+        ],
+        workspace: "reviewer-ws",
+        dedicatedWorkspace: { name: "reviewer-ws", path: "/home/u/.xacpx/bots/reviewer-ws" },
+      });
+      await flushPromises();
+      await flushPromises();
+
+      // Move to the shared workspace.
+      await wrapper.find("#bot-workspace").trigger("click");
+      await wrapper.find('[data-value="repo"]').trigger("click");
+      await flushPromises();
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy.mock.calls[0]?.[2]).toMatchObject({ workspace: "repo" });
+
+      // And back to its own directory, which is still offered under the reserved label.
+      updateSpy.mockClear();
+      const { wrapper: again } = mountEditDialog({
+        capabilities: [
+          RELAY_CAPABILITIES.botsDedicatedWorkspaceV1,
+          RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1,
+        ],
+        workspace: "repo",
+        dedicatedWorkspace: { name: "reviewer-ws", path: "/home/u/.xacpx/bots/reviewer-ws" },
+      });
+      await flushPromises();
+      await flushPromises();
+      await again.find("#bot-workspace").trigger("click");
+      const values = again.findAll("[data-value]").map((option) => option.attributes("data-value"));
+      expect(values).toContain("reviewer-ws");
     });
 
     it("does not offer a fresh dedicated workspace on an instance without the update capability", async () => {
@@ -2801,7 +2818,11 @@ describe("Direct Bot Components", () => {
       const card = document.body.querySelector('[data-test="group-detail-card"]');
       expect(card).not.toBeNull();
       expect(card!.querySelector('[data-test="run-detail"]')).not.toBeNull();
-      expect(card!.querySelector('[data-test="run-member-row"]')).not.toBeNull();
+      // A single-member Run has nothing to switch between, so the drawer omits the
+      // member list and shows the selected member directly.
+      expect(card!.querySelector('[data-test="run-member-row"]')).toBeNull();
+      expect(card!.querySelector('[data-test="run-member-section"]')).toBeNull();
+      expect(card!.querySelector('[data-test="run-selected-member"]')).not.toBeNull();
       // Direct/single Runs have no sibling to stop: only Stop all exists.
       expect(card!.querySelector('[data-test="run-stop-member"]')).toBeNull();
       expect(card!.textContent).toContain("Direct trace");

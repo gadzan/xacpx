@@ -8,7 +8,6 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 import { useI18n } from "vue-i18n";
 import GroupTraceTimeline from "./GroupTraceTimeline.vue";
-import TraceLiveStack from "./TraceLiveStack.vue";
 import { isMachineFailureReason } from "../lib/failure-reason";
 import { useLiveDuration } from "../lib/run-duration";
 import { useIsMobile } from "../lib/use-dropdown";
@@ -105,13 +104,9 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
        height, nudging a reader who is below the top. Follow/freeze is owned by
        useTraceDrawerState instead. -->
   <div ref="contentEl" class="flex flex-col gap-3 text-sm [overflow-anchor:none]" data-test="group-run-detail">
-    <TraceLiveStack
-      v-if="nodes.length"
-      :nodes="nodes"
-      :streaming="traceStreaming === true && !terminalState"
-      :terminal="terminalState"
-      @reveal="traceDrawer.reveal"
-    />
+    <!-- The live "what is happening now" stack lives in the transcript bubble now.
+         Repeating it here meant a reader with the drawer open saw the same rolling
+         rows twice. -->
     <div v-if="memberTurn" class="min-w-0">
       <details v-if="hasBrief" data-test="group-member-brief" class="mt-2 text-xs text-fg-muted">
         <summary class="cursor-pointer rounded-sm py-1 font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent">

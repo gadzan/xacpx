@@ -191,7 +191,10 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
       </p>
     </section>
 
-    <section class="min-w-0" data-test="run-member-section">
+    <!-- A single-member Run has nothing to choose: the list would be one row whose
+         only action is already the selected member. Direct Bot runs are almost always
+         this shape, so the section is the group case's alone. -->
+    <section v-if="members.length > 1" class="min-w-0" data-test="run-member-section">
       <h3 class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-fg-muted">
         <Users :size="12" aria-hidden="true" />
         <span>{{ $t("conversation.runDetail.members") }}</span>

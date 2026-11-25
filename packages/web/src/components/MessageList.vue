@@ -6,6 +6,7 @@ import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
+import TraceLiveStack from "./TraceLiveStack.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import { AlertCircle, ArrowLeft, ArrowRight, CircleStop, Clock, GitFork, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
@@ -17,6 +18,7 @@ import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import { fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
+  deriveTurnPresentation,
   extractCollapsedTraceSummary,
   hasCollapsibleTrace,
   type CollapsedTraceSummary,
@@ -24,7 +26,7 @@ import {
 import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../lib/turn-layout";
 import { expandedTraces } from "../lib/trace-expansion";
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void>; forkNode?: (message: ChatMessage) => void; historyCapped?: { kept: number; dropped: number } | null }>();
-const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
+const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: []; openDetail: [payload: { runId?: string; memberTurnId?: string }] }>();
 
 // While a turn is in progress the live row body renders the ThinkingDots bubble
 // (the only liveness signal) until streamed content replaces it.
@@ -119,6 +121,25 @@ function traceSummaryOf(m: ChatMessage): CollapsedTraceSummary {
   traceSummaryCache.set(m, { parts, anchoredMessages, layoutCache, summary });
   return summary;
 }
+
+/**
+ * Live "what is happening now" rows for the in-flight turn.
+ *
+ * The same stack the run drawer shows, moved into the transcript where the reader
+ * already is: a working Bot reports what it is doing without opening the drawer.
+ * It disappears with the turn — a finished turn collapses to the existing trace
+ * summary line, so history never accumulates live chrome.
+ */
+const liveStackNodes = computed(() => {
+  const parts = props.liveTurn?.parts;
+  if (!parts?.length) return [];
+  return deriveTurnPresentation(parts, {
+    streaming: true,
+    ...(sentAgentMessageById.value.size > 0
+      ? { sentAgentMessageById: sentAgentMessageById.value }
+      : {}),
+  }).nodes;
+});
 
 
 // Presentation-only join (v0.3 spec §8): a SENT peer-message card anchors right after
@@ -783,6 +804,13 @@ watch(
           >
             <LiveTurnAvatar class="hidden lg:block" :driver="driver" />
             <div data-test="msg-streaming" class="min-w-0 flex-1">
+              <TraceLiveStack
+                v-if="liveStackNodes.length"
+                variant="inline"
+                :nodes="liveStackNodes"
+                :streaming="true"
+                @reveal="emit('openDetail', {})"
+              />
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
               <ThinkingDots v-else data-test="live-working" />
             </div>
@@ -794,6 +822,13 @@ watch(
              :style="enterStyle(0)">
           <LiveTurnAvatar class="hidden lg:block" :driver="driver" />
           <div data-test="msg-streaming" class="min-w-0 flex-1">
+            <TraceLiveStack
+              v-if="liveStackNodes.length"
+              variant="inline"
+              :nodes="liveStackNodes"
+              :streaming="true"
+              @reveal="emit('openDetail', {})"
+            />
             <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
             <ThinkingDots v-else data-test="live-working" />
           </div>

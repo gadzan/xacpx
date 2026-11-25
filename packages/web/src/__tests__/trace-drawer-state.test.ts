@@ -164,10 +164,17 @@ describe("trace drawer state", () => {
     wrapper.unmount();
   });
 
-  it("reveals and highlights the full-list row a live event was clicked on", async () => {
+  it("reveals and highlights a row the transcript's live stack was clicked on", async () => {
     const wrapper = mountContent([tool(0), tool(1)]);
     await flushPromises();
-    await wrapper.get('[data-test="trace-live-row"]').trigger("click");
+    // The live stack now lives in the chat bubble, so its click reaches the drawer
+    // through the shared reveal contract rather than a row rendered inside it.
+    // Driving that contract directly keeps this test about the reveal itself.
+    const drawer = (wrapper.vm as unknown as {
+      traceDrawer: { reveal: (key: string) => void };
+    }).traceDrawer;
+    drawer.reveal("tool:step-1");
+    await flushPromises();
     const row = wrapper.get('[data-trace-key="tool:step-1"]');
     expect(row.attributes("data-highlight")).toBe("true");
     wrapper.unmount();

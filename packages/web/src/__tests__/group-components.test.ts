@@ -1595,6 +1595,13 @@ describe("Group Components", () => {
           botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
           state: "running", createdAt: "now",
         },
+        // A second member: the drawer hides its member list for a single-member Run,
+        // because there would be nothing to switch between.
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
       };
       const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
         if (type === MSG.conversationTimeline) {
@@ -1726,9 +1733,14 @@ describe("Group Components", () => {
         id: "run_uncached", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "m_req", requestId: "req_1", mode: "explicit",
         shape: "fanout", state: "running", profileRevision: 1, createdAt: "now",
+        // Two members: a single-member Run hides the drawer's member list.
         memberTurns: [{
           id: "turn_u", runId: "run_uncached", conversationId: "conversation_g", topicId: "topic_1",
           botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        }, {
+          id: "turn_v", runId: "run_uncached", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "human-explicit",
           state: "running", createdAt: "now",
         }],
       };

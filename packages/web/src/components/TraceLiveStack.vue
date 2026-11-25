@@ -42,9 +42,16 @@ const props = withDefaults(defineProps<{
   nodes: TurnPresentationItem[];
   streaming?: boolean;
   terminal?: "done" | "failed" | "cancelled" | null;
+  /**
+   * `drawer` is the sticky panel inside the run drawer; `inline` sits inside a
+   * chat bubble, where there is nothing to stick to and the bubble already
+   * provides the surface — so it drops the floating chrome and the shadow.
+   */
+  variant?: "drawer" | "inline";
 }>(), {
   streaming: false,
   terminal: null,
+  variant: "drawer",
 });
 
 const emit = defineEmits<{ reveal: [key: string] }>();
@@ -182,7 +189,11 @@ function rowIcon(item: TraceLiveItem) {
   <section
     v-if="terminal || snapshot.length"
     data-test="trace-live-stack"
-    class="sticky top-0 z-20 -mx-1 mb-1 rounded-lg bg-surface/85 px-1.5 py-1 shadow-sm backdrop-blur-sm"
+    :data-variant="variant"
+    class="-mx-1 mb-1 rounded-lg px-1.5 py-1"
+    :class="variant === 'drawer'
+      ? 'sticky top-0 z-20 bg-surface/85 shadow-sm backdrop-blur-sm'
+      : 'bg-fg/[0.035]'"
   >
     <div
       v-if="summary"
