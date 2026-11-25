@@ -7,6 +7,7 @@ import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
 import { useActionToastState, dismissToast, runToastAction } from "../lib/use-action-toast";
 import { useToasts } from "../lib/use-toasts";
@@ -738,5 +739,52 @@ describe("InstanceTree session management", () => {
     await flushPromises();
     expect(detachSpy).toHaveBeenCalledWith(terminalLocalKey("i1", "backend"));
     expect(centerTabs.tabsFor(key)).toEqual([]);
+  });
+
+  // A refresh restores the selected Bot in the center pane but left the sidebar
+  // on "sessions", so the two disagreed about what was open.
+  it("opens the Bots tab when a Bot was restored as the selection", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance()] as never;
+    const directBots = useDirectBotsStore();
+    directBots.instanceId = "i1";
+    directBots.selectedBotId = "b1";
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await flushPromises();
+    expect(w.find('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]').classes())
+      .toContain("bg-raised");
+    expect(w.find('[data-test="instance-nav-sessions"] [data-test="instance-nav-pill"]').classes())
+      .not.toContain("bg-raised");
+    w.unmount();
+  });
+
+  it("opens the Groups tab when a Group was restored as the selection", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance()] as never;
+    const directBots = useDirectBotsStore();
+    directBots.instanceId = null;
+    directBots.selectedBotId = null;
+    // Group selection is the store's own flag; the sidebar only reads it.
+    const groupsStore = useGroupsStore();
+    groupsStore.instanceId = "i1";
+    groupsStore.selectedGroupId = "g1";
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await flushPromises();
+    expect(w.find('[data-test="instance-nav-groups"] [data-test="instance-nav-pill"]').classes())
+      .toContain("bg-raised");
+    w.unmount();
+  });
+
+  it("keeps the tab a reader picked by hand until the selection changes", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance()] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await flushPromises();
+    // Browsing Bots while a session stays open must not snap back to sessions.
+    await w.find('[data-test="instance-nav-bots"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]').classes())
+      .toContain("bg-raised");
+    w.unmount();
   });
 });

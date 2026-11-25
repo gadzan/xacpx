@@ -74,6 +74,32 @@ type NavMode = "sessions" | "bots" | "groups";
 /** One mode for the whole sidebar: the tab row sits above the instance cards, so
  *  switching it switches every instance's section at once. */
 const navMode = ref<NavMode>("sessions");
+/**
+ * The tab follows what the center pane is showing.
+ *
+ * A refresh restores the selected Bot or Group in the center while the sidebar
+ * reset to "sessions", so the highlighted tab disagreed with the page next to
+ * it. Deriving the mode from the selection keeps the two in step without
+ * persisting a second copy of the answer.
+ *
+ * A manual tab click still wins until the selection itself changes: the reader
+ * may legitimately browse Bots while a session is open, and snapping back on
+ * every render would fight them.
+ */
+const modePinned = ref(false);
+watch(
+  () => [directBotsStore.isBotSelected, groupsStore.isGroupSelected] as const,
+  ([botSelected, groupSelected]) => {
+    const next: NavMode = botSelected ? "bots" : groupSelected ? "groups" : "sessions";
+    // A different selection than the pinned tab was made: the reader moved on, so
+    // the pin no longer describes anything and the tabs follow the center again.
+    if (modePinned.value && next !== navMode.value) modePinned.value = false;
+    if (modePinned.value || next === navMode.value) return;
+    navMode.value = next;
+    loadModeData();
+  },
+  { immediate: true },
+);
 /** Bot and Group lists are per-instance facts fetched on demand, so entering the
  *  mode for the whole list means fetching the rows of every online instance. */
 function loadModeData(): void {
@@ -95,6 +121,10 @@ function loadModeData(): void {
 }
 function setMode(mode: NavMode): void {
   navMode.value = mode;
+  // Choosing a tab by hand outranks the selection: browsing Bots while a session
+  // stays open is normal. The pin is released when the selection changes, so the
+  // tabs follow the center pane again from then on.
+  modePinned.value = true;
   loadModeData();
 }
 // An instance that appears or comes back online while the sidebar shows Bots or
