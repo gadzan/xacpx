@@ -1071,7 +1071,7 @@ const rowSwipes = computed(() => {
             <div
               v-else
               data-test="bot-row"
-              class="bot-sidebar-row group relative flex min-h-10 items-center rounded-sm transition-colors"
+              class="bot-sidebar-row group relative flex min-h-10 items-center rounded-sm py-1.5 transition-colors"
               :class="isBotSelected(inst.id, entry.bot.id) ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'"
             >
               <button
