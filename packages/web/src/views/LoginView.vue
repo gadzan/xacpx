@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useAuthStore } from "../stores/auth";
@@ -18,6 +18,18 @@ watch(remember, (on) => { if (!on) forgetToken(); });
 const pending = ref(false);
 const revealed = ref(false);
 const copied = ref(false);
+
+// Landing here on a local host means the host description was misread — a 401/404
+// latches the relay fallback, and nothing clears it on its own. Re-read it once; if
+// this really is a local host that needs no token, send the reader back to the
+// dashboard instead of showing a form that cannot do anything useful.
+onMounted(async () => {
+  const config = await runtime.recheck();
+  if (config.hostMode === "local" && !config.auth.required) {
+    auth.account = { username: "local" };
+    await router.replace("/");
+  }
+});
 
 // The CLI command that mints an access token on the host. Literal (not localized)
 // because it is a command the user types verbatim.

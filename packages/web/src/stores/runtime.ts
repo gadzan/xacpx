@@ -28,5 +28,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
     return config.value;
   }
 
-  return { config, loaded, ensure };
+  /**
+   * Re-read the host description once, ignoring any cached answer.
+   *
+   * A single 401/404 latches the relay fallback above, and nothing else ever
+   * clears it — so a host that was briefly unreachable (restarting daemon, a
+   * proxy error page, a stale service worker answering the first request) keeps
+   * the whole session on the relay runtime and sends the reader to the login
+   * page with no way back short of clearing site data. The login page calls this
+   * before rendering so a misread host corrects itself.
+   */
+  async function recheck(): Promise<WebRuntimeConfig> {
+    loaded.value = false;
+    return await ensure();
+  }
+
+  return { config, loaded, ensure, recheck };
 });

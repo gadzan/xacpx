@@ -122,3 +122,20 @@ test("a token-gated local host keeps login and refuses invites", () => {
   expect(hostRoute("invite", config)).toEqual({ name: "login" });
   expect(hostRoute("settings", config)).toBe("check-session");
 });
+
+test("recheck corrects a latched relay fallback when the host answers again", async () => {
+  // A 401/404 latches the relay runtime and nothing clears it, so a host that was
+  // briefly unreachable left the whole session on the login page with no way back.
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(json({ error: "unauthorized" }, 401))
+    .mockResolvedValueOnce(json({
+      hostMode: "local",
+      auth: { required: false, mode: "none" },
+      capabilities: LOCAL_CAPS,
+    }));
+  vi.stubGlobal("fetch", fetchMock);
+  const runtime = useRuntimeStore();
+  expect((await runtime.ensure()).hostMode).toBe("relay");
+  expect((await runtime.recheck()).hostMode).toBe("local");
+  expect(runtime.config.hostMode).toBe("local");
+});
