@@ -298,6 +298,20 @@ const scenarios: ParityScenario[] = [
       run: (runtime) => runtime.getSessionModel(makeBridgeInput()),
     },
   },
+  // --- Phase 3c: setModel (ordinary setter; shared with OMP recovery) ------
+  // Both lanes now delegate to the same native-restore flow; the ordinary
+  // `set ... model` argv must stay byte-identical.
+  {
+    name: "set-model",
+    cli: {
+      name: "set-model",
+      run: (transport) => transport.setModel(makeCliSession(), "gpt-5.2[high]"),
+    },
+    bridge: {
+      name: "set-model",
+      run: (runtime) => runtime.setModel({ ...makeBridgeInput(), modelId: "gpt-5.2[high]" }),
+    },
+  },
 ];
 
 for (const scenario of scenarios) {

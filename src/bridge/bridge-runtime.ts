@@ -20,7 +20,7 @@ import {
 import { getPromptText, normalizeCommandError } from "../transport/prompt-output";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
 import { createStructuredPromptFile } from "../transport/prompt-media";
-import { createStreamingPromptState, parseStreamingDataChunk } from "../transport/streaming-prompt";
+import { runStreamingPromptFlow } from "../transport/acpx-streaming-prompt";
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
@@ -60,6 +60,12 @@ import {
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../transport/session-effort";
+import { runEnsureSessionFlow } from "../transport/acpx-ensure-session";
+import {
+  assertNoActiveNativeRestore,
+  runSetModelWithNativeRestore,
+  type NativeModelRestoreSession,
+} from "../transport/native-model-restore";
 import {
   buildQueueOwnerLaunchInput,
   cleanupOverflowedOwnerFlow,
@@ -187,6 +193,9 @@ interface BridgeRuntimeOptions {
   }) => QueueOwnerAdapterContext;
   /** Test seam and fail-safe owner terminator for an oversized queue event. */
   terminateQueueOwner?: (acpxRecordId: string) => Promise<void>;
+  /** Test seams for the omp native model-restore recovery path (mirrors the CLI lane). */
+  ompModelRecovery?: { recoverOmpSessionModel: typeof import("../transport/omp-model-recovery").recoverOmpSessionModel };
+  queueOwnerAbsence?: { assertAcpxQueueOwnerAbsent: typeof import("../transport/acpx-queue-owner-launcher").assertAcpxQueueOwnerAbsent };
   /** acpx registry for bare-driver probes; without it a bare driver is probe-unavailable. */
   loadAgentRegistry?: () => AgentCommandRegistry | null;
   /** Test seam for the model inspector (production calls acpx/runtime). */
@@ -440,20 +449,7 @@ export class BridgeRuntime {
     input: BridgeSessionInput,
     onProgress?: (progress: EnsureSessionProgress) => void,
   ): Promise<Record<string, never>> {
-    onProgress?.("spawn");
-    // Structured launches first migrate a legacy record (agent_command present,
-    // agent_argv missing) so acpx can resume it on Windows with exact argv
-    // boundaries. No record → the ensure below creates one from the overlay argv.
-    await this.migrateLegacySessionArgvIfNeeded(input);
     const timeoutMs = this.sessionInitTimeoutMs();
-    // One shared deadline for every subprocess step (ensure, show probe, new,
-    // verbose-fallback retry): each step only gets the remaining budget so the
-    // whole ensure path is bounded by sessionInitTimeoutMs end-to-end, like
-    // acpx-cli. The 1ms floor makes an already-expired deadline fail fast via
-    // the normal per-spawn timeout instead of granting a fresh slice.
-    const now = this.options.now ?? Date.now;
-    const deadline = now() + timeoutMs;
-    const remainingTimeoutMs = () => Math.max(deadline - now(), 1);
     const sessionInitTimedOutError = () =>
       new EnsureSessionFailedError(
         `session initialization timed out after ${timeoutMs / 1000}s`,
@@ -467,96 +463,66 @@ export class BridgeRuntime {
         }
       : undefined;
 
-    const runWithVerboseFallback = async (
-      tailArgs: string[],
-      runner: (command: string, args: string[]) => Promise<CommandResult>,
-    ): Promise<CommandResult> => {
-      try {
-        const useVerbose = this.acpxVerboseSupported !== false;
-        const spec = resolveSpawnCommand(
-          this.command,
-          this.buildSessionArgs(input, tailArgs, { verbose: useVerbose }),
-        );
-        const result = await runner(spec.command, spec.args);
-        if (result.code === 0) {
-          if (useVerbose) this.acpxVerboseSupported = true;
-          return result;
-        }
-        if (useVerbose && isUnknownVerboseOption(result.stderr, result.stdout)) {
-          this.acpxVerboseSupported = false;
-          const retrySpec = resolveSpawnCommand(
+    // Orchestration lives in ../transport/acpx-ensure-session.ts; the bridge
+    // keeps its own argv builders, runners, verbose probe, EPERM repair, and
+    // failure mapping — only the ensure → show → new skeleton is shared.
+    const outcome = await runEnsureSessionFlow(
+      {
+        // Structured launches first migrate a legacy record (agent_command
+        // present, agent_argv missing) so acpx can resume it on Windows with
+        // exact argv boundaries. No record → ensure creates one from the overlay argv.
+        migrateLegacyArgv: () => this.migrateLegacySessionArgvIfNeeded(input),
+        runEnsure: (tail, opts) => {
+          const spec = resolveSpawnCommand(
             this.command,
-            this.buildSessionArgs(input, tailArgs, { verbose: false }),
+            this.buildSessionArgs(input, tail, { verbose: opts.verbose }),
           );
-          return await runner(retrySpec.command, retrySpec.args);
-        }
-        return result;
-      } catch (error) {
+          return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+            onStderrLine: opts.onStderrLine,
+            timeoutMs: opts.timeoutMs,
+          }));
+        },
+        runShow: (tail, opts) => {
+          const spec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, tail));
+          return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+            timeoutMs: opts.timeoutMs,
+          }));
+        },
+        runCreate: (tail, opts) => {
+          const spec = resolveSpawnCommand(
+            this.command,
+            this.buildSessionArgs(input, tail, { verbose: opts.verbose }),
+          );
+          return this.runSessionCreate(spec.command, spec.args, input.cwd, this.withSpawnEnvironment(input, {
+            onStderrLine: opts.onStderrLine,
+            timeoutMs: opts.timeoutMs,
+          }));
+        },
+        repairSessionIndex: () => this.repairSessionIndex(),
+        ...(this.options.now ? { now: this.options.now } : {}),
+      },
+      {
+        sessionName: input.name,
+        sessionInitTimeoutMs: timeoutMs,
+        verboseFallback: true,
+        epermRepair: true,
+        tolerateEnsureFailure: false,
+        tolerateShowFailure: false,
+        isVerboseSupported: () => this.acpxVerboseSupported,
+        setVerboseSupported: (supported) => { this.acpxVerboseSupported = supported; },
+        ...(onProgress ? { onProgress } : {}),
+        ...(onStderrLine ? { onStderrLine } : {}),
         // Agent init hung (auth prompt, network stall): the spawn was already
         // killed by the runner; surface a clear, user-facing error instead of
         // blocking this session's bridge lane forever.
-        if (error instanceof CommandTimeoutError) {
-          throw sessionInitTimedOutError();
-        }
-        throw error;
-      }
-    };
-
-    const ensured = await runWithVerboseFallback(
-      ["sessions", "ensure", "--name", input.name],
-      (command, args) => this.run(command, args, this.withSpawnEnvironment(input, {
-        onStderrLine,
-        timeoutMs: remainingTimeoutMs(),
-      })),
+        mapTimeoutError: () => { throw sessionInitTimedOutError(); },
+      },
     );
-    if (ensured.code === 0) {
-      onProgress?.("ready");
-      return {};
-    }
+    if (outcome.ok) return {};
 
-    const existingSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, ["sessions", "show", input.name]));
-    const runShowProbe = async (): Promise<CommandResult> => {
-      try {
-        return await this.run(existingSpec.command, existingSpec.args, this.withSpawnEnvironment(input, {
-          timeoutMs: remainingTimeoutMs(),
-        }));
-      } catch (error) {
-        if (error instanceof CommandTimeoutError) {
-          throw sessionInitTimedOutError();
-        }
-        throw error;
-      }
-    };
-    const existing = await runShowProbe();
-    if (existing.code === 0) {
-      onProgress?.("ready");
-      return {};
-    }
-
-    onProgress?.("initializing");
-    const created = await runWithVerboseFallback(
-      ["sessions", "new", "--name", input.name],
-      (command, args) => this.runSessionCreate(command, args, input.cwd, this.withSpawnEnvironment(input, {
-        onStderrLine,
-        timeoutMs: remainingTimeoutMs(),
-      })),
-    );
-
-    if (created.code === 0) {
-      onProgress?.("ready");
-      return {};
-    }
-
-    const output = created.stderr || created.stdout || "";
-    if (output.includes("EPERM") && await this.repairSessionIndex()) {
-      const repaired = await runShowProbe();
-      if (repaired.code === 0) {
-        onProgress?.("ready");
-        return {};
-      }
-    }
-
-    const rawMessage = output || ensured.stderr || ensured.stdout || "failed to create session";
+    const { ensured, created } = outcome.failure;
+    const output = created?.stderr || created?.stdout || "";
+    const rawMessage = output || ensured?.stderr || ensured?.stdout || "failed to create session";
     // Strip [acpx] verbose log lines so they can't trigger false-positive optional-dep parsing.
     const parseInput = rawMessage
       .split(/\r\n|\r|\n/)
@@ -596,6 +562,7 @@ export class BridgeRuntime {
   }
 
   async prompt(input: BridgeSessionInput & { text: string }, onEvent?: (event: BridgePromptStreamEvent) => void): Promise<{ text: string }> {
+    this.assertNoActiveRecovery(input);
     await this.syncPersistedSessionEffort(input);
     await this.launchMcpQueueOwnerIfNeeded(input);
     const structuredPrompt = await createStructuredPromptFile(input.text, input.media);
@@ -646,6 +613,7 @@ export class BridgeRuntime {
     mode: "auto" | "steer" | "queue" | "interrupt";
     messageId: string;
   }): Promise<{ status: "queued"; modeUsed: "queue" }> {
+    this.assertNoActiveRecovery(input);
     if (input.mode === "steer") {
       throw new MessageInjectionError(
         "TARGET_NOT_STEERABLE",
@@ -708,10 +676,12 @@ export class BridgeRuntime {
   }
 
   private async launchMcpQueueOwnerIfNeeded(input: BridgeSessionInput): Promise<void> {
-    // Strict record read (no Bot auto-ensure — that stays a CLI-only behavior).
+    // Owned record read (Bot auto-ensure): a runtime-lane Bot session that
+    // has never been ensured resolves its record by ensuring it first — same
+    // as the CLI lane. Strict readSessionRecord stays for the other callers.
     await ensureMcpQueueOwnerLaunched({
       coordinatorSession: input.mcpCoordinatorSession,
-      readRecord: () => this.readSessionRecord(input),
+      readRecord: () => this.readOwnedSessionRecord(input),
       launch: (launchInput) => this.queueOwnerLauncher.launch(launchInput),
       onPreparedAgentCommand: (agentCommand) => { input.agentCommand = agentCommand; },
       buildLaunchInput: (recordId) => this.queueOwnerLaunchInput(input, recordId),
@@ -722,6 +692,7 @@ export class BridgeRuntime {
     input: BridgeSessionInput,
     stage: AcpxCommandStage = "read-session-record",
     format: "quiet" | "json" = "quiet",
+    timeoutMs = this.managementCommandTimeoutMs(),
   ): Promise<string> {
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
       "sessions",
@@ -729,7 +700,7 @@ export class BridgeRuntime {
       input.name,
     ], { format }));
     const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
-      timeoutMs: this.managementCommandTimeoutMs(),
+      timeoutMs,
       stage,
     }));
     if (result.code !== 0) {
@@ -787,10 +758,58 @@ export class BridgeRuntime {
     }
   }
 
-  private async readSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
-    const record = parseAcpxSessionRecordId(await this.readRawSessionRecord(input, "read-session-record", "json"));
-    if (record) return record;
-    throw new Error("failed to resolve acpx session record id");
+  private async readOwnedSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string; acpSessionId?: string }> {
+    try {
+      return await this.readSessionRecord(input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isMissingAcpxSessionError("", message)) {
+        throw error;
+      }
+    }
+    await this.ensureSession(input);
+    return await this.readSessionRecord(input);
+  }
+
+  private async readSessionRecord(input: BridgeSessionInput, timeoutMs = this.managementCommandTimeoutMs()): Promise<{ acpxRecordId: string; agentSessionId?: string; acpSessionId?: string }> {
+    const stdout = await this.readRawSessionRecord(input, "read-session-record", "json", timeoutMs);
+    const record = parseAcpxSessionRecordId(stdout);
+    if (!record) throw new Error("failed to resolve acpx session record id");
+    // The ACP session id is the native id for adapters that expose one (OMP
+    // publishes its own session id as the ACP id); the provider id is the
+    // fallback for adapters that only publish a provider-native id.
+    let acpSessionId: string | undefined;
+    try {
+      const parsed = JSON.parse(stdout) as { acpSessionId?: unknown };
+      acpSessionId = typeof parsed.acpSessionId === "string" && parsed.acpSessionId.length > 0
+        ? parsed.acpSessionId
+        : undefined;
+    } catch {
+      acpSessionId = undefined;
+    }
+    return { ...record, ...(acpSessionId ? { acpSessionId } : {}) };
+  }
+
+  /**
+   * Native-restore identity for a lane session (bridge: session name).
+   * Refuses turns while a native restore holds the physical session — a turn
+   * admitted mid-recovery would race the native writer.
+   */
+  private nativeRestoreSession(input: BridgeSessionInput): NativeModelRestoreSession {
+    return {
+      transportSession: input.name,
+      cwd: input.cwd,
+      agent: input.agent,
+      ...(input.driver ? { driver: input.driver } : {}),
+      ...(input.agentCommand ? { agentCommand: input.agentCommand } : {}),
+      ...(input.acpxAgent ? { acpxAgent: input.acpxAgent } : {}),
+      ...(input.rawCommand ? { rawCommand: input.rawCommand } : {}),
+      ...(input.agentArgv ? { agentArgv: input.agentArgv } : {}),
+    };
+  }
+
+  private assertNoActiveRecovery(input: BridgeSessionInput): void {
+    assertNoActiveNativeRestore(this.nativeRestoreSession(input));
   }
 
   async getAgentSessionId(input: {
@@ -820,6 +839,7 @@ export class BridgeRuntime {
     name: string;
     modeId: string;
   }): Promise<Record<string, never>> {
+    this.assertNoActiveRecovery(input);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
       "set-mode",
       "-s",
@@ -851,24 +871,40 @@ export class BridgeRuntime {
     name: string;
     modelId: string;
   }): Promise<Record<string, never>> {
-    // Pass the new model both as the `set model` value and the global --model.
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs({ ...input, model: input.modelId }, [
-      "set",
-      "-s",
-      input.name,
-      "model",
+    // Ordinary setter with OMP native-restore recovery (shared with the CLI
+    // lane in ../transport/native-model-restore.ts); only the I/O closures
+    // below are lane-specific.
+    await runSetModelWithNativeRestore(
+      this.nativeRestoreSession(input),
       input.modelId,
-    ]));
-    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment({ ...input, model: input.modelId }, {
-      timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "set-model",
-    })));
-
-    if (result.code !== 0) {
-      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-      throw new Error(detail);
-    }
-
+      {
+        readSessionRecord: (timeoutMs) => this.readSessionRecord(input, timeoutMs),
+        runSetModel: async (modelId, opts) => {
+          const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs({ ...input, model: modelId }, [
+            "set",
+            "-s",
+            input.name,
+            "model",
+            modelId,
+          ]));
+          const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment({ ...input, model: modelId }, {
+            timeoutMs: opts.timeoutMs,
+            stage: "set-model",
+          })));
+          if (result.code !== 0) {
+            const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+            throw new Error(detail);
+          }
+        },
+        envForModel: (modelId?) => this.effectiveSpawnEnvironment(
+          modelId === undefined ? input : { ...input, model: modelId },
+        ),
+        managementTimeoutMs: this.managementCommandTimeoutMs(),
+        ...(this.options.now ? { now: this.options.now } : {}),
+        ...(this.options.ompModelRecovery ? { ompModelRecovery: this.options.ompModelRecovery } : {}),
+        ...(this.options.queueOwnerAbsence ? { queueOwnerAbsence: this.options.queueOwnerAbsence } : {}),
+      },
+    );
     return {};
   }
 
@@ -951,6 +987,7 @@ export class BridgeRuntime {
     name: string;
     effort: string;
   }): Promise<Record<string, never>> {
+    this.assertNoActiveRecovery(input);
     const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
     await this.applyAdvertisedSessionEffort(input, input.effort, record);
     return {};
@@ -1282,29 +1319,23 @@ export async function runStreamingPrompt(
       env: options.env,
       stdio: ["ignore", "pipe", "pipe"],
     }) as unknown as PromptStreamProcess);
-  const setIntervalFn = options.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
-  const clearIntervalFn = options.clearIntervalFn ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
-  const rawStream = options.rawStream ?? false;
-  // Raw streaming drains the buffer on a tight cadence so the live view updates ~5×/s
-  // with low first-token latency. The batched paragraph path keeps the long fallback
-  // window (it flushes whole paragraphs on `\n\n` and only times out on a stall).
-  const maxSegmentWaitMs = options.maxSegmentWaitMs ?? (rawStream ? 200 : 30_000);
-  const flushCheckIntervalMs = options.flushCheckIntervalMs ?? (rawStream ? 80 : 5_000);
-  const now = options.now ?? (() => Date.now());
-
-  return await new Promise((resolve, reject) => {
-    const child = spawnPrompt(command, args);
-    let stdout = "";
-    let stderr = "";
-    const toolEventMode: ToolEventMode = options.toolEventMode ?? "text";
-    let flushPendingText = () => {};
-    const state = createStreamingPromptState(options.formatToolCalls ?? false, {
-      mode: toolEventMode,
-      driver: options.driver,
-      rawStream,
-      onBeforeActivityEvent: () => {
-        flushPendingText();
-      },
+  const toolEventMode: ToolEventMode = options.toolEventMode ?? "text";
+  // Shell lives in ../transport/acpx-streaming-prompt.ts; the bridge keeps its
+  // direct synchronous `onEvent` emission here (no queue, no chains, no sink).
+  const { code, stdout, stderr } = await runStreamingPromptFlow({
+    command,
+    args,
+    formatToolCalls: options.formatToolCalls,
+    toolEventMode,
+    ...(options.driver ? { driver: options.driver } : {}),
+    rawStream: options.rawStream,
+    spawnPrompt,
+    ...(options.setIntervalFn ? { setIntervalFn: options.setIntervalFn } : {}),
+    ...(options.clearIntervalFn ? { clearIntervalFn: options.clearIntervalFn } : {}),
+    ...(options.maxSegmentWaitMs !== undefined ? { maxSegmentWaitMs: options.maxSegmentWaitMs } : {}),
+    ...(options.flushCheckIntervalMs !== undefined ? { flushCheckIntervalMs: options.flushCheckIntervalMs } : {}),
+    ...(options.now ? { now: options.now } : {}),
+    handlers: {
       ...(onEvent && (toolEventMode === "structured" || toolEventMode === "both")
         ? { onToolEvent: (toolEvent) => onEvent({ type: "prompt.tool_event", event: toolEvent }) }
         : {}),
@@ -1313,7 +1344,7 @@ export async function runStreamingPrompt(
       // async `onThought` chain lives on the client side (acpx-bridge-transport),
       // so this side has no callback to await before resolving the prompt.
       ...(onEvent
-        ? { onThought: (chunk) => onEvent({ type: "prompt.thought", text: chunk }) }
+        ? { onThought: (chunk: string) => onEvent({ type: "prompt.thought", text: chunk }) }
         : {}),
       ...(onEvent
         ? { onPlan: (entries) => onEvent({ type: "prompt.plan", entries }) }
@@ -1324,60 +1355,15 @@ export async function runStreamingPrompt(
       ...(onEvent
         ? { onCommands: (commands) => onEvent({ type: "prompt.commands", commands }) }
         : {}),
-    });
-    let lastReplyAt = now();
-
-    const flushBuffer = () => {
-      // Raw streaming forwards the buffer verbatim (the live view concatenates chunks);
-      // the batched path trims paragraph edges into discrete segments.
-      const remaining = rawStream ? state.buffer : state.buffer.trim();
-      if (remaining.length > 0) {
-        state.buffer = "";
-        onEvent?.({ type: "prompt.segment", text: remaining });
-        lastReplyAt = now();
-      }
-    };
-
-    flushPendingText = () => {
-      for (const segment of state.segments.splice(0)) {
-        onEvent?.({ type: "prompt.segment", text: segment });
-        lastReplyAt = now();
-      }
-      flushBuffer();
-    };
-
-    const timer = setIntervalFn(() => {
-      if (state.buffer.trim().length > 0 && now() - lastReplyAt >= maxSegmentWaitMs) {
-        flushBuffer();
-      }
-    }, flushCheckIntervalMs);
-
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string | Buffer) => {
-      const text = String(chunk);
-      stdout += text;
-      parseStreamingDataChunk(state, text);
-      for (const segment of state.segments.splice(0)) {
-        onEvent?.({ type: "prompt.segment", text: segment });
-        lastReplyAt = now();
-      }
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", (error) => {
-      clearIntervalFn(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearIntervalFn(timer);
-      const remaining = state.finalize();
-      if (remaining.length > 0) {
-        onEvent?.({ type: "prompt.segment", text: remaining });
-      }
-      resolve({ code: code ?? 1, stdout, stderr });
-    });
+    },
+    emitter: {
+      emitSegment: (text) => {
+        onEvent?.({ type: "prompt.segment", text });
+      },
+      finish: async () => 0,
+    },
   });
+  return { code, stdout, stderr };
 }
 
 async function defaultPromptRunner(
@@ -1463,10 +1449,6 @@ export async function tryRepairAcpxSessionIndex(deps: RepairAcpxSessionIndexDeps
   }
 }
 
-function isUnknownVerboseOption(stderr: string, stdout: string): boolean {
-  const combined = `${stderr}\n${stdout}`;
-  // Commander-style ("error: unknown option '--verbose'"), yargs, and generic "unrecognized".
-  return /(unknown|unrecognized)\b[^\n]*--verbose/i.test(combined);
-}
+// isUnknownVerboseOption lives in ../transport/acpx-ensure-session.ts (shared).
 
 // describeCleanupError lives in ../transport/acpx-session-ops.ts (shared).

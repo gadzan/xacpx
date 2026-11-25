@@ -13,8 +13,11 @@
  * plumbing (run vs runControl, readSessionRecord variants, error strings) —
  * this module never spawns. Behaviour is bit-identical by construction; the
  * per-lane differences are preserved, not papered over:
- * - CLI `readOwnedSessionRecord` auto-ensures Bot-owned logical sessions;
- *   the bridge reads strictly (known gap, see Phase 3).
+ * - The MCP pre-launch reads through the owned-record path on both lanes:
+ *   the CLI auto-ensures Bot-owned logical sessions, and since Phase 3c the
+ *   bridge auto-ensures runtime-lane Bot sessions the same way (previously a
+ *   known gap: the bridge read strictly and a never-ensured Bot session
+ *   failed its first turn).
  * - CLI `terminateQueueOwner` is always the verified terminator; the bridge
  *   honors its `terminateQueueOwner` override.
  */

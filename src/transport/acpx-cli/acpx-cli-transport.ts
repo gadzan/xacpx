@@ -36,19 +36,19 @@ import type {
 import { getPromptText, normalizeCommandError } from "../prompt-output";
 import { runAcpxControlCommand } from "../acpx-owner-control-retry";
 import { isModelNotAdvertisedError } from "../model-not-advertised";
-import { modelRestoreFailure, recoverOmpSessionModel } from "../omp-model-recovery";
-import { resolveOmpRecoveryLaunch } from "../omp-recovery-launch";
+import {
+  assertNoActiveNativeRestore,
+  runSetModelWithNativeRestore,
+  type NativeModelRestoreSession,
+} from "../native-model-restore";
 import { createStructuredPromptFile } from "../prompt-media";
-import { createStreamingPromptState, parseStreamingDataChunk } from "../streaming-prompt";
 import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import {
   buildOverflowSummary,
   createQuotaGatedReplySink,
   createVerbatimReplySink,
 } from "../quota-gated-reply-sink";
-import { assertAcpxQueueOwnerAbsent } from "../acpx-queue-owner-launcher";
 import { explainSessionSpawnFailure } from "../session-spawn-failure";
-import { nativeCatalogIdentityForLaunch } from "../../sessions/native-session-guard";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../acpx-session-argv-migration";
@@ -63,9 +63,7 @@ import { parseSessionStatusCatalog } from "../session-model-catalog";
 import type { AgentCommandRegistry } from "../../config/agent-catalog";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../session-effort";
 import {
-  CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
-  isCommandTimeoutError,
   type AcpxCommandStage,
 } from "../command-timeouts";
 import {
@@ -92,6 +90,8 @@ import {
   syncPersistedSessionEffortFlow,
   willReplaceQueueOwner,
 } from "../acpx-session-ops";
+import { runEnsureSessionFlow } from "../acpx-ensure-session";
+import { runStreamingPromptFlow } from "../acpx-streaming-prompt";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -123,8 +123,8 @@ interface AcpxCliTransportOptions {
     agentCommand: string;
   }) => QueueOwnerAdapterContext;
   /** Test seams for the omp native model-restore recovery path. */
-  ompModelRecovery?: { recoverOmpSessionModel: typeof recoverOmpSessionModel };
-  queueOwnerAbsence?: { assertAcpxQueueOwnerAbsent: typeof assertAcpxQueueOwnerAbsent };
+  ompModelRecovery?: { recoverOmpSessionModel: typeof import("../omp-model-recovery").recoverOmpSessionModel };
+  queueOwnerAbsence?: { assertAcpxQueueOwnerAbsent: typeof import("../acpx-queue-owner-launcher").assertAcpxQueueOwnerAbsent };
   /** acpx registry for bare-driver probes; without it a bare driver is probe-unavailable. */
   loadAgentRegistry?: () => AgentCommandRegistry | null;
   /** Test seam for the model inspector (production calls acpx/runtime). */
@@ -252,7 +252,6 @@ export class AcpxCliTransport implements SessionTransport {
   async ensureSession(session: ResolvedSession, _onProgress?: (progress: EnsureSessionProgress) => void): Promise<void> {
     this.assertCliAffinity(session);
     this.invalidateRecordIdCache(session);
-    await this.migrateLegacySessionArgvIfNeeded(session);
     try {
       await this.runEnsureSession(session);
     } catch (error) {
@@ -275,52 +274,51 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   private async runEnsureSession(session: ResolvedSession): Promise<void> {
-    const runEnsure = session.agentCommand ? this.run : this.runWithPty;
-    // One shared deadline for every subprocess step (ensure, show probe, new):
-    // each step only gets the remaining budget so the whole ensure path is
-    // bounded by sessionInitTimeoutMs end-to-end, like the bridge.
-    const deadline = Date.now() + this.sessionInitTimeoutMs;
-    const remainingTimeoutMs = () => Math.max(deadline - Date.now(), 1);
-    const ensureArgs = this.buildArgs(session, [
-      "sessions",
-      "ensure",
-      "--name",
-      session.transportSession,
-    ]);
-    try {
-      // `sessions ensure` reuses an identity-matching legacy record (which the
-      // argv migration backfilled just above); `sessions new` would orphan it.
-      await runEnsure.call(this, ensureArgs, {
-        timeoutMs: remainingTimeoutMs(),
+    // Session-create vehicle: the plain runner when an explicit agent command
+    // is set, the pty runner for bare agents. Chosen once, like the bridge's
+    // run-vs-runSessionCreate split, so the shared flow needs no pty flag.
+    const createRunner = session.agentCommand ? this.runCommand : this.runPtyCommand;
+    const runCreateStep = (tail: string[], opts: { timeoutMs: number }): Promise<CommandResult> =>
+      this.runCommandWithTimeout(createRunner, this.buildArgs(session, tail), {
+        timeoutMs: opts.timeoutMs,
         env: this.effectiveSpawnEnvironment(session),
       });
-      return;
-    } catch (error) {
-      // Mirrors the bridge: a failed ensure may mean the session already exists
-      // (show succeeds) or that it must be created fresh (show fails → new).
-      try {
-        await this.run(this.buildArgs(session, [
-          "sessions",
-          "show",
-          session.transportSession,
-        ], "quiet"), {
-          timeoutMs: Math.min(this.managementCommandTimeoutMs, remainingTimeoutMs()),
-          env: this.effectiveSpawnEnvironment(session),
-        });
-        return;
-      } catch {
-        // fall through to sessions new
-      }
-      const newArgs = this.buildArgs(session, [
-        "sessions",
-        "new",
-        "--name",
-        session.transportSession,
-      ]);
-      await runEnsure.call(this, newArgs, {
-        timeoutMs: remainingTimeoutMs(),
-        env: this.effectiveSpawnEnvironment(session),
-      });
+    const outcome = await runEnsureSessionFlow(
+      {
+        migrateLegacyArgv: () => this.migrateLegacySessionArgvIfNeeded(session),
+        runEnsure: runCreateStep,
+        // The show probe resolves through `run` (never pty) and reports
+        // success as a bare ok: any failure — missing session, timeout,
+        // crash — means the session must be created fresh (tolerateShowFailure).
+        runShow: async (tail, opts) => {
+          await this.run(this.buildArgs(session, tail, "quiet"), {
+            timeoutMs: opts.timeoutMs,
+            env: this.effectiveSpawnEnvironment(session),
+          });
+          return { code: 0, stdout: "", stderr: "" };
+        },
+        runCreate: runCreateStep,
+        repairSessionIndex: async () => false,
+      },
+      {
+        sessionName: session.transportSession,
+        sessionInitTimeoutMs: this.sessionInitTimeoutMs,
+        showTimeoutCapMs: this.managementCommandTimeoutMs,
+        verboseFallback: false,
+        epermRepair: false,
+        tolerateEnsureFailure: true,
+        tolerateShowFailure: true,
+        mapTimeoutError: (error) => { throw error; },
+      },
+    );
+    if (!outcome.ok) {
+      // `sessions new` settled non-zero: same text the old `run()` throw
+      // produced, so the outer explainSessionSpawnFailure mapping is unchanged.
+      const failed = outcome.failure.created ?? outcome.failure.ensured;
+      const detail = failed
+        ? normalizeCommandError(failed) ?? `command failed with exit code ${failed.code}`
+        : "command failed";
+      throw new Error(detail);
     }
   }
 
@@ -505,60 +503,34 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   /**
-   * Exclusive native-recovery lease, module-scoped so two transport instances
-   * (logical aliases) that resolve to the same physical OMP session contend
-   * for one recovery. A lease blocks concurrent prompts, injections, and
-   * setters for that physical session instead of queueing them: a queued
-   * prompt admitted mid-recovery would race the native writer, and waiting
-   * would replay work the user never asked to have replayed.
+   * Native-recovery lease maps and key helpers now live in
+   * ../native-model-restore.ts (shared across lanes so two transports on the
+   * same physical OMP session contend for one recovery).
    */
-  private static readonly recoveries = new Map<string, { nativeId?: string }>();
-  /** Sessions with a setModel call in flight (ordinary setter AND recovery).
-   *  Plain turns (prompt/inject) are NOT serialized here — they only refuse
-   *  while a native helper holds the physical session. */
-  private static readonly setModelLocks = new Set<string>();
-  /** Native ids learned per physical identity, so sibling aliases resolve
-   *  every in-flight native key. A per-identity SET (never a single value):
-   *  one stored id would only exclude the most recently recovered session and
-   *  silently miss a concurrent B/C pair on different native ids. */
-  private static readonly knownNativeIds = new Map<string, Set<string>>();
 
-  private recoveryIdentityKey(session: ResolvedSession): string {
-    return JSON.stringify(nativeCatalogIdentityForLaunch({
+  /**
+   * Native-restore identity for a lane session. Both lanes build the same
+   * shape (CLI: transportSession; bridge: name).
+   */
+  private nativeRestoreSession(session: ResolvedSession): NativeModelRestoreSession {
+    return {
+      transportSession: session.transportSession,
       cwd: session.cwd,
+      agent: session.agent,
+      ...(session.driver ? { driver: session.driver } : {}),
       ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
       ...(session.acpxAgent ? { acpxAgent: session.acpxAgent } : {}),
       ...(session.rawCommand ? { rawCommand: session.rawCommand } : {}),
       ...(session.agentArgv ? { agentArgv: session.agentArgv } : {}),
-    }));
-  }
-
-  private recoverySessionKey(session: ResolvedSession): string {
-    return `${this.recoveryIdentityKey(session)}|session:${session.transportSession}`;
-  }
-
-  private recoveryNativeKey(identity: string, nativeId: string): string {
-    return `${identity}|native:${nativeId}`;
+    };
   }
 
   /**
-   * Throws while a native model restore holds the physical session. Called by
-   * prompt/injection/set so no turn is admitted into the recovery window.
+   * Native-restore guard lives in ../native-model-restore.ts (shared). Kept
+   * as a method so the five guarded paths read unchanged.
    */
   private assertNoActiveRecovery(session: ResolvedSession): void {
-    const identity = this.recoveryIdentityKey(session);
-    const keys = [this.recoverySessionKey(session)];
-    const inFlightNative = AcpxCliTransport.recoveries.get(keys[0]!)?.nativeId;
-    if (inFlightNative) keys.push(this.recoveryNativeKey(identity, inFlightNative));
-    const known = AcpxCliTransport.knownNativeIds.get(identity);
-    if (known) for (const id of known) keys.push(this.recoveryNativeKey(identity, id));
-    for (const key of keys) {
-      if (AcpxCliTransport.recoveries.has(key)) {
-        throw new Error(
-          `a native model restore is in progress for session "${session.transportSession}"; retry once it finishes`,
-        );
-      }
-    }
+    assertNoActiveNativeRestore(this.nativeRestoreSession(session));
   }
 
   private buildSetModelArgs(session: ResolvedSession, modelId: string): string[] {
@@ -576,171 +548,31 @@ export class AcpxCliTransport implements SessionTransport {
   // acpx validates the id against the agent's advertised models and applies it to
   // a live queue owner immediately (or persists it for the next turn when idle).
   //
-  // OMP native model-restore recovery (accepted UX): an ordinary set that fails
-  // with the exact `Could not restore model <id>` error on a recognized OMP
-  // launch runs the bounded native helper under an exclusive physical gate,
-  // then retries the ordinary set for acpx-side sync. Retry-forward: a helper
-  // success followed by a setter failure reports the partial sync, and a rerun
-  // of setModel is always safe (the helper is idempotent; no JSONL rollback).
+  // OMP native model-restore recovery now lives in ../native-model-restore.ts
+  // (shared with the bridge); only the I/O closures below are lane-specific.
   async setModel(session: ResolvedSession, modelId: string): Promise<void> {
     this.assertCliAffinity(session);
-    // Serialize concurrent setModel calls for the same physical session
-    // BEFORE the ordinary setter: without this, two callers both pass the
-    // guard, both run the acpx-side `set` mutation, and only then does the
-    // loser hit the recovery lease — after it already changed acpx state.
-    // This lock covers setModel-vs-setModel only (prompt/inject keep using
-    // assertNoActiveRecovery, so a plain set never blocks a turn).
-    const setLockKey = this.recoverySessionKey(session);
-    if (AcpxCliTransport.setModelLocks.has(setLockKey)) {
-      throw new Error(
-        `a native model restore is already in progress for session "${session.transportSession}"; retry once it finishes`,
-      );
-    }
-    AcpxCliTransport.setModelLocks.add(setLockKey);
-    try {
-      this.assertNoActiveRecovery(session);
-      const deadlineAt = Date.now() + this.managementCommandTimeoutMs;
-      const remainingTimeoutMs = () => {
-        const remaining = deadlineAt - Date.now();
-        if (remaining <= 0) {
-          throw new CommandTimeoutError(this.managementCommandTimeoutMs, "set model", { stage: "set-model" });
-        }
-        return remaining;
-      };
-      try {
-        await this.runControl(this.buildSetModelArgs(session, modelId), this.withSpawnEnvironment({ ...session, model: modelId }, {
-          timeoutMs: remainingTimeoutMs(),
-          stage: "set-model",
-        }), deadlineAt);
-        return;
-      } catch (error) {
-        // A management timeout carries raw subprocess output in its message,
-        // which can coincidentally contain the restore-failure text (the CI
-        // case: filler bytes matched the pattern). Timeouts never enter
-        // recovery: the acpx side is wedged, not mis-persisted.
-        if (isCommandTimeoutError(error)) throw error;
-        const restore = modelRestoreFailure(error);
-        const launch = restore && resolveOmpRecoveryLaunch({
-          agent: session.agent,
-          ...(session.driver ? { driver: session.driver } : {}),
-          ...(session.agentArgv ? { agentArgv: session.agentArgv } : {}),
-          ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
-          ...(session.rawCommand ? { rawCommand: session.rawCommand } : {}),
-        });
-        if (!restore || !launch) throw error;
-        await this.recoverNativeModel(session, modelId, restore.modelId, launch, deadlineAt, remainingTimeoutMs);
-      }
-    } finally {
-      AcpxCliTransport.setModelLocks.delete(setLockKey);
-    }
-  }
-
-  /**
-   * One bounded native writer per physical session. Holds an exclusive lease
-   * across the helper AND the acpx-side sync, refuses while any acpx queue
-   * owner lease exists (verified absence only — never kills or unlinks),
-   * resolves the full native session id from the persisted acpx record, and
-   * runs the helper (which persists the model through OMP's own switch_session
-   * RPC). Never replays a prompt and never touches the session JSONL.
-   */
-  private async recoverNativeModel(
-    session: ResolvedSession,
-    modelId: string,
-    restoreModelId: string,
-    launch: { command: string; args: string[] },
-    deadlineAt: number,
-    remainingTimeoutMs: () => number,
-  ): Promise<void> {
-    let record: { acpxRecordId: string; agentSessionId?: string; acpSessionId?: string };
-    const identity = this.recoveryIdentityKey(session);
-    const sessionKey = this.recoverySessionKey(session);
-    // Session-key acquire is synchronous (check+set with no await between), so
-    // two concurrent setModel calls for the same physical session cannot both
-    // pass. Native-key acquire happens after the record read; its check+set is
-    // likewise synchronous. Every path releases via finally, including helper
-    // and sync failures.
-    if (AcpxCliTransport.recoveries.has(sessionKey)) {
-      throw new Error(
-        `a native model restore is already in progress for session "${session.transportSession}"; retry once it finishes`,
-      );
-    }
-    AcpxCliTransport.recoveries.set(sessionKey, {});
-    try {
-      try {
-        record = await this.readSessionRecord(session, remainingTimeoutMs());
-      } catch (error) {
-        throw new Error(
-          `cannot restore model "${restoreModelId}" for session "${session.transportSession}": the acpx session record is unreadable (${error instanceof Error ? error.message : String(error)})`,
-          { cause: error },
-        );
-      }
-      // The native session id is the ACP session id (OMP publishes its own
-      // session id there); the provider id is the fallback.
-      const nativeId = record.acpSessionId ?? record.agentSessionId;
-      if (!nativeId) {
-        throw new Error(
-          `cannot restore model "${restoreModelId}" for session "${session.transportSession}": the acpx session record carries no native session id`,
-        );
-      }
-      const nativeKey = this.recoveryNativeKey(identity, nativeId);
-      // Atomic check+set for the cross-alias native key (no await between).
-      if (AcpxCliTransport.recoveries.has(nativeKey)) {
-        throw new Error(
-          `a native model restore is already in progress for session "${session.transportSession}"; retry once it finishes`,
-        );
-      }
-      AcpxCliTransport.recoveries.set(nativeKey, { nativeId });
-      let known = AcpxCliTransport.knownNativeIds.get(identity);
-      if (!known) {
-        known = new Set();
-        AcpxCliTransport.knownNativeIds.set(identity, known);
-      }
-      known.add(nativeId);
-      try {
-        const assertAbsent = this.queueOwnerAbsence?.assertAcpxQueueOwnerAbsent ?? assertAcpxQueueOwnerAbsent;
-        try {
-          await assertAbsent(record.acpxRecordId);
-        } catch (error) {
-          throw new Error(
-            `cannot restore model "${restoreModelId}" for session "${session.transportSession}": ${error instanceof Error ? error.message : String(error)}; free the queue owner (or let it idle out) and retry the model change`,
-            { cause: error },
-          );
-        }
-        const recover = this.ompModelRecovery?.recoverOmpSessionModel ?? recoverOmpSessionModel;
-        try {
-          await recover({
-            command: launch.command,
-            args: launch.args,
-            cwd: session.cwd,
-            agentSessionId: nativeId,
-            modelId,
-            env: this.effectiveSpawnEnvironment(session),
-            timeoutMs: remainingTimeoutMs(),
-          });
-        } catch (nativeError) {
-          throw new Error(
-            `native model restore for session "${session.transportSession}" (model "${modelId}") did not finish: ${nativeError instanceof Error ? nativeError.message : String(nativeError)}; retry the model change to reconcile the saved selection`,
-            { cause: nativeError },
-          );
-        }
-        // Sync: the ordinary setter under the chosen model (same wire as before).
-        try {
-          await this.runControl(this.buildSetModelArgs(session, modelId), this.withSpawnEnvironment({ ...session, model: modelId }, {
-            timeoutMs: remainingTimeoutMs(),
+    await runSetModelWithNativeRestore(
+      this.nativeRestoreSession(session),
+      modelId,
+      {
+        readSessionRecord: (timeoutMs) => this.readSessionRecord(session, timeoutMs),
+        runSetModel: (id, opts) => this.runControl(
+          this.buildSetModelArgs(session, id),
+          this.withSpawnEnvironment({ ...session, model: id }, {
+            timeoutMs: opts.timeoutMs,
             stage: "set-model",
-          }), deadlineAt);
-        } catch (syncError) {
-          throw new Error(
-            `native model "${modelId}" was restored for session "${session.transportSession}" but acpx synchronization failed: ${syncError instanceof Error ? syncError.message : String(syncError)}; retry the model change to re-sync`,
-            { cause: syncError },
-          );
-        }
-      } finally {
-        AcpxCliTransport.recoveries.delete(nativeKey);
-      }
-    } finally {
-      AcpxCliTransport.recoveries.delete(sessionKey);
-    }
+          }),
+          opts.deadlineAt,
+        ),
+        envForModel: (id?) => this.effectiveSpawnEnvironment(
+          id === undefined ? session : { ...session, model: id },
+        ),
+        managementTimeoutMs: this.managementCommandTimeoutMs,
+        ...(this.ompModelRecovery ? { ompModelRecovery: this.ompModelRecovery } : {}),
+        ...(this.queueOwnerAbsence ? { queueOwnerAbsence: this.queueOwnerAbsence } : {}),
+      },
+    );
   }
 
   // Read the session's current model and the agent-advertised available ids from
@@ -750,7 +582,10 @@ export class AcpxCliTransport implements SessionTransport {
     await this.ensureSession(session);
     const args = this.buildAgentQueryArgs(this.sessionInput(session), 'json', ['status','-s',session.transportSession]);
     const result = await this.runCommandWithTimeout(this.runCommand,args,{timeoutMs:this.managementCommandTimeoutMs,stage:'get-session-model',env:this.effectiveSpawnEnvironment(session)});
-    if(result.code !== 0) throw new Error('command advertisement read failed');
+    if(result.code !== 0) {
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
+    }
     const raw = JSON.parse(result.stdout) as {availableCommands?: AgentCommand[]};
     return raw.availableCommands;
   }
@@ -1241,158 +1076,99 @@ export class AcpxCliTransport implements SessionTransport {
         env,
         stdio: ["ignore", "pipe", "pipe"],
       }) as unknown as PromptStreamProcess);
-    const setIntervalFn = hooks.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
-    const clearIntervalFn = hooks.clearIntervalFn ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
-    // Raw streaming drains the buffer on a tight cadence (~5×/s) for low-latency token
-    // streaming; the batched paragraph path keeps the long stall-fallback window.
-    const maxSegmentWaitMs = hooks.maxSegmentWaitMs ?? (rawStream ? 200 : 30_000);
-    const flushCheckIntervalMs = hooks.flushCheckIntervalMs ?? (rawStream ? 80 : 5_000);
-    const now = hooks.now ?? (() => Date.now());
-
-    return await new Promise((resolve, reject) => {
-      const spawnSpec = resolveSpawnCommand(command, args);
-      const child = doSpawn(spawnSpec.command, spawnSpec.args);
-      let stdout = "";
-      let stderr = "";
-      let lastReplyAt = now();
-      const transcriptEvents = createSerializedCallbackQueue();
-      let planChain = Promise.resolve();
-      let planError: unknown;
-      let usageChain = Promise.resolve();
-      let usageError: unknown;
-      let commandsChain = Promise.resolve();
-      let commandsError: unknown;
-      const userOnToolEvent = onToolEvent;
-      const userOnThought = onThought;
-      const userOnPlan = onPlan;
-      const userOnUsage = onUsage;
-      const userOnCommands = onCommands;
-      let flushPendingText = () => {};
-
-      const state = createStreamingPromptState(formatToolCalls, {
-        mode: toolEventMode,
-        driver,
-        rawStream,
-        onBeforeActivityEvent: () => {
-          flushPendingText();
-        },
-        ...(userOnToolEvent
+    // Shell lives in ../acpx-streaming-prompt.ts; the CLI keeps its delivery
+    // semantics here: quota/verbatim reply sink, serialized callback queue,
+    // and plan/usage/commands chains with first-error-wins collection.
+    const transcriptEvents = createSerializedCallbackQueue();
+    let planChain = Promise.resolve();
+    let planError: unknown;
+    let usageChain = Promise.resolve();
+    let usageError: unknown;
+    let commandsChain = Promise.resolve();
+    let commandsError: unknown;
+    const sink = reply
+      ? rawStream
+        ? createVerbatimReplySink(reply)
+        : createQuotaGatedReplySink({
+            reply,
+            ...(replyContext ? { replyContext } : {}),
+          })
+      : null;
+    const spawnSpec = resolveSpawnCommand(command, args);
+    const { code, stdout, stderr, overflowCount } = await runStreamingPromptFlow({
+      command: spawnSpec.command,
+      args: spawnSpec.args,
+      formatToolCalls,
+      toolEventMode,
+      ...(driver ? { driver } : {}),
+      rawStream,
+      spawnPrompt: doSpawn,
+      ...(hooks.setIntervalFn ? { setIntervalFn: hooks.setIntervalFn } : {}),
+      ...(hooks.clearIntervalFn ? { clearIntervalFn: hooks.clearIntervalFn } : {}),
+      ...(hooks.maxSegmentWaitMs !== undefined ? { maxSegmentWaitMs: hooks.maxSegmentWaitMs } : {}),
+      ...(hooks.flushCheckIntervalMs !== undefined ? { flushCheckIntervalMs: hooks.flushCheckIntervalMs } : {}),
+      ...(hooks.now ? { now: hooks.now } : {}),
+      handlers: {
+        ...(onToolEvent
           ? {
               onToolEvent: (event) => {
-                transcriptEvents.enqueue(() => userOnToolEvent(event));
+                transcriptEvents.enqueue(() => onToolEvent(event));
               },
             }
           : {}),
-        ...(userOnThought
+        ...(onThought
           ? {
               onThought: (chunk) => {
-                transcriptEvents.enqueue(() => userOnThought(chunk));
+                transcriptEvents.enqueue(() => onThought(chunk));
               },
             }
           : {}),
-        ...(userOnPlan
+        ...(onPlan
           ? {
               onPlan: (entries) => {
                 // Serialize handler invocations; first error wins.
                 planChain = planChain
-                  .then(() => userOnPlan(entries))
+                  .then(() => onPlan(entries))
                   .catch((error) => {
                     planError ??= error;
                   });
               },
             }
           : {}),
-        ...(userOnUsage
+        ...(onUsage
           ? {
               onUsage: (usage) => {
                 // Serialize handler invocations; first error wins.
                 usageChain = usageChain
-                  .then(() => userOnUsage(usage))
+                  .then(() => onUsage(usage))
                   .catch((error) => {
                     usageError ??= error;
                   });
               },
             }
           : {}),
-        ...(userOnCommands
+        ...(onCommands
           ? {
               onCommands: (commands) => {
                 // Serialize handler invocations; first error wins.
                 commandsChain = commandsChain
-                  .then(() => userOnCommands(commands))
+                  .then(() => onCommands(commands))
                   .catch((error) => {
                     commandsError ??= error;
                   });
               },
             }
           : {}),
-      });
-
-      const sink = reply
-        ? rawStream
-          ? createVerbatimReplySink(reply)
-          : createQuotaGatedReplySink({
-              reply,
-              ...(replyContext ? { replyContext } : {}),
-            })
-        : null;
-
-      const feedSegment = (segment: string) => {
-        transcriptEvents.enqueue(async () => {
-          const segmentResult = onSegment?.(segment);
-          sink?.feedSegment(segment);
-          await segmentResult;
-        });
-        lastReplyAt = now();
-      };
-
-      const flushBuffer = () => {
-        // Raw streaming forwards the buffer verbatim; the batched path trims edges.
-        const remaining = rawStream ? state.buffer : state.buffer.trim();
-        if (remaining.length > 0) {
-          state.buffer = "";
-          feedSegment(remaining);
-        }
-      };
-
-      flushPendingText = () => {
-        for (const segment of state.segments.splice(0)) {
-          feedSegment(segment);
-        }
-        flushBuffer();
-      };
-
-      // Periodic timer: flush accumulated text if waiting too long
-      const timer = setIntervalFn(() => {
-        if (state.buffer.trim().length > 0 && now() - lastReplyAt >= maxSegmentWaitMs) {
-          flushBuffer();
-        }
-      }, flushCheckIntervalMs);
-
-      child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string | Buffer) => {
-        stdout += String(chunk);
-        parseStreamingDataChunk(state, String(chunk));
-        for (const segment of state.segments.splice(0)) {
-          feedSegment(segment);
-        }
-      });
-
-      child.stderr.on("data", (chunk: string | Buffer) => {
-        stderr += String(chunk);
-      });
-
-      child.on("error", (err) => {
-        clearIntervalFn(timer);
-        reject(err);
-      });
-      child.on("close", (code) => {
-        clearIntervalFn(timer);
-        const remaining = state.finalize();
-        if (remaining.length > 0) {
-          feedSegment(remaining);
-        }
-        void (async () => {
+      },
+      emitter: {
+        emitSegment: (segment) => {
+          transcriptEvents.enqueue(async () => {
+            const segmentResult = onSegment?.(segment);
+            sink?.feedSegment(segment);
+            await segmentResult;
+          });
+        },
+        finish: async () => {
           await Promise.all([
             transcriptEvents.drain(),
             planChain,
@@ -1408,36 +1184,17 @@ export class AcpxCliTransport implements SessionTransport {
           // whether to reject the prompt with a QuotaDeferredError.
           await (sink?.drain({ timeoutMs: 30_000 }) ?? Promise.resolve());
           const deferred = sink?.getPendingError();
-          if (deferred) {
-            reject(deferred);
-            return;
-          }
+          if (deferred) throw deferred;
           const transcriptError = transcriptEvents.getError();
-          if (transcriptError) {
-            reject(transcriptError);
-            return;
-          }
-          if (planError) {
-            reject(planError);
-            return;
-          }
-          if (usageError) {
-            reject(usageError);
-            return;
-          }
-          if (commandsError) {
-            reject(commandsError);
-            return;
-          }
-          resolve({
-            result: { code: code ?? 1, stdout, stderr },
-            overflowCount,
-          });
-        })().catch((error) => {
-          reject(error);
-        });
-      });
+          if (transcriptError) throw transcriptError;
+          if (planError) throw planError;
+          if (usageError) throw usageError;
+          if (commandsError) throw commandsError;
+          return overflowCount;
+        },
+      },
     });
+    return { result: { code, stdout, stderr }, overflowCount };
   }
 
   private permissionInput() {
