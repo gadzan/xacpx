@@ -18,3 +18,19 @@ export function isModelNotAdvertisedError(text: string | undefined | null): bool
     /did not advertise (?:that model|model support)/i.test(text)
   );
 }
+
+// Same problem for a saved reasoning effort: the agent stopped advertising that level,
+// or never advertised an effort option at all. Recognized here so a session override
+// cannot make the session uncreatable.
+//
+// Matched messages (see ../bridge/engine/runtime/runtime-worker-main.ts and
+// ../commands/handlers/session-effort.ts):
+//   reasoning effort "xhigh" is not advertised by the active agent
+//   the active agent does not advertise a reasoning-effort option
+export function isEffortNotAdvertisedError(text: string | undefined | null): boolean {
+  if (!text) return false;
+  return (
+    /reasoning effort "[^"]*" is not advertised/i.test(text) ||
+    /does not advertise a reasoning-effort option/i.test(text)
+  );
+}

@@ -11,6 +11,8 @@ import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx
 import { modelRestoreFailure, recoverOmpSessionModel } from "../../transport/omp-model-recovery";
 import { resolveOmpRecoveryLaunch } from "../../transport/omp-recovery-launch";
 import { assertAcpxQueueOwnerAbsent } from "../../transport/acpx-queue-owner-launcher";
+import { isModelNotAdvertisedError } from "../../transport/model-not-advertised";
+import { isEffortNotAdvertisedError } from "../../transport/model-not-advertised";
 import { acpxRecordFileNameMatches } from "../../transport/acpx-record-discovery";
 import type {
   AgentSessionListResult,
@@ -908,9 +910,8 @@ export class RuntimeEngine implements BridgeEngine {
     const renderText = toolEventMode === "text" || toolEventMode === "both";
     const renderStructured = toolEventMode === "structured" || toolEventMode === "both" || options.toolEvents === true;
     const textRenderState = { emittedToolCallIds: new Set<string>() };
-    return await this.withWorker(input, async (client, agentProcessEnv) => {
+    return await this.withEnsuredSession(input, async (client, agentProcessEnv) => {
       client.lifecycle = "busy";
-      await this.ensureSessionHandle(input, client, agentProcessEnv);
       try {
         const attachments = await buildRuntimeAttachments(options.media);
         // The user-facing Agent alias (input.agent), NOT the transport
@@ -1907,12 +1908,61 @@ export class RuntimeEngine implements BridgeEngine {
     throw new Error("listAgentSessions must be served by the CLI utility");
   }
 
+  /**
+   * Run one worker operation that first ensures the session, dropping a saved model or
+   * reasoning effort the agent does not advertise.
+   *
+   * Both are per-session overrides the Runtime replays on a cold session. A Bot (or a
+   * session) can outlive the agent's support for them — the model through a swapped
+   * adapter, the effort through an agent that stopped advertising that level — and
+   * either one otherwise makes the session permanently uncreatable. Retrying without
+   * the rejected override lets the agent use its own default instead.
+   *
+   * The model retry must go back through `withWorker`: a failed model application
+   * poisons that worker (`RUNTIME_WORKER_POISONED_INIT`) because the adapter may retain a
+   * native ACP owner it cannot prove dead, and `withWorker` recycles it so the retry
+   * lands on a fresh one.
+   */
+  private async withEnsuredSession<T>(
+    input: EngineSessionInput,
+    run: (client: RuntimeWorkerClient, agentProcessEnv: Record<string, string> | undefined) => Promise<T>,
+    options?: { resumeSessionId?: string },
+  ): Promise<T> {
+    const attempt = (overrides: { model?: string; effort?: string }) => {
+      // Spread `overrides` LAST and always carry both keys: `{...input, model}` would keep
+      // `input.effort` (the very value being rejected) and the retry would fail again.
+      const attemptInput: EngineSessionInput = { ...input, model: overrides.model, effort: overrides.effort };
+      return this.withWorker(attemptInput, async (client, agentProcessEnv) => {
+        await this.ensureSessionHandle(attemptInput, client, agentProcessEnv, options);
+        return await run(client, agentProcessEnv);
+      });
+    };
+    const current = { model: input.model, effort: input.effort };
+    try {
+      return await attempt(current);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : null;
+      const modelRejected = !!current.model?.trim() && isModelNotAdvertisedError(message);
+      const effortRejected = !!current.effort?.trim() && isEffortNotAdvertisedError(message);
+      if (!modelRejected && !effortRejected) throw error;
+      // Drop whichever override the agent refused and retry once. Dropping the model also
+      // re-initializes the session, so a rejected effort can surface on that retry and
+      // needs a second drop; a rejected effort on its own needs only one.
+      try {
+        return await attempt({ model: modelRejected ? undefined : current.model });
+      } catch (retryError) {
+        const retryMessage = retryError instanceof Error ? retryError.message : null;
+        if (!modelRejected || !current.effort?.trim() || !isEffortNotAdvertisedError(retryMessage)) {
+          throw retryError;
+        }
+        return await attempt({});
+      }
+    }
+  }
+
   async ensureSession(input: EngineSessionInput): Promise<Record<string, never>> {
     this.sessionCatalog.set(this.workerKey(input), input);
-    await this.withWorker(input, async (client, agentProcessEnv) => {
-      await this.ensureSessionHandle(input, client, agentProcessEnv);
-      return {};
-    });
+    await this.withEnsuredSession(input, async () => ({}));
     // PR6: after ensure, if durable queue has pending items (bridge restart recovery), kick drain
     try {
       if (this.queueStore && await this.queueStore.hasPending(this.workerKey(input))) {
@@ -1924,10 +1974,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   async resumeAgentSession(input: EngineSessionInput & { agentSessionId: string }): Promise<Record<string, never>> {
     this.sessionCatalog.set(this.workerKey(input), input);
-    await this.withWorker(input, async (client, agentProcessEnv) => {
-      await this.ensureSessionHandle(input, client, agentProcessEnv, { resumeSessionId: input.agentSessionId });
-      return {};
-    });
+    await this.withEnsuredSession(input, async () => ({}), { resumeSessionId: input.agentSessionId });
     return {};
   }
   async prompt(
@@ -1949,8 +1996,7 @@ export class RuntimeEngine implements BridgeEngine {
     // updates detects the in-flight turn and fails closed (plan §32).
     // Must be before any await so the busy flag is synchronously visible to concurrent updatePermissionPolicy.
     this.incActiveTurn(key);
-    this.sessionCatalog.set(key, input);
-    // Archive suspend: a direct prompt resumes a suspended durable queue (first post-archive use).
+    this.sessionCatalog.set(key, input);    // Archive suspend: a direct prompt resumes a suspended durable queue (first post-archive use).
     // G6: persist first, then memory. Fail-closed on persist error.
     try {
       await this.getQueueStore().setSuspended(key, false);

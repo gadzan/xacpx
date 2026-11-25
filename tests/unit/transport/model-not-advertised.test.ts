@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { isModelNotAdvertisedError } from "../../../src/transport/model-not-advertised";
+import { isEffortNotAdvertisedError, isModelNotAdvertisedError } from "../../../src/transport/model-not-advertised";
 
 test("matches acpx 'did not advertise that model' rejection", () => {
   const msg =
@@ -41,4 +41,38 @@ test("is null/undefined safe", () => {
   expect(isModelNotAdvertisedError(undefined)).toBe(false);
   expect(isModelNotAdvertisedError(null)).toBe(false);
   expect(isModelNotAdvertisedError("")).toBe(false);
+});
+
+test("matches the Runtime worker's poisoned-init wrapper", () => {
+  // The Runtime applies the model as a session option during initialization and wraps a
+  // failure as RUNTIME_WORKER_POISONED_INIT with the adapter's message appended. The
+  // wrapper must stay recognizable, or a saved model the agent no longer advertises
+  // makes the session permanently uncreatable.
+  const msg =
+    'runtime initialization failed for session "ws:alias" and the worker is now poisoned ' +
+    "(no in-process retry): " +
+    'Cannot apply --model "magpie/group/smart-split": the ACP agent did not advertise model ' +
+    "support through a session config option or legacy models metadata, and the adapter does " +
+    "not support a startup model flag.";
+  expect(isModelNotAdvertisedError(msg)).toBe(true);
+});
+
+test("recognizes an unadvertised reasoning effort", () => {
+  // A saved effort level outliving the agent's support must be droppable the same way a
+  // stale model is, or the session stays uncreatable.
+  expect(isEffortNotAdvertisedError('reasoning effort "xhigh" is not advertised by the active agent')).toBe(true);
+  expect(isEffortNotAdvertisedError("the active agent does not advertise a reasoning-effort option")).toBe(true);
+});
+
+test("does not mistake other failures for an unadvertised effort", () => {
+  for (const text of [
+    "",
+    null,
+    undefined,
+    "worker not ensured",
+    'Cannot apply --model "x": the ACP agent did not advertise model support',
+    "reasoning effort could not be persisted",
+  ]) {
+    expect(isEffortNotAdvertisedError(text)).toBe(false);
+  }
 });
