@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 import { useAuthStore } from "../stores/auth";
 import { useRuntimeStore } from "../stores/runtime";
 import { forgetToken, readRememberedToken, rememberToken } from "../lib/login-token";
+import BrandLogo from "../components/BrandLogo.vue";
 
 const auth = useAuthStore();
 const runtime = useRuntimeStore();
@@ -63,19 +64,10 @@ async function copyCommand() {
     <div aria-hidden="true" class="login-grid"></div>
 
     <div class="relative flex w-[23rem] max-w-full flex-col items-center">
-      <!-- Brand lockup: the gradient mark is the product's identity, so it is the one
-           saturated element on the page. Everything below stays neutral. -->
+      <!-- Brand lockup: the same mark the dashboard bar renders, so the two surfaces can
+           never drift apart. `markOnly` because this page supplies its own title. -->
       <div class="mb-6 flex flex-col items-center gap-2.5">
-        <svg width="52" height="52" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <defs>
-            <linearGradient id="loginBrandX" x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse">
-              <stop style="stop-color: rgb(var(--c-accent))" />
-              <stop offset=".55" style="stop-color: rgb(var(--c-info))" />
-              <stop offset="1" style="stop-color: rgb(var(--c-run-bright))" />
-            </linearGradient>
-          </defs>
-          <path d="M5.5 5.5 L18.5 18.5 M18.5 5.5 L5.5 18.5" stroke="url(#loginBrandX)" stroke-width="4" stroke-linecap="round" />
-        </svg>
+        <BrandLogo mark-only :size="44" />
         <div class="flex flex-col items-center gap-1.5">
           <h1 class="text-base font-semibold tracking-tight text-fg">{{ localMode ? $t("login.localTitle") : "xacpx relay" }}</h1>
           <p class="text-xs text-fg-muted">{{ localMode ? $t("login.localSubtitle") : $t("login.subtitle") }}</p>

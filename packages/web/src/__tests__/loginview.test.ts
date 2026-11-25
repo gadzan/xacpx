@@ -6,6 +6,7 @@ const replace = vi.fn();
 vi.mock("vue-router", () => ({ useRouter: () => ({ replace }) }));
 
 import LoginView from "../views/LoginView.vue";
+import BrandLogo from "../components/BrandLogo.vue";
 import { useAuthStore } from "../stores/auth";
 
 // jsdom has no navigator.clipboard by default; the copy test stubs it. Restore
@@ -32,6 +33,17 @@ describe("LoginView", () => {
     expect(w.find("h1").text()).toBe("xacpx relay");
     expect(w.text()).toContain("xacpx-relay add token");
     expect(w.find('[data-test="signin"]').text()).toContain("Sign in");
+  });
+
+  it("shows the dashboard's own brand mark rather than a second copy of it", () => {
+    // The login page had drifted to a plain gradient X while the dashboard bar showed
+    // the real xacpx mark. Reusing the component keeps the two from diverging again.
+    const w = mount(LoginView);
+    const brand = w.findComponent(BrandLogo);
+    expect(brand.exists()).toBe(true);
+    expect(brand.props("markOnly")).toBe(true);
+    // markOnly, so the page supplies its own title instead of "XACPX HUB".
+    expect(w.text()).not.toContain("HUB");
   });
 
   it("toggles token visibility with the eye button", async () => {
