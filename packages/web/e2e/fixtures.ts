@@ -87,6 +87,18 @@ export async function loginAndShowInstances(page: Page): Promise<void> {
  * coordinates, so the box must be on screen — an off-screen box would make every
  * tap miss, and a `null?.closest()` result must never be read as a hit.
  */
+/** Wait for the top dialog to finish arriving. DialogShell's enter scales the
+ *  panel by 2% for 160ms, and a transformed ancestor scales every box measured
+ *  inside it — geometry read mid-flight comes back 2% small (44 → 43.12). */
+export async function settleDialog(page: Page): Promise<void> {
+  await expect
+    .poll(() => page.evaluate(() => {
+      const panel = document.querySelector('[role="dialog"][aria-modal="true"]');
+      return panel ? getComputedStyle(panel).transform : "missing";
+    }), { timeout: 5000 })
+    .toBe("none");
+}
+
 export async function expectTouchTarget(page: Page, testId: string, min = 44): Promise<void> {
   const el = page.getByTestId(testId).first();
   await expect(el, testId).toBeVisible();

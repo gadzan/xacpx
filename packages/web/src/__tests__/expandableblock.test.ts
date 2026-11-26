@@ -28,14 +28,23 @@ describe("ExpandableBlock", () => {
     const toggle = wrapper.find('[data-test="expand-toggle"]');
     expect(toggle.exists()).toBe(true);
     expect(toggle.text()).toContain("Show more");
-    // Collapsed: the inner wrapper is height-capped.
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    // Collapsed: the inner wrapper is height-capped, and the cut edge is masked so
+    // the clamp explains itself before the toggle is read.
     const inner = wrapper.find('[data-test="clamp-inner"]');
     expect(inner.classes()).toContain("overflow-hidden");
+    expect(inner.classes()).toContain("clamp-fade");
     expect((inner.element as HTMLElement).style.maxHeight).toBe("200px");
+    // One chevron, upright while collapsed.
+    expect(toggle.find("svg").classes()).not.toContain("rotate-180");
     await toggle.trigger("click");
     expect(wrapper.find('[data-test="expand-toggle"]').text()).toContain("Show less");
+    expect(wrapper.find('[data-test="expand-toggle"]').attributes("aria-expanded")).toBe("true");
     const innerOpen = wrapper.find('[data-test="clamp-inner"]');
     expect(innerOpen.classes()).not.toContain("overflow-hidden");
+    expect(innerOpen.classes()).not.toContain("clamp-fade");
+    // …and turned over once expanded, instead of being swapped for a second icon.
+    expect(wrapper.find('[data-test="expand-toggle"] svg').classes()).toContain("rotate-180");
   });
 
   it("respects a custom maxPx threshold", async () => {

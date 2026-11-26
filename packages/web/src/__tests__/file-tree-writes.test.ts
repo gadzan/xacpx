@@ -8,10 +8,21 @@ import { openMenuKey } from "../../src/lib/tree-menu";
 import FileTreeNode from "../../src/components/FileTreeNode.vue";
 import FilesPanel from "../../src/components/FilesPanel.vue";
 
+// File actions ask through the app's own confirm dialog (lib/use-confirm). Hoisted
+// so the mock factory can see it: FileTreeNode is imported above, and Vitest runs a
+// mock factory when that import resolves.
+const { confirmSpy } = vi.hoisted(() => ({ confirmSpy: vi.fn() }));
+vi.mock("../../src/lib/use-confirm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/lib/use-confirm")>();
+  return { ...actual, confirm: confirmSpy };
+});
+
 beforeEach(() => {
   setActivePinia(createPinia());
   openMenuKey.value = null;
   useToasts().value = []; // module singleton — clear between tests
+  confirmSpy.mockReset();
+  confirmSpy.mockResolvedValue(true);
 });
 
 const g = { global: { mocks: { $t: (k: string) => k } } };
@@ -124,16 +135,29 @@ describe("FileTreeNode write menu", () => {
     expect(store.searchOpts.exclude).toBe("*.log"); // preference survives
   });
 
-  it("delete calls window.confirm then store.deleteEntry when confirmed", async () => {
+  it("delete asks the app confirm, then store.deleteEntry when confirmed", async () => {
     const store = useFilesStore();
     store.instanceId = "i1"; store.workspace = "ws"; store.root = "/abs"; store.sep = "/";
     const deleteEntry = vi.spyOn(store, "deleteEntry").mockResolvedValue();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const w = mount(FileTreeNode, { props: { entry: { name: "a.ts", type: "file" }, dir: "src", depth: 1, showDotfiles: true, showGitignored: true }, ...g });
     await w.find('[data-test="tree-row"]').trigger("contextmenu");
     await w.find('[data-test="menu-delete"]').trigger("click");
-    expect(confirmSpy).toHaveBeenCalled();
+    await flushPromises();
+    // The glass dialog, not an OS-level confirm() (which blocks the dashboard).
+    expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ tone: "danger" }));
     expect(deleteEntry).toHaveBeenCalledWith("src/a.ts");
+  });
+
+  it("delete leaves the file alone when the confirm is declined", async () => {
+    const store = useFilesStore();
+    store.instanceId = "i1"; store.workspace = "ws"; store.root = "/abs"; store.sep = "/";
+    const deleteEntry = vi.spyOn(store, "deleteEntry").mockResolvedValue();
+    confirmSpy.mockResolvedValue(false);
+    const w = mount(FileTreeNode, { props: { entry: { name: "a.ts", type: "file" }, dir: "src", depth: 1, showDotfiles: true, showGitignored: true }, ...g });
+    await w.find('[data-test="tree-row"]').trigger("contextmenu");
+    await w.find('[data-test="menu-delete"]').trigger("click");
+    await flushPromises();
+    expect(deleteEntry).not.toHaveBeenCalled();
   });
 
   it("newFile enters an inline input and submits via createEntry on Enter", async () => {

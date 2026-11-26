@@ -98,6 +98,11 @@ export default {
         press: "var(--shadow-press)",
         pop: "var(--shadow-pop)",
         dialog: "var(--shadow-dialog)",
+        // Buttons carry their own weight: a specular top edge plus one low,
+        // hue-tinted shadow for a filled primary, a plain contact shadow for a
+        // raised (secondary) face. Never the overlay shadow — see style.css.
+        btn: "var(--shadow-btn)",
+        "btn-raised": "var(--shadow-btn-raised)",
         glass: "inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border)",
         "glass-float": "inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border), var(--glass-shadow)",
       },

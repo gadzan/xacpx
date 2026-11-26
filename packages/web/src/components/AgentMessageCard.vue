@@ -111,7 +111,7 @@ const completionChip = computed<CompletionChip | null>(() => {
           class="inline-flex items-center gap-1"
           :class="completionChip.cls"
         >
-          <component :is="completionChip.icon" :size="11" :class="{ 'animate-pulse': completionChip.pulse }" />
+          <component :is="completionChip.icon" :size="11" :class="{ 'animate-pulse motion-reduce:animate-none': completionChip.pulse }" />
           {{ $t(completionChip.key) }}
         </span>
         <template v-else>
@@ -119,7 +119,7 @@ const completionChip = computed<CompletionChip | null>(() => {
             <AlertCircle :size="11" /> {{ $t("agentMessage.failed") }}
           </span>
           <span v-else-if="message.status === 'sending'" data-test="msg-status-sending" class="inline-flex items-center gap-1 text-fg-muted">
-            <Send :size="11" class="animate-pulse" /> {{ $t("agentMessage.sending") }}
+            <Send :size="11" class="animate-pulse motion-reduce:animate-none" /> {{ $t("agentMessage.sending") }}
           </span>
           <span v-else-if="message.status === 'delivered'" data-test="msg-status-delivered" class="inline-flex items-center gap-1 text-accent-text">
             <CheckCircle2 :size="11" /> {{ $t("agentMessage.delivered") }}

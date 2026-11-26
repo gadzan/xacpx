@@ -135,7 +135,7 @@ watch(
       <span v-if="modelCount !== null" data-test="arr-models" class="text-fg-muted">{{
         $t("agents.readinessModels", { count: modelCount })
       }}</span>
-      <RefreshCw v-if="checking" :size="12" class="animate-spin text-fg-muted" aria-hidden="true" />
+      <RefreshCw v-if="checking" :size="12" class="animate-spin motion-reduce:animate-none text-fg-muted" aria-hidden="true" />
     </div>
     <p v-if="reason" data-test="arr-reason" class="text-fg-muted">{{ reason }}</p>
     <p v-if="recovery" data-test="arr-recovery" class="text-fg-muted">{{ recovery }}</p>
@@ -155,7 +155,7 @@ watch(
               :aria-label="$t('agents.readinessCheckHint', { name: agentName, workspace: workspace || '—' })"
               class="inline-flex items-center gap-1 rounded-sm bg-surface-2 px-2 py-0.5 text-xs text-fg transition-colors hover:bg-accent-soft disabled:opacity-50"
               @click="check">
-        <RefreshCw :size="12" :class="checking ? 'animate-spin' : ''" aria-hidden="true" />
+        <RefreshCw :size="12" :class="checking ? 'animate-spin motion-reduce:animate-none' : ''" aria-hidden="true" />
         {{ $t("agents.readinessCheck") }}
       </button>
     </div>

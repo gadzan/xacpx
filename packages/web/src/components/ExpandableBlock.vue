@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChevronDown, ChevronUp } from "lucide-vue-next";
+import { ChevronDown } from "lucide-vue-next";
 
 // Clamps long content (a file read, command output, big diff) to a bounded height so it
 // stays inline without burying the rest of the turn. A "Show more" toggle reveals the
@@ -33,15 +33,29 @@ watch(expanded, () => { if (!expanded.value) void nextTick(measure); });
 <template>
   <div>
     <div ref="inner" data-test="clamp-inner"
-         :class="!expanded && overflows ? 'overflow-hidden' : ''"
+         :class="!expanded && overflows ? 'overflow-hidden clamp-fade' : ''"
          :style="!expanded && overflows ? { maxHeight: maxPx + 'px' } : undefined">
       <slot />
     </div>
-    <button v-if="overflows" type="button" data-test="expand-toggle"
+    <button v-if="overflows" type="button" data-test="expand-toggle" :aria-expanded="expanded"
             class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-accent-text hover:underline"
             @click="expanded = !expanded">
-      <component :is="expanded ? ChevronUp : ChevronDown" :size="12" />
-      {{ expanded ? "Show less" : "Show more" }}
+      <!-- One chevron that turns over, not two icons swapping: the eye follows the
+           direction of the change instead of re-finding the control. -->
+      <ChevronDown :size="12" class="transition-transform duration-150 ease-ui motion-reduce:transition-none"
+                   :class="expanded ? 'rotate-180' : ''" />
+      {{ expanded ? $t("common.showLess") : $t("common.showMore") }}
     </button>
   </div>
 </template>
+
+<style scoped>
+/* The clamp cuts the content mid-line; fade the last quarter instead of leaving a
+   hard edge, so "there is more below" is visible before the toggle is read. A
+   mask — not an overlay gradient — because it never has to match the material
+   behind it (raised card, chrome, canvas), and it cannot swallow a click. */
+.clamp-fade {
+  -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+}
+</style>

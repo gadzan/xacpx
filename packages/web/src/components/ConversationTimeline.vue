@@ -212,7 +212,7 @@ defineExpose({ scrollToBottom });
           class="flex items-center gap-1.5 rounded-full bg-surface px-3 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
           @click="handleLoadOlder"
         >
-          <Loader2 v-if="loadingOlder" :size="12" class="animate-spin" />
+          <Loader2 v-if="loadingOlder" :size="12" class="animate-spin motion-reduce:animate-none" />
           <span>{{ loadingOlder ? $t("common.loading") : $t("chat.loadOlder") }}</span>
         </button>
       </div>

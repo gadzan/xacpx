@@ -751,10 +751,11 @@ describe("InstanceTree session management", () => {
     directBots.selectedBotId = "b1";
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     await flushPromises();
-    expect(w.find('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]').classes())
-      .toContain("bg-raised");
-    expect(w.find('[data-test="instance-nav-sessions"] [data-test="instance-nav-pill"]').classes())
-      .not.toContain("bg-raised");
+    // The raised fill is one sliding indicator now, so "which tab is showing" is
+    // the active label style plus where that indicator sits.
+    expect(w.find('[data-test="instance-nav-bots"]').classes()).toContain("font-semibold");
+    expect(w.find('[data-test="instance-nav-indicator"]').classes()).toContain("translate-x-full");
+    expect(w.find('[data-test="instance-nav-sessions"]').classes()).not.toContain("font-semibold");
     w.unmount();
   });
 
@@ -770,8 +771,8 @@ describe("InstanceTree session management", () => {
     groupsStore.selectedGroupId = "g1";
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     await flushPromises();
-    expect(w.find('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]').classes())
-      .toContain("bg-raised");
+    expect(w.find('[data-test="instance-nav-bots"]').classes()).toContain("font-semibold");
+    expect(w.find('[data-test="instance-nav-indicator"]').classes()).toContain("translate-x-full");
     w.unmount();
   });
 
@@ -783,8 +784,8 @@ describe("InstanceTree session management", () => {
     // Browsing Bots while a session stays open must not snap back to sessions.
     await w.find('[data-test="instance-nav-bots"]').trigger("click");
     await flushPromises();
-    expect(w.find('[data-test="instance-nav-bots"] [data-test="instance-nav-pill"]').classes())
-      .toContain("bg-raised");
+    expect(w.find('[data-test="instance-nav-bots"]').classes()).toContain("font-semibold");
+    expect(w.find('[data-test="instance-nav-indicator"]').classes()).toContain("translate-x-full");
     w.unmount();
   });
 });

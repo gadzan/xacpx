@@ -1045,10 +1045,23 @@ const rowSwipes = computed(() => {
            rail's uniform 2px inset: 2 + 28 + 2 vertically, and the same 2px
            left/right, so the first and last pill never touch the rail edge.
            The halves divide the content box (after that padding), never the
-           padded width, and the 44 hit boxes stay unpainted. -->
-      <div data-test="instance-nav-track" class="relative flex min-w-0 items-center gap-0.5 px-0.5 [@media(pointer:coarse)]:h-11">
+           padded width, and the 44 hit boxes stay unpainted.
+
+           The selected fill is ONE sliding indicator under both segments (the
+           segments themselves are adjacent, no gap — the indicator supplies the
+           separation), so switching modes moves the pill instead of swapping
+           two backgrounds. `50% - 2px` is half the content box; `translate-x-full`
+           is exactly that half, which lands the indicator on the other segment. -->
+      <div data-test="instance-nav-track" class="relative flex min-w-0 items-center px-0.5 [@media(pointer:coarse)]:h-11">
+        <!-- The rail is the recessed track: a dark overlay on the light theme, and
+             in the dark theme the page tone itself — `fill-track` there is a WHITE
+             overlay, which would land above the raised thumb and make the selected
+             segment read as a hole instead of a raised one. -->
         <span aria-hidden="true" data-test="instance-nav-rail"
-              class="pointer-events-none absolute inset-x-0 top-1/2 h-8 -translate-y-1/2 rounded-btn bg-fill-track"></span>
+              class="pointer-events-none absolute inset-x-0 top-1/2 h-8 -translate-y-1/2 rounded-btn bg-fill-track dark:bg-bg"></span>
+        <span aria-hidden="true" data-test="instance-nav-indicator"
+              class="pointer-events-none absolute left-0.5 top-1/2 h-7 w-[calc(50%_-_2px)] -translate-y-1/2 rounded-sm bg-raised shadow-press transition-transform duration-150 ease-ui motion-reduce:transition-none"
+              :class="navMode === 'bots' ? 'translate-x-full' : 'translate-x-0'"></span>
         <button
           type="button"
           data-test="instance-nav-sessions"
@@ -1058,7 +1071,7 @@ const rowSwipes = computed(() => {
         >
           <span data-test="instance-nav-pill"
                 class="flex h-7 w-full min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 transition-colors"
-                :class="navMode === 'sessions' ? 'bg-raised shadow-press' : 'hover:bg-fill-hover'">
+                :class="navMode === 'sessions' ? '' : 'hover:bg-fill-hover'">
             <MessageSquare :size="11" class="shrink-0" />
             <span class="truncate" :title="$t('nav.sessions')">{{ $t("nav.sessions") }}</span>
           </span>
@@ -1072,7 +1085,7 @@ const rowSwipes = computed(() => {
         >
           <span data-test="instance-nav-pill"
                 class="flex h-7 w-full min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 transition-colors"
-                :class="navMode === 'bots' ? 'bg-raised shadow-press' : 'hover:bg-fill-hover'">
+                :class="navMode === 'bots' ? '' : 'hover:bg-fill-hover'">
             <Bot :size="11" class="shrink-0" />
             <span class="truncate" :title="$t('nav.bots')">{{ $t("nav.bots") }}</span>
           </span>

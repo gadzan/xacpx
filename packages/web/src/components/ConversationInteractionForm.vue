@@ -629,7 +629,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           :disabled="submitting || requiredMissing.length > 0 || !canSubmit"
           @click="emit('submit')"
         >
-          <Loader2 v-if="submitting" :size="12" class="animate-spin" />
+          <Loader2 v-if="submitting" :size="12" class="animate-spin motion-reduce:animate-none" />
           <Check v-else :size="12" />
           <span>{{ t('bot.interaction.submit') }}</span>
         </button>

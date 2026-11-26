@@ -122,7 +122,7 @@ const statusText = computed<string>(() => props.activeSpeakerName ?? "");
       class="ml-auto flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs font-medium text-danger-text transition-colors hover:bg-danger/10 disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:px-2.5"
       @click="emit('stopAll')"
     >
-      <Loader2 v-if="stopping" :size="11" class="animate-spin" />
+      <Loader2 v-if="stopping" :size="11" class="animate-spin motion-reduce:animate-none" />
       <CircleStop v-else :size="11" />
       <span>{{ $t("conversation.status.stopAll") }}</span>
     </button>

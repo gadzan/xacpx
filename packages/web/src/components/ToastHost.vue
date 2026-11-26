@@ -66,7 +66,13 @@ onBeforeUnmount(() => window.removeEventListener("resize", reposition));
 
 <template>
   <Teleport to="body">
-    <div
+    <!-- TransitionGroup, not a plain list: toasts arrive and leave one at a time,
+         and the ones still on screen have to slide to their new slot instead of
+         jumping when a neighbour disappears. The recipe (and its reduced-motion
+         form) is `.ui-toast-*` in style.css. -->
+    <TransitionGroup
+      tag="div"
+      name="ui-toast"
       class="pointer-events-none fixed z-[60] flex w-72 max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-2"
       :style="style"
       aria-live="polite"
@@ -82,6 +88,6 @@ onBeforeUnmount(() => window.removeEventListener("resize", reposition));
         <span class="min-w-0 flex-1 truncate">{{ $t(t.key, t.params ?? {}) }}</span>
         <button data-test="toast-dismiss" class="shrink-0 text-fg-muted hover:text-fg" :aria-label="$t('common.dismiss')" @click="dismissToast(t.id)">×</button>
       </div>
-    </div>
+    </TransitionGroup>
   </Teleport>
 </template>

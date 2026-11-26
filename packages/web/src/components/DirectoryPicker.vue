@@ -154,7 +154,7 @@ function onListKeydown(e: KeyboardEvent): void {
         <div class="mt-2 min-h-[12rem] flex-1 overflow-y-auto px-2 py-1"
              role="listbox" :aria-label='$t("dirPicker.title")' tabindex="0" @keydown="onListKeydown">
           <div v-if="loading" class="flex items-center justify-center gap-2 py-8 text-sm text-fg-muted">
-            <Loader2 :size="16" class="animate-spin" /> {{ $t("session.loadingOptions") }}
+            <Loader2 :size="16" class="animate-spin motion-reduce:animate-none" /> {{ $t("session.loadingOptions") }}
           </div>
           <template v-else>
             <button v-for="(d, i) in visibleDirs" :key="d.path" type="button" role="option"

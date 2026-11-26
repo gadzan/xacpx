@@ -300,7 +300,7 @@ function onInput(event: Event): void {
             @click="emit('send')"
           >
             <span class="grid h-8 w-8 lg:h-7 lg:w-7 place-items-center rounded-full bg-accent text-on-accent transition-colors hover:bg-accent-hover group-disabled:bg-fg/10 group-disabled:text-fg-muted">
-              <Loader2 v-if="sending" :size="12" class="animate-spin" />
+              <Loader2 v-if="sending" :size="12" class="animate-spin motion-reduce:animate-none" />
               <ArrowUp v-else :size="13" :stroke-width="2.5" />
             </span>
           </button>

@@ -92,34 +92,42 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-24 backdrop-blur-scrim pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]"
-       data-test="command-palette" @click.self="navigateBack">
-    <!-- Stays a TOP panel: global session search, not a field's option list. The
-         safe-area-aware side insets keep >=16px on every edge, and max-w-lg (512)
-         can never exceed viewport - 32px because the padding lives inside the
-         flex container. -->
-    <div ref="panel" :style="pinnedHeight ? { minHeight: `min(${pinnedHeight}px, calc(100dvh - 7rem))` } : undefined"
-         class="w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
-      <div class="flex min-h-12 items-center gap-2 px-4">
-        <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
-        <input ref="input" v-model="query" data-test="palette-input" data-ring="container"
-               class="w-full bg-transparent text-base text-fg placeholder:text-fg-muted-overlay outline-none"
-               @input="active = 0; clampActive()" @keydown="onKeydown" />
+  <Transition
+    appear
+    enter-active-class="ui-scrim-enter-active"
+    enter-from-class="ui-scrim-enter-from"
+    leave-active-class="ui-scrim-leave-active"
+    leave-to-class="ui-scrim-leave-to"
+  >
+    <div class="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-24 backdrop-blur-scrim pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]"
+         data-test="command-palette" @click.self="navigateBack">
+      <!-- Stays a TOP panel: global session search, not a field's option list. The
+           safe-area-aware side insets keep >=16px on every edge, and max-w-lg (512)
+           can never exceed viewport - 32px because the padding lives inside the
+           flex container. -->
+      <div ref="panel" :style="pinnedHeight ? { minHeight: `min(${pinnedHeight}px, calc(100dvh - 7rem))` } : undefined"
+           class="ui-panel w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+        <div class="flex min-h-12 items-center gap-2 px-4">
+          <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
+          <input ref="input" v-model="query" data-test="palette-input" data-ring="container"
+                 class="w-full bg-transparent text-base text-fg placeholder:text-fg-muted-overlay outline-none"
+                 @input="active = 0; clampActive()" @keydown="onKeydown" />
+        </div>
+        <ul class="max-h-80 overflow-y-auto p-1 text-ui">
+          <li v-for="(r, i) in rows" :key="`${r.instanceId}:${r.alias}:${i}`">
+            <button data-test="palette-row" class="flex min-h-12 w-full items-center gap-2 rounded-item px-4 py-1.5 text-left"
+                    :class="i === active ? 'bg-fill-strong text-fg' : 'text-fg hover:bg-fill-hover'"
+                    @mouseenter="active = i" @click="choose(r)">
+              <MessageSquare :size="14" class="shrink-0" />
+              <!-- Title truncates, the instance · agent subtitle keeps its own
+                   truncation: a long name never pushes the secondary line out. -->
+              <span class="min-w-0 truncate font-medium">{{ r.label }}</span>
+              <span class="min-w-0 shrink truncate text-xs text-fg-muted-overlay">{{ r.sub }}</span>
+            </button>
+          </li>
+          <li v-if="!rows.length" class="px-4 py-3 text-xs text-fg-muted-overlay">{{ $t("palette.noMatches") }}</li>
+        </ul>
       </div>
-      <ul class="max-h-80 overflow-y-auto p-1 text-ui">
-        <li v-for="(r, i) in rows" :key="`${r.instanceId}:${r.alias}:${i}`">
-          <button data-test="palette-row" class="flex min-h-12 w-full items-center gap-2 rounded-item px-4 py-1.5 text-left"
-                  :class="i === active ? 'bg-fill-strong text-fg' : 'text-fg hover:bg-fill-hover'"
-                  @mouseenter="active = i" @click="choose(r)">
-            <MessageSquare :size="14" class="shrink-0" />
-            <!-- Title truncates, the instance · agent subtitle keeps its own
-                 truncation: a long name never pushes the secondary line out. -->
-            <span class="min-w-0 truncate font-medium">{{ r.label }}</span>
-            <span class="min-w-0 shrink truncate text-xs text-fg-muted-overlay">{{ r.sub }}</span>
-          </button>
-        </li>
-        <li v-if="!rows.length" class="px-4 py-3 text-xs text-fg-muted-overlay">{{ $t("palette.noMatches") }}</li>
-      </ul>
     </div>
-  </div>
+  </Transition>
 </template>

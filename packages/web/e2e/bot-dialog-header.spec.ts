@@ -1,4 +1,4 @@
-import { expect, test, loginAndShowInstances } from "./fixtures";
+import { expect, test, loginAndShowInstances, settleDialog } from "./fixtures";
 
 // The bot dialog header used to be a 56px avatar with the name stacked under
 // it, and the appearance badge painted a dark ring over every avatar. Both are
@@ -9,6 +9,9 @@ async function openNewBot(page: import("@playwright/test").Page): Promise<void> 
   await page.getByTestId("instance-nav-bots").first().click();
   await page.getByTestId("new-bot-button").first().click();
   await expect(page.getByTestId("bot-avatar-quick-view")).toBeVisible();
+  // Every box below is measured inside the dialog panel, which is scaled by 2%
+  // while it arrives — measure after it settles.
+  await settleDialog(page);
 }
 
 test("bot dialog header: the avatar leads, name and role stack beside it at its height", async ({ page }, testInfo) => {

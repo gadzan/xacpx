@@ -23,6 +23,14 @@ vi.mock("../api/events", () => ({
 // DashboardView uses useRouter()/<router-link>; mock to avoid a real router.
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
+// File and terminal closing asks through the app's own confirm dialog. Stub the
+// module so the promise settles without mounting the dialog host.
+const { confirmSpy } = vi.hoisted(() => ({ confirmSpy: vi.fn() }));
+vi.mock("../lib/use-confirm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/use-confirm")>();
+  return { ...actual, confirm: confirmSpy };
+});
+
 import DashboardView from "../views/DashboardView.vue";
 import TerminalTab from "../components/TerminalTab.vue";
 import FileViewer from "../components/FileViewer.vue";
@@ -49,6 +57,8 @@ beforeEach(() => {
   // center-tabs now persists to sessionStorage (task 2); clear it too so tabs opened in one
   // test don't leak into the next test's store via hydrate().
   sessionStorage.clear();
+  confirmSpy.mockReset();
+  confirmSpy.mockResolvedValue(true);
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [] }), { status: 200 })));
 });
 
@@ -243,7 +253,7 @@ test("closing a terminal tab confirms then terminates the shared resource", asyn
     terminateRetryable: false,
   });
   const terminateSpy = vi.spyOn(terminals, "terminate").mockResolvedValue({ status: "terminated" });
-  vi.spyOn(window, "confirm").mockReturnValue(true);
+  confirmSpy.mockResolvedValue(true);
 
   wrapper.findComponent(TerminalTab).vm.$emit("close");
   await flushPromises();
@@ -263,7 +273,6 @@ test("closing a terminal tab that never opened just drops the tab", async () => 
   await flushPromises();
   const terminals = useTerminalStore();
   const terminateSpy = vi.spyOn(terminals, "terminate");
-  const confirmSpy = vi.spyOn(window, "confirm");
 
   wrapper.findComponent(TerminalTab).vm.$emit("close");
   await flushPromises();
@@ -301,7 +310,7 @@ test("canceling terminal close confirm does not terminate", async () => {
     terminateRetryable: false,
   });
   const terminateSpy = vi.spyOn(terminals, "terminate");
-  vi.spyOn(window, "confirm").mockReturnValue(false);
+  confirmSpy.mockResolvedValue(false);
 
   wrapper.findComponent(TerminalTab).vm.$emit("close");
   await flushPromises();
@@ -358,7 +367,7 @@ test("clicking the tab strip's own X button terminates after confirm", async () 
     terminateRetryable: false,
   });
   const terminateSpy = vi.spyOn(terminals, "terminate").mockResolvedValue({ status: "terminated" });
-  vi.spyOn(window, "confirm").mockReturnValue(true);
+  confirmSpy.mockResolvedValue(true);
 
   const closeButtons = wrapper.findAll('[data-test="tab-close"]');
   expect(closeButtons.length).toBeGreaterThan(0);

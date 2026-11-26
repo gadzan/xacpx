@@ -68,6 +68,11 @@ describe("ToastHost placement", () => {
     expect(toast.querySelector("svg")?.getAttribute("class") ?? "").toContain("animate-spin");
     dismissToast(id);
     await nextTick();
+    // It fades out before it leaves the DOM (`.ui-toast-leave-*` in style.css).
+    // jsdom loads no CSS, so "the animation finished" is just the two frames Vue
+    // waits before removing a node whose transition it could not measure.
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(null))));
+    await nextTick();
     expect(document.querySelector('[data-test="toast"]')).toBeNull();
   });
 });

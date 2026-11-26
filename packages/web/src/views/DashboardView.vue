@@ -16,6 +16,7 @@ import { useFilesStore } from "../stores/files";
 import { iconForFile } from "../lib/file-icons";
 import { detachSessionTerminal } from "../lib/session-terminal";
 import { pushToast } from "../lib/use-toasts";
+import { confirm } from "../lib/use-confirm";
 import { migrateAwayFromLegacyTerminalIds } from "../lib/terminal-sessions";
 import InstanceTree from "../components/InstanceTree.vue";
 import AgentIcon from "../components/AgentIcon.vue";
@@ -184,8 +185,9 @@ function keyWorkspace(key: string): string {
   return inst?.sessions.find((s) => s.alias === keyAlias(key))?.workspace ?? "";
 }
 
-// Route every tab close (file/diff/terminal) through the dirty-aware guard: a clean tab
-// closes immediately, a dirty file tab asks first (native confirm — the store can't show UI).
+// Route every tab close (file/diff/terminal) through one dirty-aware path: a clean tab
+// closes at once, a dirty file tab asks first, and the dialog is the app's own glass
+// confirm — an OS-level confirm() blocks the whole dashboard and cannot be styled.
 // Terminal close is a global terminate of the shared RMUX resource (with multi-viewer warning).
 let terminalCloseInFlight = false;
 async function requestCloseTerminal(key: string): Promise<void> {
@@ -205,9 +207,12 @@ async function requestCloseTerminal(key: string): Promise<void> {
   }
 
   const viewerCount = view.viewerCount ?? 1;
-  const ok = window.confirm(
-    viewerCount > 1 ? t("terminal.closeSharedConfirm") : t("terminal.closeConfirm"),
-  );
+  const ok = await confirm({
+    title: t("terminal.closeTitle"),
+    message: viewerCount > 1 ? t("terminal.closeSharedBody") : t("terminal.closeBody"),
+    confirmLabel: t("terminal.closeAction"),
+    tone: "danger",
+  });
   if (!ok) return;
   terminalCloseInFlight = true;
   try {
@@ -233,13 +238,24 @@ async function requestCloseTerminal(key: string): Promise<void> {
   }
 }
 
-function requestCloseTab(key: string, id: string) {
+async function requestCloseTab(key: string, id: string): Promise<void> {
   const tab = centerTabs.tabsFor(key).find((t) => t.id === id);
   if (tab?.kind === "terminal") {
     void requestCloseTerminal(key);
     return;
   }
-  centerTabs.closeTabGuarded(key, id, () => window.confirm(t("files.unsavedConfirm")));
+  // The store's closeTabGuarded takes a synchronous confirm, and a modal cannot
+  // answer one, so the dirty check happens here and the tab closes after the dialog.
+  if (centerTabs.isDirty(key, id)) {
+    const ok = await confirm({
+      title: t("files.unsavedTitle"),
+      message: t("files.unsavedBody", { name: tab?.kind === "file" ? tab.path.split("/").pop() : "" }),
+      confirmLabel: t("files.unsavedDiscard"),
+      tone: "danger",
+    });
+    if (!ok) return;
+  }
+  centerTabs.closeTab(key, id);
 }
 
 // Prune center-tabs whose session has disappeared OUT-OF-BAND (deleted from the CLI /

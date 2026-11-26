@@ -150,7 +150,7 @@ function close(): void {
             {{ $t("common.cancel") }}
           </UiButton>
           <UiButton data-test="add-instance-next" :disabled="busy || !name.trim()" @click="generateToken">
-            <Loader2 v-if="busy" :size="14" class="animate-spin" />
+            <Loader2 v-if="busy" :size="14" class="animate-spin motion-reduce:animate-none" />
             <span v-else>{{ $t("common.next") }}</span>
           </UiButton>
         </div>
@@ -159,7 +159,7 @@ function close(): void {
       <!-- Step 2: copy the command, wait for the connection -->
       <div v-else-if="step === 2" class="mt-4">
         <p class="flex items-center gap-2 text-sm text-fg-muted">
-          <Loader2 :size="14" class="animate-spin" />
+          <Loader2 :size="14" class="animate-spin motion-reduce:animate-none" />
           {{ $t("settings.addInstanceWaiting") }}
         </p>
         <div class="mt-3 flex items-start gap-2">

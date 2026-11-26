@@ -18,4 +18,16 @@ describe("CopyButton", () => {
     // Success state swaps to the Check icon.
     expect(w.findComponent(Check).exists()).toBe(true);
   });
+
+  it("keeps the swap in one fixed box and answers the press", () => {
+    // The two glyphs share a 14px box, so the confirmation cannot shift the
+    // surrounding row while it swaps; the press scale is the same 150ms gesture
+    // every other control uses.
+    const w = mount(CopyButton, { props: { text: "x" } });
+    const button = w.find('[data-test="copy-button"]');
+    expect(button.classes()).toEqual(expect.arrayContaining([
+      "active:scale-95", "motion-reduce:active:scale-100", "motion-reduce:transition-none",
+    ]));
+    expect(button.find("span.relative").classes()).toEqual(expect.arrayContaining(["h-3.5", "w-3.5"]));
+  });
 });

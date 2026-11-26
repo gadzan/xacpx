@@ -997,7 +997,7 @@ function onKeydown(e: KeyboardEvent) {
           <button v-if="modelUnavailable || modelRecovery" type="button" data-test="model-refresh"
                   class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-60"
                   :disabled="controls.modelLoading || modelApplying" :title="$t('chat.modelRefresh')" :aria-label="$t('chat.modelRefresh')" @click="refreshModels">
-            <RefreshCw :size="14" :class="{ 'animate-spin': controls.modelLoading }" />
+            <RefreshCw :size="14" :class="{ 'animate-spin motion-reduce:animate-none': controls.modelLoading }" />
           </button>
           <div v-if="controls.effortAvailable.length" class="relative shrink-0">
             <button

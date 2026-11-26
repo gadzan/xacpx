@@ -39,10 +39,21 @@ async function copy(): Promise<void> {
     type="button"
     :aria-label='$t("copy.copy")'
     :title='copied ? $t("copy.copied") : $t("copy.copy")'
-    class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0"
+    class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted transition-[transform,color,background-color] duration-150 ease-ui hover:bg-fg/5 hover:text-fg active:scale-95 motion-reduce:transition-none motion-reduce:active:scale-100 [&_svg]:block [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0"
     @click.stop="copy"
   >
-    <Check v-if="copied" :size="14" class="text-run" />
-    <Copy v-else :size="14" />
+    <!-- Both glyphs share one 14px box so the swap has nowhere to move to: the
+         copied state shrinks the Copy icon away and scales the Check in on top
+         of it (`.ui-swap-*`, 120ms — fast enough to read as "done"). -->
+    <span class="relative block h-3.5 w-3.5">
+      <Transition name="ui-swap">
+        <span v-if="copied" key="check" class="absolute inset-0 grid place-items-center">
+          <Check :size="14" class="text-run" />
+        </span>
+        <span v-else key="copy" class="absolute inset-0 grid place-items-center">
+          <Copy :size="14" />
+        </span>
+      </Transition>
+    </span>
   </button>
 </template>
