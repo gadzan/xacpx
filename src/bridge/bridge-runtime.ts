@@ -24,16 +24,12 @@ import { runStreamingPromptFlow } from "../transport/acpx-streaming-prompt";
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
 import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../transport/acpx-queue-overflow";
 import { queueOwnerBaseEnvOption, resolveAcpxHostPolicyEnv, resolveEffectiveAcpxEnv } from "../transport/acpx-host-policy";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
-import { isProcessAlive } from "../daemon/daemon-files";
-import { runAgentSessionList } from "../transport/agent-session-list";
-import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
-import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
 import { ACPX_MODEL_INSPECT_TIMEOUT_MS, probeAgentCapabilitiesViaInspector, type AcpxModelInspectFn } from "../transport/acpx-model-inspector";
 import type { AgentCommandRegistry } from "../config/agent-catalog";
 import {
@@ -76,7 +72,20 @@ import {
   syncPersistedSessionEffortFlow,
   willReplaceQueueOwner,
 } from "../transport/acpx-session-ops";
-import { parseSessionStatusCatalog } from "../transport/session-model-catalog";
+import {
+  runCancelSession,
+  runDeleteSession,
+  runFreeWarmProcess,
+  runGetAgentSessionId,
+  runGetSessionModel,
+  runHasSession,
+  runIsSessionWarm,
+  runListAgentSessions,
+  runRemoveSession,
+  runResumeAgentSession,
+  runSetSessionMode,
+  runTailSessionHistory,
+} from "../transport/acpx-session-commands";
 import { runAcpxControlCommand } from "../transport/acpx-owner-control-retry";
 import { MessageInjectionError } from "../transport/message-injection";
 
@@ -271,24 +280,26 @@ export class BridgeRuntime {
     cursor?: string;
     filterCwd?: string;
   }): Promise<AgentSessionListResult | undefined> {
-    return await runAgentSessionList({
-      filterCwd: input.filterCwd,
-      runList: async (includeFilterCwd) => {
-        const spec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-          "sessions",
-          "list",
-          ...(includeFilterCwd && input.filterCwd ? ["--filter-cwd", input.filterCwd] : []),
-          ...(input.cursor ? ["--cursor", input.cursor] : []),
-        ], { format: "json" }));
+    // Shell lives in ../transport/acpx-session-commands.ts; only argv/runner are lane-specific.
+    return await runListAgentSessions({
+      ...(input.filterCwd ? { filterCwd: input.filterCwd } : {}),
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.driver ? { driver: input.driver } : {}),
+      agent: input.agent,
+      timeoutMs: this.sessionInitTimeoutMs(),
+      buildListArgv: (includeFilterCwd) => this.buildSessionArgs(input, [
+        "sessions",
+        "list",
+        ...(includeFilterCwd && input.filterCwd ? ["--filter-cwd", input.filterCwd] : []),
+        ...(input.cursor ? ["--cursor", input.cursor] : []),
+      ], { format: "json" }),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
         // Mirrors acpx-cli, which bounds sessions list by sessionInitTimeoutMs.
-        return await this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
-          timeoutMs: this.sessionInitTimeoutMs(),
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
         }));
       },
-      formatError: (result) => normalizeCommandError(result) ?? `command failed with exit code ${result.code}`,
-      // Codex's session list leaks native subagent threads; hide them (fail-open).
-      // Gate on driver so custom-named codex agents (driver "codex") are covered too.
-      isSubagentSession: (input.driver ?? input.agent) === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
     });
   }
 
@@ -305,33 +316,31 @@ export class BridgeRuntime {
     agentSessionId: string;
   }): Promise<Record<string, never>> {
     this.invalidateRecordIdCache(input);
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "sessions",
-      "new",
-      "--name",
-      input.name,
-      "--resume-session",
-      input.agentSessionId,
-    ], { format: "quiet" }));
     const timeoutMs = this.sessionInitTimeoutMs();
-    let result: CommandResult;
-    try {
-      result = await this.runSessionCreate(
-        spawnSpec.command,
-        spawnSpec.args,
-        input.cwd,
-        this.withSpawnEnvironment(input, { timeoutMs }),
-      );
-    } catch (error) {
-      if (error instanceof CommandTimeoutError) {
-        throw new Error(`session initialization timed out after ${timeoutMs / 1000}s`);
-      }
-      throw error;
-    }
-    if (result.code !== 0) {
-      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-      throw new Error(detail);
-    }
+    await runResumeAgentSession({
+      sessionName: input.name,
+      agentSessionId: input.agentSessionId,
+      timeoutMs,
+      buildArgv: (tail) => this.buildSessionArgs(input, tail, { format: "quiet" }),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.runSessionCreate(
+          spec.command,
+          spec.args,
+          input.cwd,
+          this.withSpawnEnvironment(input, { timeoutMs }),
+        );
+      },
+      mapFailure: (result) => {
+        throw new Error(normalizeCommandError(result) ?? `command failed with exit code ${result.code}`);
+      },
+      mapSpawnError: (error) => {
+        if (error instanceof CommandTimeoutError) {
+          throw new Error(`session initialization timed out after ${timeoutMs / 1000}s`);
+        }
+        throw error;
+      },
+    });
     return {};
   }
 
@@ -360,17 +369,19 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ exists: boolean }> {
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "sessions",
-      "show",
-      input.name,
-    ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    const exists = await runHasSession({
+      sessionName: input.name,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "has-session",
-    }));
-
-    return { exists: result.code === 0 };
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "has-session",
+        }));
+      },
+    });
+    return { exists };
   }
 
   async tailSessionHistory(input: {
@@ -385,35 +396,19 @@ export class BridgeRuntime {
     name: string;
     lines: number;
   }): Promise<{ text: string }> {
-    const candidates = [
-      ["sessions", "history", input.name, "--limit", String(input.lines)],
-      ["sessions", "history", "quiet", "-s", input.name, String(input.lines)],
-      ["sessions", "history", "quiet", input.name, String(input.lines)],
-      ["sessions", "history", "-s", input.name, "--tail", String(input.lines)],
-      ["sessions", "history", input.name, "--tail", String(input.lines)],
-      ["sessions", "history", "--name", input.name, "--tail", String(input.lines)],
-    ];
-
-    // One shared deadline across all candidate invocations so a hung acpx
-    // bounds the whole method at managementCommandTimeoutMs, not per candidate.
-    const deadline = Date.now() + this.managementCommandTimeoutMs();
-    let lastResult: CommandResult | undefined;
-    for (const tailArgs of candidates) {
-      const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, tailArgs));
-      const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
-        timeoutMs: Math.max(deadline - Date.now(), 1),
-        stage: "session-history",
-      }));
-      if (result.code === 0) {
-        return { text: result.stdout.trimEnd() };
-      }
-      lastResult = result;
-    }
-
-    const detail = lastResult
-      ? normalizeCommandError(lastResult) ?? `command failed with exit code ${lastResult.code}`
-      : "command failed";
-    throw new Error(detail);
+    return await runTailSessionHistory({
+      sessionName: input.name,
+      lines: input.lines,
+      deadlineBudgetMs: this.managementCommandTimeoutMs(),
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "session-history",
+        }));
+      },
+    });
   }
 
   async ensureSession(
@@ -823,8 +818,10 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ agentSessionId: string | undefined }> {
-    const record = await this.readSessionRecord(input);
-    return { agentSessionId: record.agentSessionId };
+    const agentSessionId = await runGetAgentSessionId({
+      readRecord: () => this.readSessionRecord(input),
+    });
+    return { agentSessionId };
   }
 
   async setMode(input: {
@@ -840,22 +837,20 @@ export class BridgeRuntime {
     modeId: string;
   }): Promise<Record<string, never>> {
     this.assertNoActiveRecovery(input);
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "set-mode",
-      "-s",
-      input.name,
-      input.modeId,
-    ]));
-    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    await runSetSessionMode({
+      sessionName: input.name,
+      modeId: input.modeId,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "set-mode",
-    })));
-
-    if (result.code !== 0) {
-      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-      throw new Error(detail);
-    }
-
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "set-mode",
+        }));
+      },
+      control: true,
+    });
     return {};
   }
 
@@ -931,22 +926,18 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ current?: string; available: string[] }> {
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "status",
-      "-s",
-      input.name,
-    ], { format: "json" }));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    return await runGetSessionModel({
+      sessionName: input.name,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "get-session-model",
-    }));
-
-    if (result.code !== 0) {
-      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-      throw new Error(detail);
-    }
-
-    return parseSessionStatusCatalog(result.stdout, `session "${input.name}"`);
+      buildArgv: (tail, format) => this.buildSessionArgs(input, tail, format ? { format } : {}),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "get-session-model",
+        }));
+      },
+    });
   }
 
   async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
@@ -1067,25 +1058,19 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ cancelled: boolean; message: string }> {
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "cancel",
-      "-s",
-      input.name,
-    ]));
-    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    return await runCancelSession({
+      sessionName: input.name,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "cancel",
-    })));
-
-    if (result.code !== 0) {
-      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-      throw new Error(detail);
-    }
-
-    return {
-      cancelled: true,
-      message: result.stdout.trim(),
-    };
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "cancel",
+        }));
+      },
+      control: true,
+    });
   }
 
   async removeSession(input: {
@@ -1100,23 +1085,20 @@ export class BridgeRuntime {
     name: string;
   }): Promise<Record<string, never>> {
     this.invalidateRecordIdCache(input);
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "sessions",
-      "close",
-      input.name,
-    ]));
-    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    await runRemoveSession({
+      sessionName: input.name,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "remove-session",
-    })));
-
-    if (result.code === 0) {
-      return {};
-    }
-    if (isMissingAcpxSessionError(result.stderr, result.stdout)) {
-      return {};
-    }
-    throw new Error(normalizeCommandError(result) ?? `command failed with exit code ${result.code}`);
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "remove-session",
+        }));
+      },
+      control: true,
+    });
+    return {};
   }
 
   async deleteSession(input: {
@@ -1130,18 +1112,10 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<Record<string, never>> {
-    let acpxRecordId: string;
-    try {
-      ({ acpxRecordId } = await this.readSessionRecord(input));
-    } catch {
-      return {}; // acpx session already gone → nothing to delete
-    }
-    // Close the acpx session (terminates the queue owner + agent process since
-    // acpx >=0.10), then unlink its on-disk files. See deleteAcpxSessionFiles for
-    // the residual orphan-stream-file risk this leaves (a file-unlink timing /
-    // Windows file-lock issue, not a live process — notably on Windows).
-    await this.removeSession(input);
-    await deleteAcpxSessionFiles({ acpxRecordId });
+    await runDeleteSession({
+      readRecord: () => this.readSessionRecord(input),
+      remove: () => this.removeSession(input),
+    });
     return {};
   }
 
@@ -1156,16 +1130,9 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<Record<string, never>> {
-    let acpxRecordId: string;
-    try {
-      ({ acpxRecordId } = await this.readSessionRecord(input));
-    } catch {
-      return {}; // acpx session already gone → no warm process to free
-    }
-    // Kill ONLY the warm queue-owner process; do NOT `sessions close` it (that
-    // marks the record `closed` → unresumable, history lost). The record stays
-    // open, so the next prompt resumes with full history.
-    await terminateAcpxQueueOwner(acpxRecordId);
+    await runFreeWarmProcess({
+      readRecord: () => this.readSessionRecord(input),
+    });
     return {};
   }
 
@@ -1196,18 +1163,22 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ warm: boolean }> {
-    const cacheKey = this.recordIdCacheKey(input);
-    let acpxRecordId = this.recordIdCache.get(cacheKey);
-    if (!acpxRecordId) {
-      try {
-        ({ acpxRecordId } = await this.readSessionRecord(input));
-      } catch {
-        return { warm: false }; // acpx session gone → nothing can be warm
-      }
-      this.recordIdCache.set(cacheKey, acpxRecordId);
-    }
-    const pid = await readQueueOwnerPid(acpxRecordId);
-    return { warm: pid !== undefined && isProcessAlive(pid) };
+    const warm = await runIsSessionWarm({
+      readCachedRecord: async () => {
+        const cacheKey = this.recordIdCacheKey(input);
+        let acpxRecordId = this.recordIdCache.get(cacheKey);
+        if (!acpxRecordId) {
+          try {
+            ({ acpxRecordId } = await this.readSessionRecord(input));
+          } catch {
+            return undefined; // acpx session gone → nothing can be warm
+          }
+          this.recordIdCache.set(cacheKey, acpxRecordId);
+        }
+        return { acpxRecordId };
+      },
+    });
+    return { warm };
   }
 
   async shutdown(): Promise<Record<string, never>> {

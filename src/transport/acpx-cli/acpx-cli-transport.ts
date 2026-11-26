@@ -49,17 +49,12 @@ import {
   createVerbatimReplySink,
 } from "../quota-gated-reply-sink";
 import { explainSessionSpawnFailure } from "../session-spawn-failure";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../../config/agent-launch";
-import { isProcessAlive } from "../../daemon/daemon-files";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
-import { runAgentSessionList } from "../agent-session-list";
-import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
-import { deleteAcpxSessionFiles } from "../acpx-session-files";
 import { ACPX_MODEL_INSPECT_TIMEOUT_MS, probeAgentCapabilitiesViaInspector, type AcpxModelInspectFn } from "../acpx-model-inspector";
-import { parseSessionStatusCatalog } from "../session-model-catalog";
 import type { AgentCommandRegistry } from "../../config/agent-catalog";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../session-effort";
 import {
@@ -90,6 +85,20 @@ import {
   syncPersistedSessionEffortFlow,
   willReplaceQueueOwner,
 } from "../acpx-session-ops";
+import {
+  runCancelSession,
+  runDeleteSession,
+  runFreeWarmProcess,
+  runGetAgentSessionId,
+  runGetSessionModel,
+  runHasSession,
+  runIsSessionWarm,
+  runListAgentSessions,
+  runRemoveSession,
+  runResumeAgentSession,
+  runSetSessionMode,
+  runTailSessionHistory,
+} from "../acpx-session-commands";
 import { runEnsureSessionFlow } from "../acpx-ensure-session";
 import { runStreamingPromptFlow } from "../acpx-streaming-prompt";
 
@@ -323,57 +332,39 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async listAgentSessions(query: AgentSessionListQuery): Promise<AgentSessionListResult | undefined> {
-    return await runAgentSessionList({
-      filterCwd: query.filterCwd,
-      runList: async (includeFilterCwd) => {
-        const args = this.buildAgentQueryArgs(query, "json", [
-          "sessions",
-          "list",
-          ...(includeFilterCwd && query.filterCwd ? ["--filter-cwd", query.filterCwd] : []),
-          ...(query.cursor ? ["--cursor", query.cursor] : []),
-        ]);
-        return await this.runCommandWithTimeout(this.runCommand, args, {
-          timeoutMs: this.sessionInitTimeoutMs,
-          env: this.effectiveSpawnEnvironment(query),
-        });
-      },
-      formatError: (result) => normalizeCommandError(result) ?? `command failed with exit code ${result.code}`,
-      // Codex's session list leaks native subagent threads; hide them (fail-open).
-      // Gate on driver so custom-named codex agents (driver "codex") are covered too.
-      isSubagentSession: (query.driver ?? query.agent) === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
+    // Shell lives in ../acpx-session-commands.ts; only argv/runner are lane-specific.
+    return await runListAgentSessions({
+      ...(query.filterCwd ? { filterCwd: query.filterCwd } : {}),
+      ...(query.cursor ? { cursor: query.cursor } : {}),
+      ...(query.driver ? { driver: query.driver } : {}),
+      agent: query.agent,
+      timeoutMs: this.sessionInitTimeoutMs,
+      buildListArgv: (includeFilterCwd) => this.buildAgentQueryArgs(query, "json", [
+        "sessions",
+        "list",
+        ...(includeFilterCwd && query.filterCwd ? ["--filter-cwd", query.filterCwd] : []),
+        ...(query.cursor ? ["--cursor", query.cursor] : []),
+      ]),
+      execute: (argv, timeoutMs) => this.runCommandWithTimeout(this.runCommand, argv, {
+        timeoutMs,
+        env: this.effectiveSpawnEnvironment(query),
+      }),
     });
   }
 
   async tailSessionHistory(session: ResolvedSession, lines: number): Promise<{ text: string }> {
     this.assertCliAffinity(session);
-    const candidates = [
-      ["sessions", "history", session.transportSession, "--limit", String(lines)],
-      ["sessions", "history", "quiet", "-s", session.transportSession, String(lines)],
-      ["sessions", "history", "quiet", session.transportSession, String(lines)],
-      ["sessions", "history", "-s", session.transportSession, "--tail", String(lines)],
-      ["sessions", "history", session.transportSession, "--tail", String(lines)],
-      ["sessions", "history", "--name", session.transportSession, "--tail", String(lines)],
-    ];
-
-    // One shared deadline across all candidate invocations so a hung acpx
-    // bounds the whole method at managementCommandTimeoutMs, not per candidate.
-    const deadline = Date.now() + this.managementCommandTimeoutMs;
-    let lastResult: CommandResult | undefined;
-    for (const tail of candidates) {
-      const args = this.buildArgs(session, tail);
-      const result = await this.runCommandWithTimeout(this.runCommand, args, {
-        timeoutMs: Math.max(deadline - Date.now(), 1),
+    return await runTailSessionHistory({
+      sessionName: session.transportSession,
+      lines,
+      deadlineBudgetMs: this.managementCommandTimeoutMs,
+      buildArgv: (tail) => this.buildArgs(session, tail),
+      execute: (argv, timeoutMs) => this.runCommandWithTimeout(this.runCommand, argv, {
+        timeoutMs,
         stage: "session-history",
         env: this.effectiveSpawnEnvironment(session),
-      });
-      if (result.code === 0) {
-        return { text: result.stdout.trimEnd() };
-      }
-      lastResult = result;
-    }
-
-    const detail = lastResult ? normalizeCommandError(lastResult) ?? `command failed with exit code ${lastResult.code}` : "command failed";
-    throw new Error(detail);
+      }),
+    });
   }
 
   async prompt(
@@ -491,15 +482,18 @@ export class AcpxCliTransport implements SessionTransport {
   async setMode(session: ResolvedSession, modeId: string): Promise<void> {
     this.assertCliAffinity(session);
     this.assertNoActiveRecovery(session);
-    await this.runControl(this.buildArgs(session, [
-      "set-mode",
-      "-s",
-      session.transportSession,
+    await runSetSessionMode({
+      sessionName: session.transportSession,
       modeId,
-    ]), this.withSpawnEnvironment(session, {
       timeoutMs: this.managementCommandTimeoutMs,
-      stage: "set-mode",
-    }));
+      buildArgv: (tail) => this.buildArgs(session, tail),
+      execute: (argv, timeoutMs) => this.runCommandWithTimeout(this.runCommand, argv, {
+        timeoutMs,
+        stage: "set-mode",
+        env: this.effectiveSpawnEnvironment(session),
+      }),
+      control: true,
+    });
   }
 
   /**
@@ -592,21 +586,18 @@ export class AcpxCliTransport implements SessionTransport {
 
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
     this.assertCliAffinity(session);
-    const args = this.buildAgentQueryArgs(
-      this.sessionInput(session),
-      "json",
-      ["status", "-s", session.transportSession],
-    );
-    const result = await this.runCommandWithTimeout(this.runCommand, args, {
+    // NOTE: the CLI deliberately builds status argv WITHOUT the session model
+    // (agent-query args), unlike the bridge which carries --model. Preserved.
+    return await runGetSessionModel({
+      sessionName: session.transportSession,
       timeoutMs: this.managementCommandTimeoutMs,
-      stage: "get-session-model",
-      env: this.effectiveSpawnEnvironment(session),
+      buildArgv: (tail, format) => this.buildAgentQueryArgs(this.sessionInput(session), format ?? "quiet", tail),
+      execute: (argv, timeoutMs) => this.runCommandWithTimeout(this.runCommand, argv, {
+        timeoutMs,
+        stage: "get-session-model",
+        env: this.effectiveSpawnEnvironment(session),
+      }),
     });
-    if (result.code !== 0) {
-      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-      throw new Error(detail);
-    }
-    return parseSessionStatusCatalog(result.stdout, `session "${session.transportSession}"`);
   }
 
   async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
@@ -711,40 +702,46 @@ export class AcpxCliTransport implements SessionTransport {
 
   async cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }> {
     this.assertCliAffinity(session);
-    const output = await this.runControl(this.buildArgs(session, [
-      "cancel",
-      "-s",
-      session.transportSession,
-    ]), this.withSpawnEnvironment(session, {
+    return await runCancelSession({
+      sessionName: session.transportSession,
       timeoutMs: this.managementCommandTimeoutMs,
-      stage: "cancel",
-    }));
-    return {
-      cancelled: true,
-      message: output.trim(),
-    };
+      buildArgv: (tail) => this.buildArgs(session, tail),
+      execute: (argv, timeoutMs) => this.runCommandWithTimeout(this.runCommand, argv, {
+        timeoutMs,
+        stage: "cancel",
+        env: this.effectiveSpawnEnvironment(session),
+      }),
+      control: true,
+    });
   }
 
   async resumeAgentSession(session: ResolvedSession, agentSessionId: string): Promise<void> {
     this.assertCliAffinity(session);
     this.invalidateRecordIdCache(session);
-    const args = this.buildArgs(session, [
-      "sessions",
-      "new",
-      "--name",
-      session.transportSession,
-      "--resume-session",
+    // Create vehicle: the plain runner when an explicit agent command is set,
+    // the pty runner for bare agents (same choice the old run/runWithPty made).
+    const createRunner = session.agentCommand ? this.runCommand : this.runPtyCommand;
+    await runResumeAgentSession({
+      sessionName: session.transportSession,
       agentSessionId,
-    ]);
-    const runResume = session.agentCommand ? this.run : this.runWithPty;
-    try {
-      await runResume.call(this, args, {
-        timeoutMs: this.sessionInitTimeoutMs,
+      timeoutMs: this.sessionInitTimeoutMs,
+      buildArgv: (tail) => this.buildArgs(session, tail),
+      execute: (argv, timeoutMs) => this.runCommandWithTimeout(createRunner, argv, {
+        timeoutMs,
         env: this.effectiveSpawnEnvironment(session),
-      });
-    } catch (error) {
-      throw explainSessionSpawnFailure(session, error);
-    }
+      }),
+      mapFailure: (result) => {
+        throw explainSessionSpawnFailure(
+          session,
+          new Error(normalizeCommandError(result) ?? `command failed with exit code ${result.code}`),
+        );
+      },
+      // Every rejection — spawn ENOENT included — goes through the spawn
+      // diagnosis; timeouts propagate raw (same as the old run/runWithPty).
+      mapSpawnError: (error) => {
+        throw explainSessionSpawnFailure(session, error);
+      },
+    });
   }
 
 
@@ -757,53 +754,32 @@ export class AcpxCliTransport implements SessionTransport {
   async removeSession(session: ResolvedSession): Promise<void> {
     this.assertCliAffinity(session);
     this.invalidateRecordIdCache(session);
-    const result = await runAcpxControlCommand(() => this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
-      "sessions",
-      "close",
-      session.transportSession,
-    ]), this.withSpawnEnvironment(session, {
+    await runRemoveSession({
+      sessionName: session.transportSession,
       timeoutMs: this.managementCommandTimeoutMs,
-      stage: "remove-session",
-    })));
-    if (result.code === 0) {
-      return;
-    }
-    if (isMissingAcpxSessionError(result.stderr, result.stdout)) {
-      return;
-    }
-    const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-    throw new Error(detail);
+      buildArgv: (tail) => this.buildArgs(session, tail),
+      execute: (argv, timeoutMs) => this.runCommandWithTimeout(this.runCommand, argv, {
+        timeoutMs,
+        stage: "remove-session",
+        env: this.effectiveSpawnEnvironment(session),
+      }),
+      control: true,
+    });
   }
 
   async deleteSession(session: ResolvedSession): Promise<void> {
     this.assertCliAffinity(session);
-    let acpxRecordId: string;
-    try {
-      ({ acpxRecordId } = await this.readSessionRecord(session));
-    } catch {
-      return; // acpx session already gone → nothing to delete
-    }
-    // Close the acpx session (terminates the queue owner + agent process since
-    // acpx >=0.10), then unlink its on-disk files. See deleteAcpxSessionFiles for
-    // the residual orphan-stream-file risk this leaves (a file-unlink timing /
-    // Windows file-lock issue, not a live process — notably on Windows).
-    await this.removeSession(session);
-    await deleteAcpxSessionFiles({ acpxRecordId });
+    await runDeleteSession({
+      readRecord: () => this.readSessionRecord(session),
+      remove: () => this.removeSession(session),
+    });
   }
 
   async freeWarmProcess(session: ResolvedSession): Promise<void> {
     this.assertCliAffinity(session);
-    let acpxRecordId: string;
-    try {
-      ({ acpxRecordId } = await this.readSessionRecord(session));
-    } catch {
-      return; // acpx session already gone → no warm process to free
-    }
-    // Kill ONLY the warm queue-owner process; do NOT `sessions close` it. Closing
-    // marks the record `closed` (acpx excludes it from name lookup → unresumable,
-    // history lost on next prompt). Terminating the owner leaves the record open,
-    // so the next prompt resumes the same conversation with full history.
-    await terminateAcpxQueueOwner(acpxRecordId);
+    await runFreeWarmProcess({
+      readRecord: () => this.readSessionRecord(session),
+    });
   }
 
   private readonly recordIdCache = new Map<string, string>();
@@ -825,35 +801,35 @@ export class AcpxCliTransport implements SessionTransport {
 
   async isSessionWarm(session: ResolvedSession): Promise<boolean> {
     this.assertCliAffinity(session);
-    const cacheKey = this.recordIdCacheKey(session);
-    let acpxRecordId = this.recordIdCache.get(cacheKey);
-    if (!acpxRecordId) {
-      try {
-        ({ acpxRecordId } = await this.readSessionRecord(session));
-      } catch {
-        return false; // acpx session gone → nothing can be warm
-      }
-      this.recordIdCache.set(cacheKey, acpxRecordId);
-    }
-    const pid = await readQueueOwnerPid(acpxRecordId);
-    if (pid === undefined) {
-      return false;
-    }
-    return isProcessAlive(pid);
+    return await runIsSessionWarm({
+      readCachedRecord: async () => {
+        const cacheKey = this.recordIdCacheKey(session);
+        let acpxRecordId = this.recordIdCache.get(cacheKey);
+        if (!acpxRecordId) {
+          try {
+            ({ acpxRecordId } = await this.readSessionRecord(session));
+          } catch {
+            return undefined; // acpx session gone → nothing can be warm
+          }
+          this.recordIdCache.set(cacheKey, acpxRecordId);
+        }
+        return { acpxRecordId };
+      },
+    });
   }
 
   async hasSession(session: ResolvedSession): Promise<boolean> {
     this.assertCliAffinity(session);
-    const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
-      "sessions",
-      "show",
-      session.transportSession,
-    ]), this.withSpawnEnvironment(session, {
+    return await runHasSession({
+      sessionName: session.transportSession,
       timeoutMs: this.managementCommandTimeoutMs,
-      stage: "has-session",
-    }));
-
-    return result.code === 0;
+      buildArgv: (tail) => this.buildArgs(session, tail),
+      execute: (argv, timeoutMs) => this.runCommandWithTimeout(this.runCommand, argv, {
+        timeoutMs,
+        stage: "has-session",
+        env: this.effectiveSpawnEnvironment(session),
+      }),
+    });
   }
 
   private async launchMcpQueueOwnerIfNeeded(session: ResolvedSession): Promise<void> {
@@ -969,8 +945,9 @@ export class AcpxCliTransport implements SessionTransport {
 
   async getAgentSessionId(session: ResolvedSession): Promise<string | undefined> {
     this.assertCliAffinity(session);
-    const record = await this.readSessionRecord(session);
-    return record.agentSessionId;
+    return await runGetAgentSessionId({
+      readRecord: () => this.readSessionRecord(session),
+    });
   }
 
   private async run(args: string[], options?: RunOptions): Promise<string> {

@@ -21,18 +21,43 @@
 // `@timeoutMs` suffixes are KEPT: both lanes agree on them today, and they carry
 // the shared probeInspectTimeout cap plus the management/session-init bounds.
 //
-// Outcome text is deliberately not compared: error strings still differ per lane
-// by design until the error-convergence task lands, and the lanes wrap void
-// results differently (`{}` vs `{ ok: {} }`).
+// Outcome text is deliberately not compared: the lanes wrap void results
+// differently (`{}` vs `{ ok: {} }` vs bare values), and failure text is pinned
+// per-lane by the golden fixtures plus cli-bridge-error-parity.test.ts. This
+// file guards the argv contract.
 //
-// Scope: only paths the unification already shares are pinned here. The thin,
-// not-yet-unified families (list / tail / cancel / remove / delete / …) are
-// intentionally excluded — pinning them now would freeze today's shape instead
-// of catching drift, and would fight the upcoming error-convergence change.
-// Add each family here as it is unified, in the commit that unifies it.
+// Scope: only paths the unification already shares are pinned here — Phase 1
+// spawn primitives, Phase 2a/2b ops + parity, Phase 3 ensure/prompt/setModel,
+// and (as of Phase 4a) the twelve thin session commands. The free-warm success
+// path is covered only through a missing-record short-circuit: with a live
+// record the shared code would reach the real process killer, which the oracle
+// seams must not invoke.
 // ---------------------------------------------------------------------------
 
-import { test } from "bun:test";
+import { afterAll, test } from "bun:test";
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// The delete-session-success scenario reaches the real on-disk file delete. Point
+// acpx's home at a throwaway dir for this file (`resolveAcpxHomeDir` is env-first
+// precisely for this), so the delete can never touch the developer's `~/.acpx`.
+// Module stubbing is deliberately avoided: bun's `mock.module` is process-global
+// and irreversible, which breaks the real `deleteAcpxSessionFiles` tests that
+// share this test process.
+const previousHome = process.env.HOME;
+const previousUserProfile = process.env.USERPROFILE;
+const scratchHome = mkdtempSync(join(tmpdir(), "xacpx-parity-home-"));
+mkdirSync(join(scratchHome, ".acpx", "sessions"), { recursive: true });
+process.env.HOME = scratchHome;
+process.env.USERPROFILE = scratchHome;
+
+afterAll(() => {
+  if (previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousHome;
+  if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = previousUserProfile;
+});
 
 import {
   runCliArgvOracle,
@@ -310,6 +335,225 @@ const scenarios: ParityScenario[] = [
     bridge: {
       name: "set-model",
       run: (runtime) => runtime.setModel({ ...makeBridgeInput(), modelId: "gpt-5.2[high]" }),
+    },
+  },
+  // --- Phase 4a: thin session commands (shared shells) ----------------------
+  // Every scenario below runs the same method through both lanes; the
+  // normalized argv records must match. Record-dependent methods use a canned
+  // record (side-effect-free) or a failing show (early return, no side effects).
+  {
+    name: "tail-history-fail",
+    cli: {
+      name: "tail-history-fail",
+      results: [
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+      ],
+      run: (transport) => transport.tailSessionHistory(makeCliSession(), 20),
+    },
+    bridge: {
+      name: "tail-history-fail",
+      results: [
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+        { code: 1, stdout: "", stderr: "" },
+      ],
+      run: (runtime) => runtime.tailSessionHistory({ ...makeBridgeInput(), lines: 20 }),
+    },
+  },
+  {
+    name: "get-session-model-fail",
+    cli: {
+      name: "get-session-model-fail",
+      results: [{ code: 1, stdout: "", stderr: "boom" }],
+      run: (transport) => transport.getSessionModel(makeCliSession()),
+    },
+    bridge: {
+      name: "get-session-model-fail",
+      results: [{ code: 1, stdout: "", stderr: "boom" }],
+      run: (runtime) => runtime.getSessionModel(makeBridgeInput()),
+    },
+  },
+  {
+    name: "list-native",
+    cli: {
+      name: "list-native",
+      results: [{ code: 0, stdout: '{"source":"agent","sessions":[{"sessionId":"sess-1","cwd":"/tmp/backend"}]}', stderr: "" }],
+      run: (transport) =>
+        transport.listAgentSessions!({ agent: "codex", cwd: "/tmp/backend", filterCwd: "/tmp/backend", cursor: "cur-1" }),
+    },
+    bridge: {
+      name: "list-native",
+      results: [{ code: 0, stdout: '{"source":"agent","sessions":[{"sessionId":"sess-1","cwd":"/tmp/backend"}]}', stderr: "" }],
+      run: (runtime) =>
+        runtime.listAgentSessions({ agent: "codex", cwd: "/tmp/backend", filterCwd: "/tmp/backend", cursor: "cur-1" }),
+    },
+  },
+  {
+    name: "remove-missing",
+    cli: {
+      name: "remove-missing",
+      results: [{ code: 1, stdout: "", stderr: "no named session" }],
+      run: (transport) => transport.removeSession!(makeCliSession()),
+    },
+    bridge: {
+      name: "remove-missing",
+      results: [{ code: 1, stdout: "", stderr: "no named session" }],
+      run: (runtime) => runtime.removeSession(makeBridgeInput()),
+    },
+  },
+  {
+    name: "remove-real-error",
+    cli: {
+      name: "remove-real-error",
+      results: [{ code: 1, stdout: "", stderr: "EACCES: permission denied" }],
+      run: (transport) => transport.removeSession!(makeCliSession()),
+    },
+    bridge: {
+      name: "remove-real-error",
+      results: [{ code: 1, stdout: "", stderr: "EACCES: permission denied" }],
+      run: (runtime) => runtime.removeSession(makeBridgeInput()),
+    },
+  },
+  {
+    name: "has-session",
+    cli: {
+      name: "has-session",
+      results: [{ code: 0, stdout: "", stderr: "" }],
+      run: (transport) => transport.hasSession(makeCliSession()),
+    },
+    bridge: {
+      name: "has-session",
+      results: [{ code: 0, stdout: "", stderr: "" }],
+      run: (runtime) => runtime.hasSession(makeBridgeInput()),
+    },
+  },
+  {
+    name: "delete-missing",
+    cli: {
+      name: "delete-missing",
+      results: [{ code: 1, stdout: "", stderr: "no named session" }],
+      run: (transport) => transport.deleteSession(makeCliSession()),
+    },
+    bridge: {
+      name: "delete-missing",
+      results: [{ code: 1, stdout: "", stderr: "no named session" }],
+      run: (runtime) => runtime.deleteSession(makeBridgeInput()),
+    },
+  },
+  {
+    name: "delete-record",
+    cli: {
+      name: "delete-record",
+      results: [
+        { code: 0, stdout: '{"acpxRecordId":"abcd1234"}', stderr: "" },
+        { code: 0, stdout: "", stderr: "" },
+      ],
+      run: (transport) => transport.deleteSession(makeCliSession()),
+    },
+    bridge: {
+      name: "delete-record",
+      results: [
+        { code: 0, stdout: '{"acpxRecordId":"abcd1234"}', stderr: "" },
+        { code: 0, stdout: "", stderr: "" },
+      ],
+      run: (runtime) => runtime.deleteSession(makeBridgeInput()),
+    },
+  },
+  {
+    name: "free-warm-missing",
+    cli: {
+      name: "free-warm-missing",
+      results: [{ code: 1, stdout: "", stderr: "no named session" }],
+      run: (transport) => transport.freeWarmProcess(makeCliSession()),
+    },
+    bridge: {
+      name: "free-warm-missing",
+      results: [{ code: 1, stdout: "", stderr: "no named session" }],
+      run: (runtime) => runtime.freeWarmProcess(makeBridgeInput()),
+    },
+  },
+  {
+    name: "free-warm-record",
+    cli: {
+      name: "free-warm-record",
+      results: [{ code: 0, stdout: '{"acpxRecordId":"record-1"}', stderr: "" }],
+      run: (transport) => transport.freeWarmProcess(makeCliSession()),
+    },
+    bridge: {
+      name: "free-warm-record",
+      results: [{ code: 0, stdout: '{"acpxRecordId":"record-1"}', stderr: "" }],
+      run: (runtime) => runtime.freeWarmProcess(makeBridgeInput()),
+    },
+  },
+  {
+    name: "is-warm-missing",
+    cli: {
+      name: "is-warm-missing",
+      results: [{ code: 1, stdout: "", stderr: "no named session" }],
+      run: (transport) => transport.isSessionWarm(makeCliSession()),
+    },
+    bridge: {
+      name: "is-warm-missing",
+      results: [{ code: 1, stdout: "", stderr: "no named session" }],
+      run: (runtime) => runtime.isSessionWarm(makeBridgeInput()),
+    },
+  },
+  {
+    name: "is-warm-cold-record",
+    cli: {
+      name: "is-warm-cold-record",
+      results: [{ code: 0, stdout: '{"acpxRecordId":"record-1"}', stderr: "" }],
+      run: (transport) => transport.isSessionWarm(makeCliSession()),
+    },
+    bridge: {
+      name: "is-warm-cold-record",
+      results: [{ code: 0, stdout: '{"acpxRecordId":"record-1"}', stderr: "" }],
+      run: (runtime) => runtime.isSessionWarm(makeBridgeInput()),
+    },
+  },
+  {
+    name: "cancel",
+    cli: {
+      name: "cancel",
+      results: [{ code: 0, stdout: "cancelled ok", stderr: "" }],
+      run: (transport) => transport.cancel(makeCliSession()),
+    },
+    bridge: {
+      name: "cancel",
+      results: [{ code: 0, stdout: "cancelled ok", stderr: "" }],
+      run: (runtime) => runtime.cancel(makeBridgeInput()),
+    },
+  },
+  {
+    name: "get-agent-session-id",
+    cli: {
+      name: "get-agent-session-id",
+      results: [{ code: 0, stdout: '{"acpxRecordId":"abcd1234","agentSessionId":"agent-from-id"}', stderr: "" }],
+      run: (transport) => transport.getAgentSessionId(makeCliSession()),
+    },
+    bridge: {
+      name: "get-agent-session-id",
+      results: [{ code: 0, stdout: '{"acpxRecordId":"abcd1234","agentSessionId":"agent-from-id"}', stderr: "" }],
+      run: (runtime) => runtime.getAgentSessionId(makeBridgeInput()),
+    },
+  },
+  {
+    name: "set-mode",
+    cli: {
+      name: "set-mode",
+      run: (transport) => transport.setMode(makeCliSession(), "plan"),
+    },
+    bridge: {
+      name: "set-mode",
+      run: (runtime) => runtime.setMode({ ...makeBridgeInput(), modeId: "plan" }),
     },
   },
 ];
