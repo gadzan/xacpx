@@ -108,15 +108,24 @@ describe("posixLstartToUtc", () => {
 });
 
 describe("posixLstartProbeEnv", () => {
-  test("renders lstart under the same locale and timezone acpx records it in", () => {
-    // A missing TZ makes `ps lstart` render host-local time; the lease holds
-    // UTC, so the mismatch reads as a reused pid on non-UTC hosts.
-    const env = posixLstartProbeEnv();
-    expect(env.TZ).toBe("UTC");
-    expect(env.LC_ALL).toBe("C");
-    // Inherited variables stay reachable (PATH and friends) without shadowing.
-    expect(env.PATH).toBe(process.env.PATH);
-  });
+  // POSIX-only probe: `runPs` shells out to `ps -p <pid> -o lstart`, so this
+  // env never reaches a Windows child. It is skipped there rather than made
+  // platform-tolerant, because the assertion below is about POSIX semantics:
+  // `{...process.env}` flattens Node's case-insensitive Windows env proxy into
+  // a plain object that keeps the original `Path` casing, so `env.PATH` is
+  // undefined on Windows even though the real process env resolves it.
+  test.skipIf(process.platform === "win32")(
+    "renders lstart under the same locale and timezone acpx records it in",
+    () => {
+      // A missing TZ makes `ps lstart` render host-local time; the lease holds
+      // UTC, so the mismatch reads as a reused pid on non-UTC hosts.
+      const env = posixLstartProbeEnv();
+      expect(env.TZ).toBe("UTC");
+      expect(env.LC_ALL).toBe("C");
+      // Inherited variables stay reachable (PATH and friends) without shadowing.
+      expect(env.PATH).toBe(process.env.PATH);
+    },
+  );
 });
 
 describe("proveQueueOwnerLock", () => {
