@@ -1,12 +1,26 @@
-import { test, expect, mock } from "bun:test";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { afterAll, test, expect } from "bun:test";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Stub the on-disk file delete so the delete-session scenarios never touch the
-// real ~/.acpx dir. It is not a recorded seam (not argv) — purely a side-effect guard.
-mock.module("../../../../src/transport/acpx-session-files", () => ({
-  deleteAcpxSessionFiles: async () => {},
-}));
+// The delete-session scenarios reach the real on-disk file delete. Redirect
+// acpx's home (`resolveAcpxHomeDir` is env-first exactly for this) instead of
+// stubbing the module: bun's `mock.module` is process-global and irreversible,
+// so stubbing `acpx-session-files` here breaks the real
+// `deleteAcpxSessionFiles` tests whenever both files share a test process.
+const previousHome = process.env.HOME;
+const previousUserProfile = process.env.USERPROFILE;
+const scratchHome = mkdtempSync(join(tmpdir(), "xacpx-bridge-oracle-home-"));
+mkdirSync(join(scratchHome, ".acpx", "sessions"), { recursive: true });
+process.env.HOME = scratchHome;
+process.env.USERPROFILE = scratchHome;
+
+afterAll(() => {
+  if (previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousHome;
+  if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = previousUserProfile;
+});
 
 import {
   runBridgeArgvOracle,
