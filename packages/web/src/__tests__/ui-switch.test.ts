@@ -35,3 +35,18 @@ test("emits one toggle per tap, and none while disabled", async () => {
   await locked.get('[role="switch"]').trigger("click");
   expect(locked.emitted("toggle")).toBeUndefined();
 });
+
+test("slides the knob on the transform property, never on left", () => {
+  // `left` is constant in both states and only the translate changes, so the
+  // knob composites while it moves instead of re-laying-out the row. The boxes
+  // this produces are measured on the real surface in e2e/switch-geometry.spec.ts.
+  const on = mount(UiSwitch, { props: { checked: true, label: "Terminal" } });
+  const onKnob = on.findAll("span")[1]!;
+  for (const cls of ["left-[3px]", "translate-x-[18px]", "transition-transform", "motion-reduce:transition-none"]) {
+    expect(onKnob.classes()).toContain(cls);
+  }
+
+  const offKnob = mount(UiSwitch, { props: { checked: false, label: "Terminal" } }).findAll("span")[1]!;
+  expect(offKnob.classes()).toContain("left-[3px]");
+  expect(offKnob.classes()).toContain("translate-x-0");
+});

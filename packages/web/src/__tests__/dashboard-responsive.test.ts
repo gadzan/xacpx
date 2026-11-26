@@ -28,6 +28,14 @@ vi.mock("vue-router", () => ({ useRouter: () => ({
   replace: (to: { path?: string; state?: Record<string, unknown> }) => window.history.replaceState(to.state ?? {}, "", to.path ?? window.location.pathname),
 }) }));
 
+// Closing a tab asks through the app's own confirm dialog. Stub the module so the
+// promise settles without mounting the dialog host.
+const { confirmSpy } = vi.hoisted(() => ({ confirmSpy: vi.fn() }));
+vi.mock("../lib/use-confirm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/use-confirm")>();
+  return { ...actual, confirm: confirmSpy };
+});
+
 import DashboardView from "../views/DashboardView.vue";
 import ChatPane from "../components/ChatPane.vue";
 import FileViewer from "../components/FileViewer.vue";
@@ -63,6 +71,8 @@ beforeEach(() => {
   // Mounts attach to <body> (that is where the app runs) and clear it per test, so
   // one test's sheets cannot answer the next test's document queries.
   document.body.innerHTML = "";
+  confirmSpy.mockReset();
+  confirmSpy.mockResolvedValue(true);
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [capableInstance] }), { status: 200 })));
 });
 
@@ -542,17 +552,16 @@ test("open-tabs sheet switches tabs and closes them through the guarded path", a
   await flushPromises();
   need('[data-test="sheet-open-tabs"]').click();
   await flushPromises();
-  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+  confirmSpy.mockResolvedValue(false);
   need('[data-test="open-tab-close"]').click();
   await flushPromises();
   expect(confirmSpy).toHaveBeenCalled();
   expect(centerTabs.tabsFor(key)).toHaveLength(1); // declined → kept open
 
-  confirmSpy.mockReturnValue(true);
+  confirmSpy.mockResolvedValue(true);
   need('[data-test="open-tab-close"]').click();
   await flushPromises();
   expect(centerTabs.tabsFor(key)).toHaveLength(0);
-  confirmSpy.mockRestore();
 });
 
 test("mobile home renders the tree as the main content plus the new-session FAB", async () => {

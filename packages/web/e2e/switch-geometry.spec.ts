@@ -1,4 +1,4 @@
-import { expect, test, loginAndShowInstances } from "./fixtures";
+import { expect, test, loginAndShowInstances, settleDialog } from "./fixtures";
 
 // The manage dialog and the settings page each hand-rolled a switch, and the
 // dialog copy drifted: its knob sat 4px from the "on" edge and 2px from the
@@ -34,6 +34,10 @@ test("switches keep the knob inset identical on both edges", async ({ page }) =>
   await page.getByTestId("instance-nav-bots").first().click();
   await page.getByTestId("manage-instance-from-bots").first().click();
   await expect(page.getByTestId("router-toggle")).toBeVisible();
+  // The dialog arrives with a 160ms fade + 2% scale (DialogShell). A parent
+  // transform scales every descendant box, so geometry measured mid-flight reads
+  // 43.12 instead of 44. Wait for the panel to settle, then measure boxes.
+  await settleDialog(page);
 
   const switches = await page.evaluate(() =>
     ["router-toggle", "terminal-settings-toggle", "files-settings-toggle"].map((id) => {

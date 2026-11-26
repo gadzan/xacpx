@@ -314,14 +314,51 @@ body { @apply bg-bg text-fg font-sans antialiased; }
 }
 .ui-pop-enter-from, .ui-pop-leave-to { opacity: 0; transform: scale(.97); }
 
+/* Toast stack (ToastHost). A toast is anchored under the conversation header, so
+   it drops in from just above its own place instead of scaling — the gesture says
+   "this came from the chrome". Leaving, it goes back up and out of the flow, so
+   the toasts below close the gap while it fades. `.ui-toast-move` is the FLIP
+   class TransitionGroup applies when the stack re-orders: dismissing the middle
+   toast slides the rest up rather than snapping them. */
+.ui-toast-enter-active {
+  transition: opacity var(--dur-overlay-in) var(--ease), transform var(--dur-overlay-in) var(--ease);
+}
+.ui-toast-enter-from, .ui-toast-leave-to { opacity: 0; transform: translateY(-6px); }
+.ui-toast-leave-active {
+  transition: opacity var(--dur-overlay-out) var(--ease-exit), transform var(--dur-overlay-out) var(--ease-exit);
+  /* Out of the flow, but still the container's width: a fading toast must not
+     shrink or shove its neighbours. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+.ui-toast-move { transition: transform var(--dur-overlay-in) var(--ease); }
+
+/* Action toast: one bar at the bottom edge. It rises into place and sinks back
+   out — the same arrival/departure pair, mirrored. */
+.ui-action-toast-enter-active {
+  transition: opacity var(--dur-overlay-in) var(--ease), transform var(--dur-overlay-in) var(--ease);
+}
+.ui-action-toast-enter-from, .ui-action-toast-leave-to { opacity: 0; transform: translateY(8px); }
+.ui-action-toast-leave-active {
+  transition: opacity var(--dur-overlay-out) var(--ease-exit), transform var(--dur-overlay-out) var(--ease-exit);
+  pointer-events: none;
+}
+
 /* Reduced motion keeps the fade (it explains the change) and drops every
    offset and scale. */
 @media (prefers-reduced-motion: reduce) {
   .ui-scrim-enter-active, .ui-scrim-leave-active,
   .ui-scrim-enter-active .ui-panel, .ui-scrim-leave-active .ui-panel,
-  .ui-pop-enter-active, .ui-pop-leave-active { transition: opacity var(--dur-fast) linear; }
+  .ui-pop-enter-active, .ui-pop-leave-active,
+  .ui-toast-enter-active, .ui-toast-leave-active,
+  .ui-action-toast-enter-active, .ui-action-toast-leave-active { transition: opacity var(--dur-fast) linear; }
   .ui-scrim-enter-from .ui-panel, .ui-scrim-leave-to .ui-panel,
-  .ui-pop-enter-from, .ui-pop-leave-to { transform: none; }
+  .ui-pop-enter-from, .ui-pop-leave-to,
+  .ui-toast-enter-from, .ui-toast-leave-to,
+  .ui-action-toast-enter-from, .ui-action-toast-leave-to { transform: none; }
+  .ui-toast-move { transition: none; }
 }
 
 /* Branded focus ring on interactive elements (gap + accent halo).

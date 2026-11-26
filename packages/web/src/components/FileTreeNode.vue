@@ -6,6 +6,7 @@ import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { iconForFile } from "../lib/file-icons";
 import { openMenuKey } from "../lib/tree-menu";
+import { confirm } from "../lib/use-confirm";
 import { useLongPress } from "../lib/use-long-press";
 import ContextMenu from "./ContextMenu.vue";
 
@@ -116,6 +117,9 @@ async function submitInline() {
 function cancelInline() { inlineMode.value = null; }
 
 async function onMenuSelect(key: string) {
+  // The menu goes the moment a row is chosen: delete opens a modal dialog, and a
+  // row menu still sitting there would end up behind it.
+  closeMenu();
   if (key === "copyPath") await navigator.clipboard?.writeText(files.absPath(rel.value)).catch(() => {});
   else if (key === "copyRelativePath") await navigator.clipboard?.writeText(rel.value).catch(() => {});
   else if (key === "searchInFolder") { files.searchOpts.include = folderIncludeGlob(rel.value); }
@@ -124,9 +128,14 @@ async function onMenuSelect(key: string) {
   else if (key === "rename") startRename();
   else if (key === "download") await files.downloadEntry(rel.value);
   else if (key === "delete") {
-    if (window.confirm(t("files.menu.confirmDelete", { name: props.entry.name }))) await files.deleteEntry(rel.value);
+    const ok = await confirm({
+      title: t("files.menu.deleteTitle", { name: props.entry.name }),
+      message: t("files.menu.deleteBody"),
+      confirmLabel: t("common.delete"),
+      tone: "danger",
+    });
+    if (ok) await files.deleteEntry(rel.value);
   }
-  closeMenu();
 }
 </script>
 

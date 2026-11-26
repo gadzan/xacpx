@@ -186,8 +186,9 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
   }
 
   /** Close `id`, but if it holds unsaved edits, ask `confirm()` first. Returns whether the
-   *  tab was closed. `confirm` is injected (the store cannot show UI) — callers pass e.g.
-   *  `() => window.confirm(t("files.unsavedConfirm"))`. */
+   *  tab was closed. The predicate is injected and synchronous — the store cannot show UI.
+   *  A caller with an async dialog (the dashboard's glass confirm) checks `isDirty` itself
+   *  and then calls `closeTab`. */
   function closeTabGuarded(key: string, id: string, confirm: () => boolean): boolean {
     if (isDirty(key, id) && !confirm()) return false;
     closeTab(key, id);
