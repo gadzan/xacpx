@@ -13,6 +13,9 @@ export default {
     remove: "Remove",
     dismiss: "dismiss",
     dismissNotice: "Dismiss",
+    // ExpandableBlock: the clamp says "there is more", the toggle says how much.
+    showMore: "Show more",
+    showLess: "Show less",
     add: "Add",
     filter: "Filter…",
     noMatch: "No match",

@@ -413,7 +413,7 @@ async function confirmDelete(): Promise<void> {
                   :disabled="deletingNow"
                   class="flex shrink-0 items-center gap-1 rounded-sm bg-warn/20 px-2 py-0.5 font-medium transition-colors hover:bg-warn/30 disabled:opacity-50"
                   @click="confirmDelete">
-            <Loader2 v-if="deletingNow" :size="12" class="animate-spin" />
+            <Loader2 v-if="deletingNow" :size="12" class="animate-spin motion-reduce:animate-none" />
             <span>{{ $t("group.manage.retryDelete") }}</span>
           </button>
         </div>
@@ -429,7 +429,7 @@ async function confirmDelete(): Promise<void> {
              data-test="group-dialog-member-work"
              class="space-y-2 rounded-lg bg-bg p-3 text-xs">
           <div v-if="memberWorkLoading" class="flex items-center gap-1.5 text-fg-muted">
-            <Loader2 :size="12" class="animate-spin" />
+            <Loader2 :size="12" class="animate-spin motion-reduce:animate-none" />
             <span>{{ $t("group.manage.memberWorkLoading") }}</span>
           </div>
           <div v-else-if="memberWorkError" class="text-danger-overlay">
@@ -453,7 +453,7 @@ async function confirmDelete(): Promise<void> {
                       :disabled="stoppingRunIds.includes(work.run.id)"
                       class="flex shrink-0 items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 font-medium text-danger-overlay transition-colors hover:bg-danger hover:text-on-danger disabled:opacity-50"
                       @click="stopRun(work.run.id)">
-                <Loader2 v-if="stoppingRunIds.includes(work.run.id)" :size="12" class="animate-spin" />
+                <Loader2 v-if="stoppingRunIds.includes(work.run.id)" :size="12" class="animate-spin motion-reduce:animate-none" />
                 <span>{{ $t("bot.prompt.stopRun") }}</span>
               </button>
             </div>
@@ -567,7 +567,7 @@ async function confirmDelete(): Promise<void> {
             <p class="mb-1.5 text-xs text-fg-muted">{{ $t("group.manage.membersHint") }}</p>
 
             <div v-if="catalogLoading && !catalogReady" class="flex items-center gap-1.5 py-2 text-xs text-fg-muted">
-              <Loader2 :size="12" class="animate-spin" />
+              <Loader2 :size="12" class="animate-spin motion-reduce:animate-none" />
               <span>{{ $t("group.manage.botsLoading") }}</span>
             </div>
             <div v-else-if="catalogError && !catalogReady"
@@ -720,7 +720,7 @@ async function confirmDelete(): Promise<void> {
                     :disabled="deletingNow"
                     class="flex h-8 items-center gap-1 rounded-btn bg-danger px-3 text-ui font-semibold text-on-danger hover:opacity-90 disabled:opacity-50"
                     @click="confirmDelete">
-              <Loader2 v-if="deletingNow" :size="12" class="animate-spin" />
+              <Loader2 v-if="deletingNow" :size="12" class="animate-spin motion-reduce:animate-none" />
               <span>{{ $t("group.manage.delete") }}</span>
             </button>
           </div>
@@ -743,7 +743,7 @@ async function confirmDelete(): Promise<void> {
             {{ $t("common.cancel") }}
           </UiButton>
           <UiButton data-test="group-dialog-save" :disabled="!canSave" @click="submit">
-            <Loader2 v-if="submitting" :size="13" class="animate-spin" />
+            <Loader2 v-if="submitting" :size="13" class="animate-spin motion-reduce:animate-none" />
             <span>{{ isEditing ? $t("common.save") : $t("common.create") }}</span>
           </UiButton>
         </div>

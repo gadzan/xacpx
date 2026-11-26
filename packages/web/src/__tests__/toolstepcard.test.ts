@@ -375,6 +375,10 @@ describe("ToolStepCard de-cardified activity stream", () => {
     expect(stats.exists()).toBe(true);
     expect(stats.text()).toContain("+4");
     expect(stats.text()).toContain("−1");
+    // Fixed-width digits: a streaming turn re-renders this row many times a
+    // second, and proportional digits make the counters (and everything after
+    // them) shift on every update.
+    expect(stats.classes()).toContain("tabular-nums");
   });
 
   it("identifies new-file write operations as Write instead of Edit", () => {
@@ -524,6 +528,7 @@ describe("ToolStepCard live elapsed and terminal-only notice", () => {
       },
     });
     expect(w.find('[data-test="step-elapsed"]').text()).toBe("10.0s");
+    expect(w.find('[data-test="step-elapsed"]').classes()).toContain("tabular-nums");
     vi.advanceTimersByTime(5000);
     await nextTick();
     expect(w.find('[data-test="step-elapsed"]').text()).toBe("15.0s");
@@ -541,6 +546,9 @@ describe("ToolStepCard live elapsed and terminal-only notice", () => {
     });
     expect(w.find('[data-test="step-elapsed"]').exists()).toBe(false);
     expect(w.text()).toContain("400ms");
+    // The terminal duration keeps the same fixed-width digits as the live counter,
+    // so a step does not shift when it finishes.
+    expect(w.findAll("span").filter((s) => s.classes().includes("tabular-nums") && s.text() === "400ms")).toHaveLength(1);
   });
 
   it("explains a terminal-routed step whose output was never reported", async () => {

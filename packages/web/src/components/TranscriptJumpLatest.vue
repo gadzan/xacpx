@@ -9,18 +9,25 @@ const emit = defineEmits<{ jump: [] }>();
 </script>
 
 <template>
-  <div v-show="visible" aria-hidden="true" class="jump-scrim" />
-  <button
-    v-show="visible"
-    data-test="jump-latest"
-    type="button"
-    :aria-label="$t('chat.jumpLatest')"
-    :title="$t('chat.jumpLatest')"
-    class="absolute bottom-3 left-1/2 z-10 grid h-7 w-7 -translate-x-1/2 place-items-center rounded-sm bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-colors hover:bg-surface"
-    @click="emit('jump')"
-  >
-    <ArrowDown :size="13" :stroke-width="2.5" />
-  </button>
+  <Transition name="ui-fade">
+    <div v-show="visible" aria-hidden="true" class="jump-scrim" />
+  </Transition>
+  <!-- Centred with `inset-x-0 mx-auto` rather than a `-translate-x-1/2`, so the
+       transform stays free for the arrival gesture: the button rises 6px into
+       place and sinks back out of it (`.ui-float-*` in style.css). -->
+  <Transition name="ui-float">
+    <button
+      v-show="visible"
+      data-test="jump-latest"
+      type="button"
+      :aria-label="$t('chat.jumpLatest')"
+      :title="$t('chat.jumpLatest')"
+      class="absolute inset-x-0 bottom-3 z-10 mx-auto grid h-7 w-7 place-items-center rounded-sm bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-[transform,background-color,color,box-shadow] duration-150 ease-ui hover:bg-surface active:scale-95 motion-reduce:active:scale-100"
+      @click="emit('jump')"
+    >
+      <ArrowDown :size="13" :stroke-width="2.5" />
+    </button>
+  </Transition>
 </template>
 
 <style scoped>

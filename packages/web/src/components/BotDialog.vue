@@ -526,7 +526,7 @@ function describeSubmitError(err: unknown): string {
                   :disabled="detailLoading"
                   class="flex items-center gap-1 rounded-sm bg-warning/20 px-2 py-0.5 font-medium hover:bg-warning/30 transition-colors disabled:opacity-50"
                   @click="retryHydrate">
-            <Loader2 v-if="detailLoading" :size="12" class="animate-spin" />
+            <Loader2 v-if="detailLoading" :size="12" class="animate-spin motion-reduce:animate-none" />
             <span>{{ $t("bot.prompt.retry") }}</span>
           </button>
         </div>
@@ -756,7 +756,7 @@ function describeSubmitError(err: unknown): string {
           :disabled="submitting || !name.trim() || nameNeedsWorkspaceChars || (isEditing && !!props.bot && !detailHydrated)"
           @click="submit"
         >
-          <Loader2 v-if="submitting" :size="13" class="animate-spin" />
+          <Loader2 v-if="submitting" :size="13" class="animate-spin motion-reduce:animate-none" />
           <span>{{ isEditing ? $t("common.save") : $t("common.create") }}</span>
         </UiButton>
       </div>

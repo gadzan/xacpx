@@ -346,6 +346,31 @@ body { @apply bg-bg text-fg font-sans antialiased; }
   pointer-events: none;
 }
 
+/* Float: the plain "rises into place" gesture — opacity plus 6px, no scale. Used
+   by controls that live at a fixed spot on the page (the jump-to-latest button)
+   where a scaling entrance would read as a popup rather than a resting control. */
+.ui-float-enter-active {
+  transition: opacity var(--dur-overlay-in) var(--ease), transform var(--dur-overlay-in) var(--ease);
+}
+.ui-float-enter-from, .ui-float-leave-to { opacity: 0; transform: translateY(6px); }
+.ui-float-leave-active {
+  transition: opacity var(--dur-overlay-out) var(--ease-exit), transform var(--dur-overlay-out) var(--ease-exit);
+  pointer-events: none;
+}
+
+/* Fade: opacity alone, for decoration that has no geometry of its own (the
+   jump-to-latest scrim). */
+.ui-fade-enter-active { transition: opacity var(--dur-overlay-in) var(--ease); }
+.ui-fade-leave-active { transition: opacity var(--dur-overlay-out) var(--ease-exit); pointer-events: none; }
+.ui-fade-enter-from, .ui-fade-leave-to { opacity: 0; }
+
+/* Swap: one glyph replaces another in the same 14px box (Copy → Check). Quicker
+   than a surface — the confirmation should land under the finger, not after it. */
+.ui-swap-enter-active { transition: opacity 120ms var(--ease), transform 120ms var(--ease); }
+.ui-swap-enter-from { opacity: 0; transform: scale(.6); }
+.ui-swap-leave-active { transition: opacity 120ms var(--ease-exit), transform 120ms var(--ease-exit); }
+.ui-swap-leave-to { opacity: 0; transform: scale(.6); }
+
 /* Reduced motion keeps the fade (it explains the change) and drops every
    offset and scale. */
 @media (prefers-reduced-motion: reduce) {
@@ -353,10 +378,15 @@ body { @apply bg-bg text-fg font-sans antialiased; }
   .ui-scrim-enter-active .ui-panel, .ui-scrim-leave-active .ui-panel,
   .ui-pop-enter-active, .ui-pop-leave-active,
   .ui-toast-enter-active, .ui-toast-leave-active,
+  .ui-float-enter-active, .ui-float-leave-active,
+  .ui-fade-enter-active, .ui-fade-leave-active,
+  .ui-swap-enter-active, .ui-swap-leave-active,
   .ui-action-toast-enter-active, .ui-action-toast-leave-active { transition: opacity var(--dur-fast) linear; }
   .ui-scrim-enter-from .ui-panel, .ui-scrim-leave-to .ui-panel,
   .ui-pop-enter-from, .ui-pop-leave-to,
   .ui-toast-enter-from, .ui-toast-leave-to,
+  .ui-float-enter-from, .ui-float-leave-to,
+  .ui-swap-enter-from, .ui-swap-leave-to,
   .ui-action-toast-enter-from, .ui-action-toast-leave-to { transform: none; }
   .ui-toast-move { transition: none; }
 }

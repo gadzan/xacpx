@@ -11,6 +11,8 @@ export default {
     remove: "移除",
     dismiss: "关闭",
     dismissNotice: "关闭通知",
+    showMore: "展开全文",
+    showLess: "收进",
     add: "添加",
     filter: "筛选…",
     noMatch: "无匹配",

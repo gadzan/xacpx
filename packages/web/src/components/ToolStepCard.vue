@@ -101,12 +101,12 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
       <span class="min-w-0 font-mono text-xs text-fg-muted break-all"
             :class="[(hasDetail ? 'group-hover:text-fg' : ''), hasDetail ? 'truncate' : '']" :title="step.title" :dir="hasDetail && pathTitle ? 'rtl' : undefined">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
-        <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-xs">
+        <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-xs tabular-nums">
           <span v-if="diffStats.add" class="text-run font-medium">+{{ diffStats.add }}</span>
           <span v-if="diffStats.del" class="text-danger-text font-medium">−{{ diffStats.del }}</span>
         </span>
-        <span v-if="step.durationMs !== undefined" class="font-mono text-xs text-fg-muted">{{ formatStepDuration(step.durationMs) }}</span>
-        <span v-else-if="runningElapsed" data-test="step-elapsed" class="font-mono text-xs text-fg-muted">{{ runningElapsed }}</span>
+        <span v-if="step.durationMs !== undefined" class="font-mono text-xs tabular-nums text-fg-muted">{{ formatStepDuration(step.durationMs) }}</span>
+        <span v-else-if="runningElapsed" data-test="step-elapsed" class="font-mono text-xs tabular-nums text-fg-muted">{{ runningElapsed }}</span>
         <Check v-if="step.status === 'success'" data-test="step-status-success" :size="12" class="text-run/70" />
         <Loader2 v-else-if="step.status === 'running'" data-test="step-status-running" :size="12" class="animate-spin motion-reduce:animate-none text-accent" />
         <AlertTriangle v-else data-test="step-status-error" :size="12" class="text-danger" />

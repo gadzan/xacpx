@@ -17,7 +17,7 @@ const visible = computed(() => composer.pending.length > 0 || composer.rejection
       <img v-if="entry.previewUrl" :src="entry.previewUrl" :alt="entry.filename" class="h-8 w-8 rounded-sm object-cover" />
       <FileText v-else :size="16" class="shrink-0 text-fg-muted" />
       <span class="max-w-[140px] truncate">{{ entry.filename }}</span>
-      <Loader2 v-if="entry.status === 'uploading'" :size="14" class="animate-spin text-fg-muted" :aria-label="$t('common.loading')" />
+      <Loader2 v-if="entry.status === 'uploading'" :size="14" class="animate-spin motion-reduce:animate-none text-fg-muted" :aria-label="$t('common.loading')" />
       <button v-if="entry.status === 'error'" type="button" data-test="attachment-retry" :aria-label="$t('common.retry')" :title="$t('common.retry')"
         class="grid h-7 w-7 place-items-center rounded-sm text-danger hover:bg-danger/10" @click="composer.retryAttachment(entry.id, scopeKey)"><RotateCcw :size="14" /></button>
       <button type="button" data-test="attachment-remove" :aria-label="$t('chat.attach.remove')" :title="$t('chat.attach.remove')"

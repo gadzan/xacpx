@@ -206,6 +206,23 @@ describe("motion tokens", () => {
       .map(({ file }) => file);
     expect(offenders).toEqual([]);
   });
+
+  it("guards every animate-spin / animate-pulse class string against reduced motion", () => {
+    // A spinner or a pulsing dot is decoration with no information of its own, so
+    // under `prefers-reduced-motion` it has to stop. Each class string that starts
+    // an animation carries the opt-out itself — a guard living in a sibling string
+    // leaves the next loader in this file unguarded.
+    const files = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
+      .filter((f) => /\.(vue|ts)$/.test(f) && !f.includes("__tests__"));
+    const offenders: string[] = [];
+    for (const file of files) {
+      const text = readFileSync(join(srcDir, file), "utf8");
+      for (const m of text.matchAll(/(['"`])([^'"`\n]*?animate-(?:spin|pulse)[^'"`\n]*?)\1/g)) {
+        if (!m[2].includes("motion-reduce:animate-none")) offenders.push(`${file}: ${m[2]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("token resolution", () => {

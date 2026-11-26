@@ -336,7 +336,9 @@ onUnmounted(() => clearInterval(timer));
 }
 .composer-layer-enter-active,
 .composer-layer-leave-active {
-  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* One curve for the whole app: the stack layers keep their own two durations
+     (a fade is quicker than a move) but borrow the shared arrival curve. */
+  transition: opacity 180ms ease, transform 220ms var(--ease);
 }
 .composer-layer-enter-from,
 .composer-layer-leave-to {

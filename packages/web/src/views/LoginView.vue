@@ -176,7 +176,7 @@ async function copyCommand() {
           :disabled="pending"
           class="mt-5 flex w-full items-center justify-center gap-2 rounded-input bg-accent px-3 py-2.5 text-sm font-semibold text-on-accent shadow-btn transition-[transform,background-color] duration-150 ease-ui hover:bg-accent-hover active:scale-[0.98] motion-reduce:transition-none motion-reduce:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 disabled:cursor-default disabled:opacity-50"
         >
-          <svg v-if="pending" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" class="animate-spin" aria-hidden="true">
+          <svg v-if="pending" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" class="animate-spin motion-reduce:animate-none" aria-hidden="true">
             <path d="M21 12a9 9 0 1 1-6.2-8.6" />
           </svg>
           <span>{{ pending ? $t("login.signingIn") : $t("login.signIn") }}</span>
