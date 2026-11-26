@@ -70,6 +70,7 @@ Build notes:
 - Plugin packages use `tsc -p packages/<name>/tsconfig.json` to emit `.d.ts` files separately, because `bun build` does not currently emit declaration files.
 - `packages/web` publishes as `@ganglion/xacpx-web` with no runtime dependencies. The hub depends on that package instead of copying `dist/` into itself, and `verify:publish` fails when the web tarball lacks `dist/index.html` or the hub drops the dependency.
 - `platform-packages/*` (the `@ganglion/xacpx-rmux-bridge-*` platform binaries) sit outside the root workspaces and are packed by `scripts/pack-rmux-bridge-platform.mjs`, not by `build:packages`.
+- The root `bun.lock` records those platform packages as *declarations* only, with no resolved entry, so `bun install` never fetches one. A local checkout therefore serves with `terminal: false` behind a single log line. `node ./scripts/ensure-rmux-platform.mjs` installs the one for this OS/arch (it removes an incomplete copy first, since bun will not repair missing files); `scripts/dev-channel-web.mjs` runs it before linking, and `--check` fails instead of installing.
 
 ### Three local run modes
 

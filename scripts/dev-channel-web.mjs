@@ -149,8 +149,20 @@ function unlinkPackages() {
   log("restart the daemon to go back to the npm packages: node ./dist/cli.js restart");
 }
 
+/**
+ * The terminal needs the platform RMUX package, and the root lockfile does not carry a
+ * resolved entry for it — so `bun install` never fetches one and the console comes up
+ * with `terminal: false` behind a single log line. Linking the relay plugin from source
+ * is exactly the flow that exposes this, so close it here rather than relying on a
+ * developer noticing the degradation.
+ */
+function ensureRmuxPlatform() {
+  run(process.execPath, [join(ROOT, "scripts", "ensure-rmux-platform.mjs")]);
+}
+
 if (options.has("--unlink")) {
   unlinkPackages();
 } else {
+  ensureRmuxPlatform();
   linkPackages();
 }
