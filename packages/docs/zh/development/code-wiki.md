@@ -95,10 +95,12 @@ interface SessionTransport {
 }
 ```
 
-两种实现：
+两种 lane，一个契约：
 
 - **`acpx-cli`**（[`src/transport/acpx-cli/`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-cli)）— 以子进程方式启动 `acpx`；可选通过 `node-pty` 分配 PTY。
 - **`acpx-bridge`**（[`src/transport/acpx-bridge/`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-bridge)）— 通过 JSONL 协议与独立桥接子进程通信。并发和事件隔离性更好。子进程和协议细节请参阅[桥接子系统](#桥接子系统)章节。
+
+两条 lane 跑同一套按操作编排；只有 argv 构造、runner、env/timeout 装配、record 缓存与亲和守卫留在各 lane。共享外壳：[`acpx-spawn.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-spawn.ts)、[`acpx-session-ops.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-session-ops.ts)、[`acpx-session-commands.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-session-commands.ts)、[`acpx-ensure-session.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-ensure-session.ts)、[`acpx-streaming-prompt.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-streaming-prompt.ts)、[`native-model-restore.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/native-model-restore.ts)。跨 lane argv 对等由 [`cli-bridge-argv-parity.test.ts`](https://github.com/gadzan/xacpx/blob/main/tests/unit/transport/golden/cli-bridge-argv-parity.test.ts) 钉住。
 
 ### acpx 解析顺序
 
@@ -151,7 +153,13 @@ interface SessionTransport {
 
 - [`src/bridge/bridge-main.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/bridge-main.ts) — 桥接子进程的入口点（处理 `acpx` stdio）。
 - [`src/bridge/bridge-server.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/bridge-server.ts) — 解析桥接协议 JSON 行并委派给运行时。
-- [`src/bridge/bridge-runtime.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/bridge-runtime.ts) — 封装原始 `acpx` 命令（`sessions new`、`prompt`、`cancel`）。
+- [`src/bridge/bridge-runtime.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/bridge-runtime.ts) — 封装原始 `acpx` 命令（`sessions new`、`prompt`、`cancel`）；它**就是** `cli` 引擎（`readonly kind = "cli"`）。
+
+### 引擎与路由
+
+- [`src/bridge/engine/engine-router.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/engine/engine-router.ts) — `EngineRouter` 在前，按会话亲和把每个调用路由到对应引擎；声明引擎与已绑定引擎不一致时 fail closed。
+- [`src/bridge/engine/runtime-engine.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/engine/runtime-engine.ts) — `RuntimeEngine`（`kind = "runtime"`），runtime lane。
+- 原先纯委派的 `CliEngine` 外壳已删除：`BridgeRuntime` 直接接入 router。
 
 ### JSONL 协议
 

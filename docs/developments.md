@@ -31,7 +31,7 @@
 
 - **Channels**: `weixin` is built in; `feishu` / `yuanbao` / `discord` / `relay` are distributed as first-party plugin packages; any npm package conforming to the `WeacpxPlugin` contract can be added.
 - **Command routing**: parses slash commands such as `/ss`, `/agent`, `/group` received from WeChat/Feishu/Yuanbao/Discord/CLI; plain text is fed to the current session as a prompt.
-- **Transport**: unifies "session ensure/prompt/cancel/setMode" into the `SessionTransport` interface, with two concrete implementations — `acpx-cli` (spawns `acpx` directly, optionally allocating a PTY via `node-pty`) and `acpx-bridge` (a standalone bridge subprocess + JSONL protocol).
+- **Transport**: unifies session operations (`ensure`/`prompt`/`cancel`/`setMode`/…) into the `SessionTransport` interface, with two lanes — `acpx-cli` (spawns `acpx` directly, optionally allocating a PTY via `node-pty`) and `acpx-bridge` (a standalone bridge subprocess + JSONL protocol). Per-operation orchestration is shared (`src/transport/acpx-session-*.ts`, `acpx-ensure-session.ts`, `acpx-streaming-prompt.ts`, `native-model-restore.ts`) with cross-lane argv parity tests; only argv builders, runners, caches, and affinity guards stay per-lane.
 - **Orchestration** (optional): under a coordinator session, delegates multiple workers, tracking progress, questions, human confirmation, and grouped aggregation. Can be exposed to an external MCP host via `xacpx mcp-stdio`.
 - **Daemon**: `xacpx start` / `status` / `stop`, with PID + status + log landing in `~/.xacpx/runtime/`.
 - **Monorepo**: `packages/` (channel plugins, the relay stack, and the docs site) ships from this repo as Bun workspaces alongside the main package; `platform-packages/` and `weacpx-compat/` live outside the workspaces.
@@ -136,8 +136,8 @@ One sentence per directory to make its responsibility clear; deeper content is i
 | `src/channels/` | Channel registry; built-in weixin; exposes `MessageChannelRuntime` to plugins | `channels/types.ts`, `channels/plugin.ts` |
 | `src/commands/` | Command parsing + handlers + router | `command-router.ts`, `parse-command.ts` |
 | `src/sessions/` | Logical sessions (state.json persistence) + AsyncMutex serialization | `session-service.ts` |
-| `src/transport/` | acpx bridging abstraction + cli/bridge implementations | `transport/types.ts`, `acpx-cli/`, `acpx-bridge/` |
-| `src/bridge/` | acpx-bridge subprocess entry and JSONL protocol | `bridge-main.ts`, `bridge-server.ts`, `bridge-runtime.ts` |
+| `src/transport/` | acpx bridging abstraction + cli/bridge lanes over shared orchestration | `transport/types.ts`, `acpx-cli/`, `acpx-bridge/`, `acpx-session-*.ts` |
+| `src/bridge/` | acpx-bridge subprocess entry, JSONL protocol, cli/runtime engines + router | `bridge-main.ts`, `bridge-server.ts`, `bridge-runtime.ts` |
 | `src/orchestration/` | Multi-agent orchestration service + IPC server/client + state machine | `orchestration-service.ts`, `orchestration-server.ts` |
 | `src/mcp/` | `xacpx mcp-stdio` implementation, exposing orchestration as an MCP server | `xacpx-mcp-server.ts`, `xacpx-mcp-tools.ts` |
 | `src/daemon/` | daemon controller, status/PID files, runtime metadata | `daemon-controller.ts`, `daemon-runtime.ts` |
@@ -405,7 +405,7 @@ Newcomers most often get stuck on "I want to add X, where do I start." This tabl
 | Add a new slash command | Add a token in `src/commands/parse-command.ts`; add a handler in `src/commands/handlers/`; register in `src/commands/command-router.ts`; mirror tests to `tests/unit/commands/` |
 | Change a command's reply format | The render functions in `src/formatting/`; the command calls the corresponding render in the router |
 | Add a new channel (Feishu/Slack/Discord …) | **Don't** change `src/channels/`; see [docs/plugin-development.md](./plugin-development.md), start a new package under `packages/channel-<type>/` |
-| Change how acpx is invoked (CLI args, PTY, timeout) | `src/transport/acpx-cli/` or `src/transport/acpx-bridge/`, keeping the `SessionTransport` interface stable |
+| Change how acpx is invoked (CLI args, PTY, timeout) | `src/transport/acpx-cli/` or `src/transport/acpx-bridge/` for lane plumbing, `src/transport/acpx-session-*.ts` (plus `acpx-ensure-session.ts` / `acpx-streaming-prompt.ts` / `native-model-restore.ts`) for shared orchestration, keeping the `SessionTransport` interface stable |
 | Add / change an orchestration capability | `src/orchestration/orchestration-service.ts` + `orchestration-ipc.ts` + `orchestration-server.ts`; tests in `tests/unit/orchestration/` |
 | Change daemon start/stop behavior | `src/daemon/`; if you change status fields, also update `daemon-status.ts` and the docs |
 | Change `xacpx doctor` | `src/doctor/index.ts` and the individual probes |

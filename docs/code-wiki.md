@@ -262,12 +262,21 @@ On Windows, a `LogicalSession` whose recorded `transport_agent_command` is a mul
 - `prompt()`: sends a prompt, supporting a reply callback (streaming) and `PromptOptions` (media, onSegment)
 - `cancel()/setMode()/hasSession()`: control-type operations
 
-Two implementations:
+Two lanes, one contract:
 
-- `acpx-cli`: [src/transport/acpx-cli](../src/transport/acpx-cli)
-- `acpx-bridge`: [src/transport/acpx-bridge](../src/transport/acpx-bridge)
+- `acpx-cli`: [src/transport/acpx-cli](../src/transport/acpx-cli) — spawns `acpx` directly (PTY for bare agents)
+- `acpx-bridge`: [src/transport/acpx-bridge](../src/transport/acpx-bridge) — drives `acpx` from the bridge subprocess
 
-argv construction for both implementations is centralized in the pure shared module [acpx-command-builder.ts](../src/transport/acpx-command-builder.ts) (no `this`, no I/O; its only import beyond `config/types` is the shared `permission-mode-flag` helper): permission/ttl/model/session/prompt/query args plus `isMissingAcpxSessionError` and `parseAcpxSessionRecordId`, including the permission defaults (`DEFAULT_PERMISSION_MODE`, `DEFAULT_NON_INTERACTIVE`). It is the single source of truth for the shared/global argv prefix (format, cwd, permission, model, ttl, verbose, and agent selection). Ordinary operations still build their own tails, while Agent Messaging uses the shared `buildQueueMessagePromptArgs` helper so both transports produce the exact same `prompt -s <name> --no-wait <envelope>` queue submission. `acpx-cli-transport.ts` and `bridge-runtime.ts` keep their own per-operation orchestration, error handling, capability probing (e.g. bridge's `--verbose` probe), and I/O plumbing (PTY/`child_process` spawning vs. the bridge subprocess).
+argv construction for both implementations is centralized in the pure shared module [acpx-command-builder.ts](../src/transport/acpx-command-builder.ts) (no `this`, no I/O; its only import beyond `config/types` is the shared `permission-mode-flag` helper): permission/ttl/model/session/prompt/query args plus `isMissingAcpxSessionError` and `parseAcpxSessionRecordId`, including the permission defaults (`DEFAULT_PERMISSION_MODE`, `DEFAULT_NON_INTERACTIVE`). It is the single source of truth for the shared/global argv prefix (format, cwd, permission, model, ttl, verbose, and agent selection). Ordinary operations still build their own tails, while Agent Messaging uses the shared `buildQueueMessagePromptArgs` helper so both transports produce the exact same `prompt -s <name> --no-wait <envelope>` queue submission.
+
+Per-operation orchestration is shared too (Phase 1–4 unification): the two lanes keep only their argv builders, runners, env/timeout/stage wiring, record caches, affinity guards, and error mapping — the shells live in shared modules and cross-lane argv parity is pinned by [cli-bridge-argv-parity.test.ts](../tests/unit/transport/golden/cli-bridge-argv-parity.test.ts):
+
+- spawn substrate (capture, timeout/abort racing, PTY env): [acpx-spawn.ts](../src/transport/acpx-spawn.ts)
+- queue-owner / persisted-effort / overflow-cleanup orchestration: [acpx-session-ops.ts](../src/transport/acpx-session-ops.ts)
+- ensure / streaming-prompt shell / setModel-with-native-recovery: [acpx-ensure-session.ts](../src/transport/acpx-ensure-session.ts), [acpx-streaming-prompt.ts](../src/transport/acpx-streaming-prompt.ts), [native-model-restore.ts](../src/transport/native-model-restore.ts)
+- the twelve thin session commands (tail/history, get-model, list, remove, has, delete, free-warm, is-warm, cancel, agent-session-id, set-mode, resume): [acpx-session-commands.ts](../src/transport/acpx-session-commands.ts)
+
+Capability probing stays per-lane (e.g. the bridge `--verbose` probe, the CLI PTY path).
 
 ### 5.8 Bridge (src/bridge/*)
 
@@ -284,6 +293,12 @@ Server side:
 - session scoped scheduling:
   - Requests for `SESSION_SCOPED_METHODS` form a scheduleKey based on `[agentIdentity,cwd,name]`; the same key is serialized
   - `cancel`/`isSessionWarm` and the read-only `getSessionModel`/`getSessionEffort` go through the `control` lane (preempts a running turn, which `prompt` occupies unboundedly); everything else — including mutating `setModel`/`setSessionEffort` — queues on the `normal` lane: [bridge-server.ts](../src/bridge/bridge-server.ts)
+
+Engines (`src/bridge/engine/`):
+
+- `BridgeRuntime` **is** the `cli` engine (`readonly kind = "cli"`): [bridge-runtime.ts](../src/bridge/bridge-runtime.ts). The old `CliEngine` pure-delegation shell is gone.
+- `EngineRouter` fronts both engines and routes every call by session affinity ([session-engine-binding.ts](../src/bridge/engine/session-engine-binding.ts)): the first session-scoped call binds the session, a later request declaring a different engine fails closed: [engine-router.ts](../src/bridge/engine/engine-router.ts)
+- `RuntimeEngine` (`kind = "runtime"`) serves the runtime lane with worker processes, fences, and journals: [runtime-engine.ts](../src/bridge/engine/runtime-engine.ts)
 
 ### 5.9 Daemon (src/daemon/*)
 

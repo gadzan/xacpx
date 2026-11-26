@@ -262,12 +262,21 @@ ConsoleAgent 是“渠道消息协议 → router 协议”的适配层：
 - `prompt()`：发送 prompt，支持 reply 回调（流式）与 `PromptOptions`（media、onSegment）
 - `cancel()/setMode()/hasSession()`：控制类操作
 
-两套实现：
+两条 lane，一个契约：
 
-- `acpx-cli`：[src/transport/acpx-cli](../../src/transport/acpx-cli)
-- `acpx-bridge`：[src/transport/acpx-bridge](../../src/transport/acpx-bridge)
+- `acpx-cli`：[src/transport/acpx-cli](../../src/transport/acpx-cli)——直接 spawn `acpx`（裸 agent 走 PTY）
+- `acpx-bridge`：[src/transport/acpx-bridge](../../src/transport/acpx-bridge)——由 bridge 子进程驱动 `acpx`
 
-两套实现的 argv 构造都集中在这个纯共享模块 [acpx-command-builder.ts](../../src/transport/acpx-command-builder.ts)（无 `this`、无 I/O；除 `config/types` 外只 import 共用的 `permission-mode-flag` helper）：permission/ttl/model/session/prompt/query 参数，外加 `isMissingAcpxSessionError` 与 `parseAcpxSessionRecordId`，并包含权限默认值（`DEFAULT_PERMISSION_MODE`、`DEFAULT_NON_INTERACTIVE`）。它是共享/全局 argv 前缀（format、cwd、permission、model、ttl、verbose 与 agent 选择）的唯一事实来源。普通操作仍各自构造自己的尾部，而 Agent Messaging 使用共用的 `buildQueueMessagePromptArgs` helper，使两套 transport 产出完全一致的 `prompt -s <name> --no-wait <envelope>` 队列提交。`acpx-cli-transport.ts` 与 `bridge-runtime.ts` 保留各自的按操作编排、错误处理、能力探测（如 bridge 的 `--verbose` 探测）与 I/O 管道（PTY/`child_process` spawn 对比 bridge 子进程）。
+两套实现的 argv 构造都集中在这个纯共享模块 [acpx-command-builder.ts](../../src/transport/acpx-command-builder.ts)（无 `this`、无 I/O；除 `config/types` 外只 import 共用的 `permission-mode-flag` helper）：permission/ttl/model/session/prompt/query 参数，外加 `isMissingAcpxSessionError` 与 `parseAcpxSessionRecordId`，并包含权限默认值（`DEFAULT_PERMISSION_MODE`、`DEFAULT_NON_INTERACTIVE`）。它是共享/全局 argv 前缀（format、cwd、permission、model、ttl、verbose 与 agent 选择）的唯一事实来源。普通操作仍各自构造自己的尾部，而 Agent Messaging 使用共用的 `buildQueueMessagePromptArgs` helper，使两套 transport 产出完全一致的 `prompt -s <name> --no-wait <envelope>` 队列提交。
+
+按操作的编排本身也是共享的（Phase 1–4 统一）：两条 lane 只保留各自的 argv 构造器、runner、env/timeout/stage 装配、record 缓存、亲和守卫与错误映射——外壳住在共享模块里，跨 lane argv 对等由 [cli-bridge-argv-parity.test.ts](../../tests/unit/transport/golden/cli-bridge-argv-parity.test.ts) 钉住：
+
+- spawn 底座（capture、超时/abort 竞速、PTY 环境）：[acpx-spawn.ts](../../src/transport/acpx-spawn.ts)
+- queue-owner / 持久化 effort / 溢出清理编排：[acpx-session-ops.ts](../../src/transport/acpx-session-ops.ts)
+- ensure / 流式 prompt 外壳 / 带原生恢复的 setModel：[acpx-ensure-session.ts](../../src/transport/acpx-ensure-session.ts)、[acpx-streaming-prompt.ts](../../src/transport/acpx-streaming-prompt.ts)、[native-model-restore.ts](../../src/transport/native-model-restore.ts)
+- 十二个薄会话命令（tail/history、get-model、list、remove、has、delete、free-warm、is-warm、cancel、agent-session-id、set-mode、resume）：[acpx-session-commands.ts](../../src/transport/acpx-session-commands.ts)
+
+能力探测保留在各 lane（如 bridge 的 `--verbose` 探测、CLI 的 PTY 路径）。
 
 ### 5.8 Bridge（src/bridge/*）
 
@@ -284,6 +293,12 @@ Bridge 的目标是把 acpx 驱动隔离到子进程，并提供更可控的并�
 - session scoped 调度：
   - `SESSION_SCOPED_METHODS` 的请求，会基于 `[agentIdentity,cwd,name]` 形成 scheduleKey；同一 key 串行化
   - `cancel`/`isSessionWarm` 与只读的 `getSessionModel`/`getSessionEffort` 走 `control` lane（可抢占正在运行的 turn，而 `prompt` 会无限期占用它）；其余一切——包括会变更状态的 `setModel`/`setSessionEffort`——都排在 `normal` lane 上：[bridge-server.ts](../../src/bridge/bridge-server.ts)
+
+引擎（`src/bridge/engine/`）：
+
+- `BridgeRuntime` **就是** `cli` 引擎（`readonly kind = "cli"`）：[bridge-runtime.ts](../../src/bridge/bridge-runtime.ts)。旧的纯委派外壳 `CliEngine` 已删除。
+- `EngineRouter` 在前，按会话亲和把每个调用路由到对应引擎（[session-engine-binding.ts](../../src/bridge/engine/session-engine-binding.ts)）：首个会话级调用完成绑定，之后声明不同引擎的请求 fail closed：[engine-router.ts](../../src/bridge/engine/engine-router.ts)
+- `RuntimeEngine`（`kind = "runtime"`）服务 runtime lane：worker 进程、fence 与 journal：[runtime-engine.ts](../../src/bridge/engine/runtime-engine.ts)
 
 ### 5.9 Daemon（src/daemon/*）
 

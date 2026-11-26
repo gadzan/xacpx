@@ -31,7 +31,7 @@
 
 - **频道**：内置 `weixin`；`feishu` / `yuanbao` / `discord` / `relay` 通过一方插件包分发；任何符合 `WeacpxPlugin` 契约的 npm 包都可以加进来。
 - **命令路由**：解析微信/飞书/元宝/Discord/CLI 收到的 `/ss`、`/agent`、`/group` 等 slash 命令，普通文本作为 prompt 喂给当前会话。
-- **Transport**：把"会话 ensure/prompt/cancel/setMode"统一为 `SessionTransport` 接口，具体实现两套——`acpx-cli`（直接 spawn `acpx`，可选 `node-pty` 分配 PTY）和 `acpx-bridge`（独立 bridge 子进程 + JSONL 协议）。
+- **Transport**：把会话操作（`ensure`/`prompt`/`cancel`/`setMode`/…）统一为 `SessionTransport` 接口，具体两条 lane——`acpx-cli`（直接 spawn `acpx`，可选 `node-pty` 分配 PTY）和 `acpx-bridge`（独立 bridge 子进程 + JSONL 协议）。按操作的编排已共享（`src/transport/acpx-session-*.ts`、`acpx-ensure-session.ts`、`acpx-streaming-prompt.ts`、`native-model-restore.ts`）并有跨 lane argv 对等测试；只有 argv 构造、runner、缓存与亲和守卫留在各 lane。
 - **Orchestration**（可选）：coordinator 会话下委派多个 worker，跟踪进度、问题、人类确认、分组汇总。可通过 `xacpx mcp-stdio` 暴露给外部 MCP host。
 - **Daemon**：`xacpx start` / `status` / `stop`，PID + status + log 落在 `~/.xacpx/runtime/`。
 - **Monorepo**：`packages/` 下的 channel 插件、relay 栈与文档站作为 Bun workspaces 与主包同仓发布；`platform-packages/` 与 `weacpx-compat/` 在 workspaces 之外。
@@ -136,8 +136,8 @@ xacpx/
 | `src/channels/` | 频道注册中心；内置 weixin；暴露 `MessageChannelRuntime` 给插件 | `channels/types.ts`、`channels/plugin.ts` |
 | `src/commands/` | 命令解析 + handler + router | `command-router.ts`、`parse-command.ts` |
 | `src/sessions/` | 逻辑会话（state.json 持久化）+ AsyncMutex 串行化 | `session-service.ts` |
-| `src/transport/` | acpx 桥接抽象 + cli/bridge 两实现 | `transport/types.ts`、`acpx-cli/`、`acpx-bridge/` |
-| `src/bridge/` | acpx-bridge 子进程入口与 JSONL 协议 | `bridge-main.ts`、`bridge-server.ts`、`bridge-runtime.ts` |
+| `src/transport/` | acpx 桥接抽象 + 基于共享编排的 cli/bridge 双 lane | `transport/types.ts`、`acpx-cli/`、`acpx-bridge/`、`acpx-session-*.ts` |
+| `src/bridge/` | acpx-bridge 子进程入口、JSONL 协议、cli/runtime 引擎与路由 | `bridge-main.ts`、`bridge-server.ts`、`bridge-runtime.ts` |
 | `src/orchestration/` | 多 agent 编排服务 + IPC server/client + 状态机 | `orchestration-service.ts`、`orchestration-server.ts` |
 | `src/mcp/` | `xacpx mcp-stdio` 实现，把 orchestration 暴露成 MCP server | `xacpx-mcp-server.ts`、`xacpx-mcp-tools.ts` |
 | `src/daemon/` | daemon 控制器、status/PID 文件、运行时元数据 | `daemon-controller.ts`、`daemon-runtime.ts` |
@@ -405,7 +405,7 @@ bun run dry-run --chat-key wx:test -- \
 | 加一个新的 slash 命令 | `src/commands/parse-command.ts` 加 token；`src/commands/handlers/` 加 handler；`src/commands/command-router.ts` 注册；测试镜像到 `tests/unit/commands/` |
 | 改某个命令的回复格式 | `src/formatting/` 的 render 函数；命令在 router 里调对应 render |
 | 加一个新的频道（飞书/Slack/Discord …） | **不要**改 `src/channels/`，看 [docs/plugin-development.md](./plugin-development_zh.md)，在 `packages/channel-<type>/` 起新包 |
-| 改 acpx 调用方式（命令行参数、PTY、超时） | `src/transport/acpx-cli/` 或 `src/transport/acpx-bridge/`，保持 `SessionTransport` 接口稳定 |
+| 改 acpx 调用方式（命令行参数、PTY、超时） | lane 装配改 `src/transport/acpx-cli/` 或 `src/transport/acpx-bridge/`，共享编排改 `src/transport/acpx-session-*.ts`（以及 `acpx-ensure-session.ts` / `acpx-streaming-prompt.ts` / `native-model-restore.ts`），保持 `SessionTransport` 接口稳定 |
 | 加 / 改一项 orchestration 能力 | `src/orchestration/orchestration-service.ts` + `orchestration-ipc.ts` + `orchestration-server.ts`；测试在 `tests/unit/orchestration/` |
 | 改 daemon 启停行为 | `src/daemon/`；status 字段改了同步更 `daemon-status.ts` 与文档 |
 | 改 `xacpx doctor` | `src/doctor/index.ts` 与各 probe |
