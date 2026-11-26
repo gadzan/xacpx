@@ -3,22 +3,30 @@
 @tailwind utilities;
 
 /* Design tokens — cold-grey canvas, one system blue, hairline edges.
-   Layering comes from lightness (canvas → sidebar → raised card), not from
-   borders. Glass is reserved for surfaces that float above content: the
-   conversation header, the composer card, menus, tooltips, toasts, dialogs. */
+   Four material tiers, and layering comes from lightness, not from borders:
+
+     L0 canvas   --c-bg         the page the app floats on
+     L1 chrome   --c-surface    sidebars, rails, panel chrome (one step off the page)
+     L2 raised   --c-raised     cards, selected rows, code blocks (the lit tier)
+     L3 overlay  --glass-*      menus, dialogs, popovers, toasts
+
+   `--c-surface-2` is the solid hover/track step between chrome and raised.
+   Glass is reserved for L3: anything that floats above content. */
 :root {
-  /* Canvas and surfaces. */
-  --c-bg: 243 244 246;          /* #F3F4F6 — cold grey canvas */
-  --c-surface: 237 239 242;     /* #EDEFF2 — sidebar, one step deeper than the canvas */
+  /* L0 — canvas. */
+  --c-bg: 245 246 248;          /* #F5F6F8 — cold grey canvas */
+  /* L1 — chrome. */
+  --c-surface: 236 238 242;     /* #ECEEF2 — sidebar, one step deeper than the canvas */
   --c-surface-2: 229 231 235;   /* #E5E7EB — solid hover / track */
+  /* L2 — raised. */
   --c-raised: 255 255 255;      /* #FFFFFF — raised cards, selected rows, code blocks */
 
   /* Hairline edge. Used with an alpha, never as a solid 1px rule. */
   --c-border: 60 60 67;         /* #3C3C43 */
 
   /* Text. */
-  --c-fg: 29 29 31;             /* #1D1D1F — 15.29:1 on canvas */
-  --c-fg-muted: 101 101 107;    /* #65656B — 5.26:1 on canvas, 5.03:1 on sidebar */
+  --c-fg: 29 29 31;             /* #1D1D1F — 15.56:1 on canvas */
+  --c-fg-muted: 101 101 107;    /* #65656B — 5.35:1 on canvas, 4.98:1 on sidebar */
 
   /* The single accent. Buttons use --c-accent; blue TEXT and icons use
      --c-accent-text, one step deeper, so it stays legible on pale tints. */
@@ -59,21 +67,34 @@
   --hairline: rgba(60, 60, 67, .11);
   --hairline-strong: rgba(60, 60, 67, .18);
 
-  /* Shadows. All below 6% black in light mode. */
+  /* Shadows. Two families.
+     L2 surfaces (card/select/press) stay under 6% black: they carry weight, not
+     distance. L3 overlays step up but keep a tight contact shadow under the
+     wide one, so the edge stays crisp instead of smearing into the page. */
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .04), 0 10px 30px rgba(28, 32, 40, .06);
   --shadow-select: 0 1px 3px rgba(0, 0, 0, .05);
   --shadow-press: 0 1px 2px rgba(0, 0, 0, .04);
-  --shadow-pop: 0 12px 32px rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .06);
-  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, .22), 0 2px 8px rgba(0, 0, 0, .08);
+  --shadow-pop: 0 16px 40px -12px rgba(0, 0, 0, .18), 0 2px 6px -1px rgba(0, 0, 0, .08);
+  --shadow-dialog: 0 28px 70px -16px rgba(0, 0, 0, .26), 0 4px 12px -2px rgba(0, 0, 0, .10);
+  /* Buttons own their shadow. A primary control gets one specular top edge and
+     one low, hue-tinted shadow — a button wearing the overlay shadow reads as
+     detached from the page. */
+  --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .18), 0 1px 2px rgba(0, 84, 168, .30);
+  --shadow-btn-raised: 0 1px 2px rgba(0, 0, 0, .05);
   /* The old name for the overlay shadow, kept so the components that still
      reference it pick up the new value. */
   --shadow-float: var(--shadow-pop);
   /* Motion. Non-composer controls only; the composer keeps its own 200ms
-     ease-out (see ConversationComposer.vue). */
+     ease-out (see ConversationComposer.vue). `--ease` is the shared arrival
+     curve (fast in, long settle); `--ease-exit` is its departure twin, which
+     leaves quickly instead of lingering. */
   --ease: cubic-bezier(.23, 1, .32, 1);
+  --ease-exit: cubic-bezier(.4, 0, 1, 1);
   --dur-fast: 120ms;
   --dur-base: 150ms;
   --dur-sheet: 180ms;
+  --dur-overlay-in: 160ms;
+  --dur-overlay-out: 120ms;
 
   /* Radii. */
   --r-btn: 8px;
@@ -99,10 +120,10 @@
 }
 
 .dark {
-  --c-bg: 17 18 20;             /* #111214 */
-  --c-surface: 26 27 29;        /* #1A1B1D */
-  --c-surface-2: 44 45 50;      /* #2C2D32 */
-  --c-raised: 37 38 42;         /* #25262A */
+  --c-bg: 14 15 18;             /* #0E0F12 — L0 */
+  --c-surface: 22 23 27;        /* #16171B — L1 */
+  --c-surface-2: 44 45 50;      /* #2C2D32 — solid hover / track */
+  --c-raised: 31 33 38;         /* #1F2126 — L2 */
 
   --c-border: 255 255 255;
 
@@ -140,11 +161,16 @@
   --hairline: rgba(255, 255, 255, .10);
   --hairline-strong: rgba(255, 255, 255, .16);
 
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, .25), 0 18px 50px rgba(0, 0, 0, .20);
-  --shadow-select: 0 1px 3px rgba(0, 0, 0, .30);
+  /* On a dark page a raised surface has no shadow to speak of, so it earns its
+     thickness from a 1px specular top edge instead: the card catches light at
+     the top and reads as a slab rather than a colour patch. */
+  --shadow-card: inset 0 1px 0 rgb(255 255 255 / .06), 0 1px 2px rgba(0, 0, 0, .25), 0 18px 50px rgba(0, 0, 0, .20);
+  --shadow-select: inset 0 1px 0 rgb(255 255 255 / .06), 0 1px 3px rgba(0, 0, 0, .30);
   --shadow-press: 0 1px 2px rgba(0, 0, 0, .25);
-  --shadow-pop: 0 12px 32px rgba(0, 0, 0, .40), 0 1px 3px rgba(0, 0, 0, .25);
-  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, .50), 0 2px 8px rgba(0, 0, 0, .30);
+  --shadow-pop: 0 16px 40px -12px rgba(0, 0, 0, .55), 0 2px 6px -1px rgba(0, 0, 0, .35);
+  --shadow-dialog: 0 28px 70px -16px rgba(0, 0, 0, .62), 0 4px 12px -2px rgba(0, 0, 0, .40);
+  --shadow-btn: inset 0 1px 0 rgb(255 255 255 / .22), 0 1px 2px rgba(0, 0, 0, .40);
+  --shadow-btn-raised: inset 0 1px 0 rgb(255 255 255 / .07), 0 1px 2px rgba(0, 0, 0, .35);
   --shadow-float: var(--shadow-pop);
 
   --c-syn-keyword: #ff7b72;
@@ -202,7 +228,9 @@ body { @apply bg-bg text-fg font-sans antialiased; }
   --glass-control-border: rgb(var(--c-fg) / .08);
   --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .55), rgb(255 255 255 / 0) 62%);
   --glass-control-shadow: 0 1px 2px rgb(0 0 0 / .04), 0 10px 24px -12px rgb(0 0 0 / .20);
-  --glass-border: var(--hairline);
+  /* L3 hairline: a hair crisper than the in-page edge, because an overlay has
+     to cut its own boundary out of whatever it happens to sit on. */
+  --glass-border: rgba(60, 60, 67, .13);
   --glass-highlight: rgba(255, 255, 255, .90);
   --glass-blur: 20px;
   --glass-saturate: 1.6;
@@ -210,13 +238,13 @@ body { @apply bg-bg text-fg font-sans antialiased; }
   --scrim: rgba(0, 0, 0, .26);
 }
 .dark {
-  --glass-bg: rgba(37, 38, 42, .72);
-  --glass-bg-strong: rgba(37, 38, 42, .84);
-  --glass-control-bg: rgba(37, 38, 42, .88);
+  --glass-bg: rgba(22, 23, 27, .72);        /* L1 chrome, floating */
+  --glass-bg-strong: rgba(31, 33, 38, .84); /* L2 raised, floating */
+  --glass-control-bg: rgba(31, 33, 38, .88);
   --glass-control-border: rgb(255 255 255 / .06);
   --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .07), rgb(255 255 255 / 0) 62%);
   --glass-control-shadow: 0 1px 2px rgb(0 0 0 / .32), 0 10px 24px -12px rgb(0 0 0 / .55);
-  --glass-border: var(--hairline);
+  --glass-border: rgba(255, 255, 255, .09);
   --glass-highlight: rgba(255, 255, 255, .07);
   --glass-blur: 20px;
   --glass-saturate: 1.6;
@@ -246,6 +274,54 @@ body { @apply bg-bg text-fg font-sans antialiased; }
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+}
+
+/* ── Overlay motion ─────────────────────────────────────────────────────────
+   One vocabulary for surfaces that appear and disappear.
+
+     · overlay — a full-screen scrim plus the panel above it (dialogs, the
+       command palette). The scrim only fades: its blur is static on purpose,
+       because animating backdrop-filter smears. The panel rises 6px and scales
+       from 98%, so it comes forward from the page instead of blooming into it.
+       `.ui-panel` marks the panel inside the transitioned overlay.
+     · popover — an anchored panel with no scrim (dropdowns). Scale and fade
+       only: a vertical offset would point the wrong way for a top-anchored
+       menu.
+
+   Both recipes replace their classes rather than stacking them, so a
+   re-triggered open interrupts a running leave and picks up from where it is.
+   The leave is the shorter half — dismissal should never wait. */
+.ui-scrim-enter-active { transition: opacity var(--dur-overlay-in) var(--ease); }
+.ui-scrim-leave-active { transition: opacity var(--dur-overlay-out) var(--ease-exit); }
+.ui-scrim-enter-from, .ui-scrim-leave-to { opacity: 0; }
+
+.ui-scrim-enter-active .ui-panel {
+  transition: opacity var(--dur-overlay-in) var(--ease), transform var(--dur-overlay-in) var(--ease);
+}
+.ui-scrim-leave-active .ui-panel {
+  transition: opacity var(--dur-overlay-out) var(--ease-exit), transform var(--dur-overlay-out) var(--ease-exit);
+}
+.ui-scrim-enter-from .ui-panel { opacity: 0; transform: translateY(6px) scale(.98); }
+.ui-scrim-leave-to .ui-panel { opacity: 0; transform: scale(.985); }
+
+.ui-pop-enter-active {
+  transition: opacity var(--dur-overlay-in) var(--ease), transform var(--dur-overlay-in) var(--ease);
+}
+/* Leaving, it must stop eating clicks the moment it starts to fade. */
+.ui-pop-leave-active {
+  transition: opacity var(--dur-overlay-out) var(--ease-exit), transform var(--dur-overlay-out) var(--ease-exit);
+  pointer-events: none;
+}
+.ui-pop-enter-from, .ui-pop-leave-to { opacity: 0; transform: scale(.97); }
+
+/* Reduced motion keeps the fade (it explains the change) and drops every
+   offset and scale. */
+@media (prefers-reduced-motion: reduce) {
+  .ui-scrim-enter-active, .ui-scrim-leave-active,
+  .ui-scrim-enter-active .ui-panel, .ui-scrim-leave-active .ui-panel,
+  .ui-pop-enter-active, .ui-pop-leave-active { transition: opacity var(--dur-fast) linear; }
+  .ui-scrim-enter-from .ui-panel, .ui-scrim-leave-to .ui-panel,
+  .ui-pop-enter-from, .ui-pop-leave-to { transform: none; }
 }
 
 /* Branded focus ring on interactive elements (gap + accent halo).

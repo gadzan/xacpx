@@ -77,7 +77,7 @@ function onPick(instanceId: string): void {
       <button type="button" data-test="empty-new-session"
               :ref="(el) => (pickerDd.trigger = el as HTMLElement | null)"
               :aria-haspopup="true" :aria-expanded="pickerDd.open"
-              class="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-float transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              class="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-btn transition-[transform,opacity] duration-150 ease-ui hover:opacity-90 active:scale-[0.98] motion-reduce:transition-none motion-reduce:active:scale-100 disabled:cursor-not-allowed disabled:opacity-40"
               :disabled="instances.length === 0"
               @click="onCreate">
         <Plus :size="16" />{{ $t("instance.newSession") }}

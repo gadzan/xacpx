@@ -16,6 +16,14 @@ import { useModalA11y } from "../lib/use-modal-a11y";
 // The root is a plain element on purpose. A dialog that must escape a
 // `transform`ed ancestor wraps this shell in its own `<Teleport to="body">`;
 // keeping the Teleport at the call site keeps the shell testable in place.
+//
+// Motion: the shell owns the arrival gesture (scrim fades, panel rises 6px from
+// 98%) so every dialog in the app opens the same way. The classes are global
+// because a second overlay — the command palette — shares them. The leave pair
+// is declared for callers that keep the shell mounted; every current caller
+// gates it with `v-if`, so dismissal is immediate (the close emit is
+// synchronous by contract, and a dialog cannot animate a node the parent has
+// already detached).
 const props = withDefaults(defineProps<{
   /** Accessible name; pass `labelledby` when the title element has an id. */
   label?: string;
@@ -67,29 +75,37 @@ defineExpose({ panel, focusChild });
 </script>
 
 <template>
-  <div
-    class="fixed inset-0 flex items-center justify-center bg-scrim p-4"
-    :class="[
-      Z[level],
-      blurClass,
-      safeArea
-        ? 'h-dvh pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]'
-        : '',
-    ]"
-    @click.self="emit('close')"
+  <Transition
+    appear
+    enter-active-class="ui-scrim-enter-active"
+    enter-from-class="ui-scrim-enter-from"
+    leave-active-class="ui-scrim-leave-active"
+    leave-to-class="ui-scrim-leave-to"
   >
     <div
-      ref="panel"
-      role="dialog"
-      aria-modal="true"
-      :aria-label="label"
-      :aria-labelledby="labelledby"
-      tabindex="-1"
-      :data-test="testId"
-      class="bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none"
-      :class="panelClass"
+      class="fixed inset-0 flex items-center justify-center bg-scrim p-4"
+      :class="[
+        Z[level],
+        blurClass,
+        safeArea
+          ? 'h-dvh pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]'
+          : '',
+      ]"
+      @click.self="emit('close')"
     >
-      <slot />
+      <div
+        ref="panel"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="label"
+        :aria-labelledby="labelledby"
+        tabindex="-1"
+        :data-test="testId"
+        class="ui-panel bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none"
+        :class="panelClass"
+      >
+        <slot />
+      </div>
     </div>
-  </div>
+  </Transition>
 </template>
