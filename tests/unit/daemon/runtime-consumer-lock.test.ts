@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -173,13 +173,12 @@ test("Bun acquisition timeout kills a helper that already holds flock before its
     statePath: join(root, "state.json"),
   };
   let helperPid: number | undefined;
+  let helperLocked = false;
   const timedOut = createRuntimeConsumerLock({
     lockFilePath,
     // The busy window ends when this timeout kills the helper — and the kill is
-    // what releases the flock. Spawn wait (2s) + settle (100ms) + probe budget
-    // must therefore fit inside it; 3s did not, and a loaded runner lost the
-    // race every time. The handshake delay stays above the timeout so the helper
-    // can never answer first.
+    // what releases the flock. The handshake delay stays above the timeout so
+    // the helper can never answer first.
     helperAcquireTimeoutMs: 8_000,
     // The Node helper takes the flock before delaying its protocol response.
     helperHandshakeDelayMs: 10_000,
@@ -187,6 +186,7 @@ test("Bun acquisition timeout kills a helper that already holds flock before its
       if (event === "lock_helper_spawned" && typeof context.helperPid === "number") {
         helperPid = context.helperPid;
       }
+      if (event === "lock_helper_locked") helperLocked = true;
     },
   });
 
@@ -194,23 +194,23 @@ test("Bun acquisition timeout kills a helper that already holds flock before its
     () => ({ ok: true as const }),
     (error: unknown) => ({ ok: false as const, error }),
   );
-  const spawnDeadline = Date.now() + 2_000;
-  while (helperPid === undefined && Date.now() < spawnDeadline) {
-    await Bun.sleep(10);
-  }
-  expect(helperPid).toBeDefined();
-  // Competing exclusive probes can take the flock themselves. If they win
-  // before the helper, the helper reports BUSY and exits; later probes then
-  // see FREE forever. Wait for spawn, then for the helper's flock syscall.
-  await Bun.sleep(100);
 
-  const busyDeadline = Date.now() + 5_000;
-  let observedBusy = false;
-  while (!observedBusy && Date.now() < busyDeadline) {
-    observedBusy = await probeFlockBusy(lockFilePath);
-    if (!observedBusy) await Bun.sleep(25);
+  // Wait for the helper to report that it owns the kernel lock. That report is
+  // the moment the invariant under test becomes true, so nothing below depends
+  // on how quickly the child starts: the settle sleep plus probe poll this
+  // replaces could not tell a slow child from one that never locked at all.
+  const lockedDeadline = Date.now() + 5_000;
+  while (!helperLocked && Date.now() < lockedDeadline) {
+    await Bun.sleep(5);
   }
-  expect(observedBusy).toBe(true);
+  if (!helperLocked) throw new Error(`helper pid ${helperPid ?? "unknown"} never reported owning the flock`);
+  expect(helperPid).toBeDefined();
+
+  // The helper holds the lock now, so an exclusive probe must see BUSY. It can
+  // no longer take the lock itself — which is what let the old pre-lock probes
+  // win the race, make the helper exit BUSY, and leave every later probe
+  // seeing FREE for the rest of the window.
+  expect(await probeFlockBusy(lockFilePath)).toBe(true);
 
   const result = await acquisition;
   expect(result.ok).toBe(false);
@@ -421,23 +421,6 @@ fsExt.flock(fd, "exnb", (error) => {
 `;
 
 async function probeFlockBusy(lockFilePath: string): Promise<boolean> {
-  if (process.platform === "linux") {
-    try {
-      const [fileStat, locks] = await Promise.all([
-        stat(lockFilePath),
-        readFile("/proc/locks", "utf8"),
-      ]);
-      const inode = String(fileStat.ino);
-      return locks.split("\n").some((line) => {
-        const field = line.trim().split(/\s+/).find((part) => /^\d+:\d+:\d+$/.test(part));
-        if (!field) return false;
-        const parts = field.split(":");
-        return parts[2] === inode;
-      });
-    } catch {
-      return false;
-    }
-  }
   const child = spawn("node", [
     "-e",
     FLOCK_PROBE_SOURCE,

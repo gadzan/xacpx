@@ -219,6 +219,9 @@ const reportError = (error, busy) => {
   process.exitCode = busy ? 2 : 1;
 };
 const acquired = (releaseLock) => {
+  // Report ownership before the (optionally delayed) handshake, so the parent can
+  // wait for the lock itself instead of for a settle delay.
+  process.stdout.write("LOCKED\n");
   // The daemon controller signals the whole POSIX process group during a
   // graceful stop. Once ownership is acquired, only the parent stdin lifetime
   // may release this helper's lock; group SIGTERM/SIGINT must not unlock it
@@ -288,8 +291,9 @@ async function acquireLockHelper(
       helperPid: child.pid,
     });
   }
+  let sawHandshake = false;
   const line = await new Promise<string>((resolve, reject) => {
-    let stdout = "";
+    let buffer = "";
     let stderr = "";
     let timedOut = false;
     let killWaitTimer: NodeJS.Timeout | undefined;
@@ -312,10 +316,33 @@ async function acquireLockHelper(
       clearTimeout(killWaitTimer);
       callback();
     };
+    // The helper reports owning the OS lock before its handshake. Skip that
+    // line here and surface it as a diagnostic, so a caller can wait for the
+    // lock itself rather than for a fixed settle delay.
+    const nextLine = (): string | undefined => {
+      while (!timedOut) {
+        const newline = buffer.indexOf("\n");
+        if (newline < 0) return undefined;
+        const value = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (value === "LOCKED") {
+          void emitDiagnostic(onDiagnostic, "lock_helper_locked", {
+            lockFilePath,
+            helperPid: child.pid,
+          });
+          continue;
+        }
+        return value;
+      }
+      return undefined;
+    };
     child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
-      const newline = stdout.indexOf("\n");
-      if (newline >= 0 && !timedOut) finish(() => resolve(stdout.slice(0, newline)));
+      buffer += String(chunk);
+      const value = nextLine();
+      if (value !== undefined) {
+        sawHandshake = true;
+        finish(() => resolve(value));
+      }
     });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.once("error", (error) => {
@@ -327,7 +354,7 @@ async function acquireLockHelper(
     child.once("close", (code) => {
       if (timedOut) {
         finish(() => reject(new Error(`runtime lock helper timed out${stderr ? `: ${stderr}` : ""}`)));
-      } else if (!stdout.includes("\n")) {
+      } else if (!sawHandshake) {
         finish(() => reject(new Error(`runtime lock helper exited with code ${code}${stderr ? `: ${stderr}` : ""}`)));
       }
     });
