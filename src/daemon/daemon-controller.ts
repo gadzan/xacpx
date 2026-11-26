@@ -264,7 +264,17 @@ export class DaemonController {
       });
       const terminal = new Set(["killed", "already-exited", "skipped-replaced"]);
       if (!terminal.has(outcome.rootOutcome) || outcome.outcomes.some((item) => !terminal.has(item.outcome))) {
-        throw new Error("Windows daemon tree termination was not fully confirmed");
+        // Name what failed rather than only that something did. The guard fires both
+        // when a live process refused to die and when the worker never answered (a
+        // PowerShell deadline reports `query-failed` with nothing attempted), and the
+        // two need opposite responses: retry versus investigate.
+        const unresolved = outcome.outcomes
+          .filter((item) => !terminal.has(item.outcome))
+          .map((item) => `${item.target.pid}=${item.outcome}`);
+        throw new Error(
+          `Windows daemon tree termination was not fully confirmed: root=${outcome.rootOutcome}`
+          + (unresolved.length > 0 ? `; unconfirmed ${unresolved.join(", ")}` : ""),
+        );
       }
     }
     // missing or exact fingerprint mismatch proves the recorded daemon generation

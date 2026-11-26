@@ -142,6 +142,47 @@ test("Windows stop retains frozen evidence when identity or tree termination is 
   }
 });
 
+test("Windows stop names the process that kept the tree from terminating", async () => {
+  // Without the pid and outcome in the message, a failed stop reads the same whether a
+  // process refused to die or the worker never answered. Those need opposite
+  // responses, so the message has to say which one happened.
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-stop-win-detail-"));
+  const registry = new OrphanRegistry(dir);
+  await registry.initialize();
+  await registry.writeGeneration({
+    generationId: "44444444-4444-4444-8444-444444444444",
+    daemonPid: 12345,
+    daemonCreationDate: "133801632000000000",
+    configRoot: dir,
+  });
+  await writeFile(join(dir, "daemon.pid"), "12345\n");
+  const controller = new DaemonController(pathsFor(dir), {
+    platform: "win32",
+    configRoot: dir,
+    isProcessRunning: () => true,
+    spawnDetached: async () => 1,
+    terminateProcess: async () => {},
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
+    orphanRegistry: registry,
+    probeWindowsIdentity: async () => ({
+      status: "found",
+      identity: { pid: 12345, creationDate: "133801632000000000", executablePath: "C:\\node.exe" },
+    }),
+    terminateWindowsTree: async () => ({
+      rootOutcome: "killed",
+      outcomes: [
+        { target: { pid: 12345, creationDate: "133801632000000000" }, outcome: "killed" },
+        { target: { pid: 6789, creationDate: "133801632000000000" }, outcome: "access-denied" },
+      ],
+    }),
+    sweepWindows: async () => emptySweep(),
+  });
+  await expect(controller.stop()).rejects.toThrow(/root=killed.*6789=access-denied/);
+  // The root did die; only the descendant is named, so the reader is not sent looking
+  // at the daemon itself.
+  await expect(controller.stop()).rejects.not.toThrow(/12345=/);
+});
+
 test("reports running when pid is alive and status exists", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
   const controller = createController(dir, {
