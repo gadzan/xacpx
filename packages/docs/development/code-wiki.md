@@ -95,10 +95,12 @@ interface SessionTransport {
 }
 ```
 
-Two implementations:
+Two lanes, one contract:
 
 - **`acpx-cli`** ([`src/transport/acpx-cli/`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-cli)) — spawns `acpx` as a child process; optionally allocates a PTY via `node-pty`.
 - **`acpx-bridge`** ([`src/transport/acpx-bridge/`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-bridge)) — talks to a separate bridge subprocess over a JSONL protocol. Better for concurrency and event isolation. See the [Bridge subsystem](#bridge-subsystem) section for the subprocess and protocol details.
+
+Both lanes run the same per-operation orchestration; only argv builders, runners, env/timeout wiring, record caches, and affinity guards stay per-lane. Shared shells: [`acpx-spawn.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-spawn.ts), [`acpx-session-ops.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-session-ops.ts), [`acpx-session-commands.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-session-commands.ts), [`acpx-ensure-session.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-ensure-session.ts), [`acpx-streaming-prompt.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/acpx-streaming-prompt.ts), [`native-model-restore.ts`](https://github.com/gadzan/xacpx/blob/main/src/transport/native-model-restore.ts). Cross-lane argv parity is pinned by [`cli-bridge-argv-parity.test.ts`](https://github.com/gadzan/xacpx/blob/main/tests/unit/transport/golden/cli-bridge-argv-parity.test.ts).
 
 ### acpx resolution order
 
@@ -151,7 +153,13 @@ The bridge isolates `acpx` driving into a separate subprocess, giving the main p
 
 - [`src/bridge/bridge-main.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/bridge-main.ts) — entry point for the bridge subprocess (handles `acpx` stdio).
 - [`src/bridge/bridge-server.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/bridge-server.ts) — parses bridge protocol JSON lines and delegates to the runtime.
-- [`src/bridge/bridge-runtime.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/bridge-runtime.ts) — wraps raw `acpx` commands (`sessions new`, `prompt`, `cancel`).
+- [`src/bridge/bridge-runtime.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/bridge-runtime.ts) — wraps raw `acpx` commands (`sessions new`, `prompt`, `cancel`); it **is** the `cli` engine (`readonly kind = "cli"`).
+
+### Engines and routing
+
+- [`src/bridge/engine/engine-router.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/engine/engine-router.ts) — `EngineRouter` fronts both engines and routes every call by session affinity; a request declaring a different engine than the bound one fails closed.
+- [`src/bridge/engine/runtime-engine.ts`](https://github.com/gadzan/xacpx/blob/main/src/bridge/engine/runtime-engine.ts) — `RuntimeEngine` (`kind = "runtime"`), the runtime lane.
+- The former `CliEngine` delegation shell is gone: `BridgeRuntime` is wired straight into the router.
 
 ### JSONL protocol
 

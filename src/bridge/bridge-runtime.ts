@@ -10,24 +10,26 @@ import {
   type ClaudeSettingsPolicy,
 } from "../adapters/claude-settings-policy";
 import { resolveSpawnCommand } from "../process/spawn-command";
-import { terminateProcessTree } from "../process/terminate-process-tree";
+import {
+  defaultAcpxRunner,
+  shellSessionCreateRunner,
+  spawnCapture,
+  type AcpxSpawnOptions,
+  type AcpxSpawnResult,
+} from "../transport/acpx-spawn";
 import { getPromptText, normalizeCommandError } from "../transport/prompt-output";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
 import { createStructuredPromptFile } from "../transport/prompt-media";
-import { createStreamingPromptState, parseStreamingDataChunk } from "../transport/streaming-prompt";
+import { runStreamingPromptFlow } from "../transport/acpx-streaming-prompt";
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
 import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../transport/acpx-queue-overflow";
 import { queueOwnerBaseEnvOption, resolveAcpxHostPolicyEnv, resolveEffectiveAcpxEnv } from "../transport/acpx-host-policy";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
-import { isProcessAlive } from "../daemon/daemon-files";
-import { runAgentSessionList } from "../transport/agent-session-list";
-import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
-import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
 import { ACPX_MODEL_INSPECT_TIMEOUT_MS, probeAgentCapabilitiesViaInspector, type AcpxModelInspectFn } from "../transport/acpx-model-inspector";
 import type { AgentCommandRegistry } from "../config/agent-catalog";
 import {
@@ -53,8 +55,37 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
-import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../transport/session-effort";
-import { parseSessionStatusCatalog } from "../transport/session-model-catalog";
+import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../transport/session-effort";
+import { runEnsureSessionFlow } from "../transport/acpx-ensure-session";
+import {
+  assertNoActiveNativeRestore,
+  runSetModelWithNativeRestore,
+  type NativeModelRestoreSession,
+} from "../transport/native-model-restore";
+import {
+  buildQueueOwnerLaunchInput,
+  cleanupOverflowedOwnerFlow,
+  coolQueueOwnerWith,
+  ensureMcpQueueOwnerLaunched,
+  probeInspectTimeout,
+  queueOwnerRefFromBridgeInput,
+  syncPersistedSessionEffortFlow,
+  willReplaceQueueOwner,
+} from "../transport/acpx-session-ops";
+import {
+  runCancelSession,
+  runDeleteSession,
+  runFreeWarmProcess,
+  runGetAgentSessionId,
+  runGetSessionModel,
+  runHasSession,
+  runIsSessionWarm,
+  runListAgentSessions,
+  runRemoveSession,
+  runResumeAgentSession,
+  runSetSessionMode,
+  runTailSessionHistory,
+} from "../transport/acpx-session-commands";
 import { runAcpxControlCommand } from "../transport/acpx-owner-control-retry";
 import { MessageInjectionError } from "../transport/message-injection";
 
@@ -81,23 +112,13 @@ export class EnsureSessionFailedError extends Error {
   }
 }
 
-interface CommandResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-export interface CommandRunnerOptions {
-  onStderrLine?: (line: string) => void;
-  /** Kill the spawned process tree and reject with CommandTimeoutError when it runs longer than this. */
-  timeoutMs?: number;
-  /** Stable operation name included in timeout diagnostics. */
-  stage?: AcpxCommandStage;
-  /** Per-agent environment; provider credentials never cross the bridge JSON protocol. */
-  env?: NodeJS.ProcessEnv;
-}
+// Unified spawn types (canonical definitions live in ../transport/acpx-spawn.ts).
+type CommandResult = AcpxSpawnResult;
+export type CommandRunnerOptions = AcpxSpawnOptions;
 type CommandRunner = (command: string, args: string[], options?: CommandRunnerOptions) => Promise<CommandResult>;
 type SessionCreateRunner = (command: string, args: string[], cwd: string, options?: CommandRunnerOptions) => Promise<CommandResult>;
+export type { SpawnCaptureOptions } from "../transport/acpx-spawn";
+export { spawnCapture };
 type PromptRunner = typeof runStreamingPrompt;
 type RepairSessionIndexFn = () => Promise<boolean>;
 
@@ -181,6 +202,9 @@ interface BridgeRuntimeOptions {
   }) => QueueOwnerAdapterContext;
   /** Test seam and fail-safe owner terminator for an oversized queue event. */
   terminateQueueOwner?: (acpxRecordId: string) => Promise<void>;
+  /** Test seams for the omp native model-restore recovery path (mirrors the CLI lane). */
+  ompModelRecovery?: { recoverOmpSessionModel: typeof import("../transport/omp-model-recovery").recoverOmpSessionModel };
+  queueOwnerAbsence?: { assertAcpxQueueOwnerAbsent: typeof import("../transport/acpx-queue-owner-launcher").assertAcpxQueueOwnerAbsent };
   /** acpx registry for bare-driver probes; without it a bare driver is probe-unavailable. */
   loadAgentRegistry?: () => AgentCommandRegistry | null;
   /** Test seam for the model inspector (production calls acpx/runtime). */
@@ -193,6 +217,8 @@ type QueueOwnerLaunchPort = Pick<AcpxQueueOwnerLauncher, "launch"> & {
 };
 
 export class BridgeRuntime {
+  readonly kind = "cli" as const;
+
   // undefined = not yet probed; true/false = probed result.
   // Older acpx builds don't accept --verbose; we feature-detect lazily on first
   // ensure failure that looks like "unknown option", then disable verbose for
@@ -256,24 +282,26 @@ export class BridgeRuntime {
     cursor?: string;
     filterCwd?: string;
   }): Promise<AgentSessionListResult | undefined> {
-    return await runAgentSessionList({
-      filterCwd: input.filterCwd,
-      runList: async (includeFilterCwd) => {
-        const spec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-          "sessions",
-          "list",
-          ...(includeFilterCwd && input.filterCwd ? ["--filter-cwd", input.filterCwd] : []),
-          ...(input.cursor ? ["--cursor", input.cursor] : []),
-        ], { format: "json" }));
+    // Shell lives in ../transport/acpx-session-commands.ts; only argv/runner are lane-specific.
+    return await runListAgentSessions({
+      ...(input.filterCwd ? { filterCwd: input.filterCwd } : {}),
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.driver ? { driver: input.driver } : {}),
+      agent: input.agent,
+      timeoutMs: this.sessionInitTimeoutMs(),
+      buildListArgv: (includeFilterCwd) => this.buildSessionArgs(input, [
+        "sessions",
+        "list",
+        ...(includeFilterCwd && input.filterCwd ? ["--filter-cwd", input.filterCwd] : []),
+        ...(input.cursor ? ["--cursor", input.cursor] : []),
+      ], { format: "json" }),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
         // Mirrors acpx-cli, which bounds sessions list by sessionInitTimeoutMs.
-        return await this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
-          timeoutMs: this.sessionInitTimeoutMs(),
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
         }));
       },
-      formatError: (result) => result.stderr || result.stdout || `sessions list failed with exit code ${result.code}`,
-      // Codex's session list leaks native subagent threads; hide them (fail-open).
-      // Gate on driver so custom-named codex agents (driver "codex") are covered too.
-      isSubagentSession: (input.driver ?? input.agent) === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
     });
   }
 
@@ -290,32 +318,31 @@ export class BridgeRuntime {
     agentSessionId: string;
   }): Promise<Record<string, never>> {
     this.invalidateRecordIdCache(input);
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "sessions",
-      "new",
-      "--name",
-      input.name,
-      "--resume-session",
-      input.agentSessionId,
-    ], { format: "quiet" }));
     const timeoutMs = this.sessionInitTimeoutMs();
-    let result: CommandResult;
-    try {
-      result = await this.runSessionCreate(
-        spawnSpec.command,
-        spawnSpec.args,
-        input.cwd,
-        this.withSpawnEnvironment(input, { timeoutMs }),
-      );
-    } catch (error) {
-      if (error instanceof CommandTimeoutError) {
-        throw new Error(`session initialization timed out after ${timeoutMs / 1000}s`);
-      }
-      throw error;
-    }
-    if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "sessions resume failed");
-    }
+    await runResumeAgentSession({
+      sessionName: input.name,
+      agentSessionId: input.agentSessionId,
+      timeoutMs,
+      buildArgv: (tail) => this.buildSessionArgs(input, tail, { format: "quiet" }),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.runSessionCreate(
+          spec.command,
+          spec.args,
+          input.cwd,
+          this.withSpawnEnvironment(input, { timeoutMs }),
+        );
+      },
+      mapFailure: (result) => {
+        throw new Error(normalizeCommandError(result) ?? `command failed with exit code ${result.code}`);
+      },
+      mapSpawnError: (error) => {
+        if (error instanceof CommandTimeoutError) {
+          throw new Error(`session initialization timed out after ${timeoutMs / 1000}s`);
+        }
+        throw error;
+      },
+    });
     return {};
   }
 
@@ -344,17 +371,19 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ exists: boolean }> {
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "sessions",
-      "show",
-      input.name,
-    ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    const exists = await runHasSession({
+      sessionName: input.name,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "has-session",
-    }));
-
-    return { exists: result.code === 0 };
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "has-session",
+        }));
+      },
+    });
+    return { exists };
   }
 
   async tailSessionHistory(input: {
@@ -369,33 +398,19 @@ export class BridgeRuntime {
     name: string;
     lines: number;
   }): Promise<{ text: string }> {
-    const candidates = [
-      ["sessions", "history", input.name, "--limit", String(input.lines)],
-      ["sessions", "history", "quiet", "-s", input.name, String(input.lines)],
-      ["sessions", "history", "quiet", input.name, String(input.lines)],
-      ["sessions", "history", "-s", input.name, "--tail", String(input.lines)],
-      ["sessions", "history", input.name, "--tail", String(input.lines)],
-      ["sessions", "history", "--name", input.name, "--tail", String(input.lines)],
-    ];
-
-    // One shared deadline across all candidate invocations so a hung acpx
-    // bounds the whole method at managementCommandTimeoutMs, not per candidate.
-    const deadline = Date.now() + this.managementCommandTimeoutMs();
-    let lastResult: CommandResult | undefined;
-    for (const tailArgs of candidates) {
-      const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, tailArgs));
-      const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
-        timeoutMs: Math.max(deadline - Date.now(), 1),
-        stage: "session-history",
-      }));
-      if (result.code === 0) {
-        return { text: result.stdout.trimEnd() };
-      }
-      lastResult = result;
-    }
-
-    const message = lastResult?.stderr || lastResult?.stdout || "sessions history failed";
-    throw new Error(message);
+    return await runTailSessionHistory({
+      sessionName: input.name,
+      lines: input.lines,
+      deadlineBudgetMs: this.managementCommandTimeoutMs(),
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "session-history",
+        }));
+      },
+    });
   }
 
   async ensureSession(
@@ -431,20 +446,7 @@ export class BridgeRuntime {
     input: BridgeSessionInput,
     onProgress?: (progress: EnsureSessionProgress) => void,
   ): Promise<Record<string, never>> {
-    onProgress?.("spawn");
-    // Structured launches first migrate a legacy record (agent_command present,
-    // agent_argv missing) so acpx can resume it on Windows with exact argv
-    // boundaries. No record → the ensure below creates one from the overlay argv.
-    await this.migrateLegacySessionArgvIfNeeded(input);
     const timeoutMs = this.sessionInitTimeoutMs();
-    // One shared deadline for every subprocess step (ensure, show probe, new,
-    // verbose-fallback retry): each step only gets the remaining budget so the
-    // whole ensure path is bounded by sessionInitTimeoutMs end-to-end, like
-    // acpx-cli. The 1ms floor makes an already-expired deadline fail fast via
-    // the normal per-spawn timeout instead of granting a fresh slice.
-    const now = this.options.now ?? Date.now;
-    const deadline = now() + timeoutMs;
-    const remainingTimeoutMs = () => Math.max(deadline - now(), 1);
     const sessionInitTimedOutError = () =>
       new EnsureSessionFailedError(
         `session initialization timed out after ${timeoutMs / 1000}s`,
@@ -458,96 +460,66 @@ export class BridgeRuntime {
         }
       : undefined;
 
-    const runWithVerboseFallback = async (
-      tailArgs: string[],
-      runner: (command: string, args: string[]) => Promise<CommandResult>,
-    ): Promise<CommandResult> => {
-      try {
-        const useVerbose = this.acpxVerboseSupported !== false;
-        const spec = resolveSpawnCommand(
-          this.command,
-          this.buildSessionArgs(input, tailArgs, { verbose: useVerbose }),
-        );
-        const result = await runner(spec.command, spec.args);
-        if (result.code === 0) {
-          if (useVerbose) this.acpxVerboseSupported = true;
-          return result;
-        }
-        if (useVerbose && isUnknownVerboseOption(result.stderr, result.stdout)) {
-          this.acpxVerboseSupported = false;
-          const retrySpec = resolveSpawnCommand(
+    // Orchestration lives in ../transport/acpx-ensure-session.ts; the bridge
+    // keeps its own argv builders, runners, verbose probe, EPERM repair, and
+    // failure mapping — only the ensure → show → new skeleton is shared.
+    const outcome = await runEnsureSessionFlow(
+      {
+        // Structured launches first migrate a legacy record (agent_command
+        // present, agent_argv missing) so acpx can resume it on Windows with
+        // exact argv boundaries. No record → ensure creates one from the overlay argv.
+        migrateLegacyArgv: () => this.migrateLegacySessionArgvIfNeeded(input),
+        runEnsure: (tail, opts) => {
+          const spec = resolveSpawnCommand(
             this.command,
-            this.buildSessionArgs(input, tailArgs, { verbose: false }),
+            this.buildSessionArgs(input, tail, { verbose: opts.verbose }),
           );
-          return await runner(retrySpec.command, retrySpec.args);
-        }
-        return result;
-      } catch (error) {
+          return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+            onStderrLine: opts.onStderrLine,
+            timeoutMs: opts.timeoutMs,
+          }));
+        },
+        runShow: (tail, opts) => {
+          const spec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, tail));
+          return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+            timeoutMs: opts.timeoutMs,
+          }));
+        },
+        runCreate: (tail, opts) => {
+          const spec = resolveSpawnCommand(
+            this.command,
+            this.buildSessionArgs(input, tail, { verbose: opts.verbose }),
+          );
+          return this.runSessionCreate(spec.command, spec.args, input.cwd, this.withSpawnEnvironment(input, {
+            onStderrLine: opts.onStderrLine,
+            timeoutMs: opts.timeoutMs,
+          }));
+        },
+        repairSessionIndex: () => this.repairSessionIndex(),
+        ...(this.options.now ? { now: this.options.now } : {}),
+      },
+      {
+        sessionName: input.name,
+        sessionInitTimeoutMs: timeoutMs,
+        verboseFallback: true,
+        epermRepair: true,
+        tolerateEnsureFailure: false,
+        tolerateShowFailure: false,
+        isVerboseSupported: () => this.acpxVerboseSupported,
+        setVerboseSupported: (supported) => { this.acpxVerboseSupported = supported; },
+        ...(onProgress ? { onProgress } : {}),
+        ...(onStderrLine ? { onStderrLine } : {}),
         // Agent init hung (auth prompt, network stall): the spawn was already
         // killed by the runner; surface a clear, user-facing error instead of
         // blocking this session's bridge lane forever.
-        if (error instanceof CommandTimeoutError) {
-          throw sessionInitTimedOutError();
-        }
-        throw error;
-      }
-    };
-
-    const ensured = await runWithVerboseFallback(
-      ["sessions", "ensure", "--name", input.name],
-      (command, args) => this.run(command, args, this.withSpawnEnvironment(input, {
-        onStderrLine,
-        timeoutMs: remainingTimeoutMs(),
-      })),
+        mapTimeoutError: () => { throw sessionInitTimedOutError(); },
+      },
     );
-    if (ensured.code === 0) {
-      onProgress?.("ready");
-      return {};
-    }
+    if (outcome.ok) return {};
 
-    const existingSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, ["sessions", "show", input.name]));
-    const runShowProbe = async (): Promise<CommandResult> => {
-      try {
-        return await this.run(existingSpec.command, existingSpec.args, this.withSpawnEnvironment(input, {
-          timeoutMs: remainingTimeoutMs(),
-        }));
-      } catch (error) {
-        if (error instanceof CommandTimeoutError) {
-          throw sessionInitTimedOutError();
-        }
-        throw error;
-      }
-    };
-    const existing = await runShowProbe();
-    if (existing.code === 0) {
-      onProgress?.("ready");
-      return {};
-    }
-
-    onProgress?.("initializing");
-    const created = await runWithVerboseFallback(
-      ["sessions", "new", "--name", input.name],
-      (command, args) => this.runSessionCreate(command, args, input.cwd, this.withSpawnEnvironment(input, {
-        onStderrLine,
-        timeoutMs: remainingTimeoutMs(),
-      })),
-    );
-
-    if (created.code === 0) {
-      onProgress?.("ready");
-      return {};
-    }
-
-    const output = created.stderr || created.stdout || "";
-    if (output.includes("EPERM") && await this.repairSessionIndex()) {
-      const repaired = await runShowProbe();
-      if (repaired.code === 0) {
-        onProgress?.("ready");
-        return {};
-      }
-    }
-
-    const rawMessage = output || ensured.stderr || ensured.stdout || "failed to create session";
+    const { ensured, created } = outcome.failure;
+    const output = created?.stderr || created?.stdout || "";
+    const rawMessage = output || ensured?.stderr || ensured?.stdout || "failed to create session";
     // Strip [acpx] verbose log lines so they can't trigger false-positive optional-dep parsing.
     const parseInput = rawMessage
       .split(/\r\n|\r|\n/)
@@ -587,6 +559,7 @@ export class BridgeRuntime {
   }
 
   async prompt(input: BridgeSessionInput & { text: string }, onEvent?: (event: BridgePromptStreamEvent) => void): Promise<{ text: string }> {
+    this.assertNoActiveRecovery(input);
     await this.syncPersistedSessionEffort(input);
     await this.launchMcpQueueOwnerIfNeeded(input);
     const structuredPrompt = await createStructuredPromptFile(input.text, input.media);
@@ -637,6 +610,7 @@ export class BridgeRuntime {
     mode: "auto" | "steer" | "queue" | "interrupt";
     messageId: string;
   }): Promise<{ status: "queued"; modeUsed: "queue" }> {
+    this.assertNoActiveRecovery(input);
     if (input.mode === "steer") {
       throw new MessageInjectionError(
         "TARGET_NOT_STEERABLE",
@@ -675,11 +649,7 @@ export class BridgeRuntime {
       }),
     );
     if (result.code !== 0) {
-      const detail =
-        normalizeCommandError(result) ??
-        (result.stderr ||
-          result.stdout ||
-          `inject-message failed with exit code ${result.code}`);
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);
     }
     return { status: "queued", modeUsed: "queue" };
@@ -693,54 +663,33 @@ export class BridgeRuntime {
    * turn. Neither step is allowed to replace the original overflow diagnosis.
    */
   private async cleanupOverflowedOwner(input: BridgeSessionInput): Promise<AcpxQueueCleanupResult> {
-    const diagnostics: string[] = [];
-    let cancelSucceeded = false;
-    try {
-      await this.cancel(input);
-      cancelSucceeded = true;
-    } catch (error) {
-      diagnostics.push(`cancel failed: ${describeCleanupError(error)}`);
-    }
-
-    let record: { acpxRecordId: string } | undefined;
-    try {
-      record = await this.readSessionRecord(input);
-    } catch (error) {
-      diagnostics.push(`could not resolve the queue owner record: ${describeCleanupError(error)}`);
-    }
-
-    let ownerTerminationSucceeded = false;
-    if (record) {
-      try {
-        await (this.options.terminateQueueOwner ?? terminateAcpxQueueOwnerVerified)(record.acpxRecordId);
-        ownerTerminationSucceeded = true;
-      } catch (error) {
-        diagnostics.push(`owner termination failed: ${describeCleanupError(error)}`);
-      }
-    }
-
-    return {
-      cancelAttempted: true,
-      cancelSucceeded,
-      ownerTerminationAttempted: Boolean(record),
-      ownerTerminationSucceeded,
-      ...(diagnostics.length > 0 ? { diagnostic: diagnostics.join("; ") } : {}),
-    };
+    // The bridge honors its terminateQueueOwner override; the CLI always verifies.
+    const terminate = this.options.terminateQueueOwner ?? terminateAcpxQueueOwnerVerified;
+    return await cleanupOverflowedOwnerFlow({
+      cancel: () => this.cancel(input).then(() => {}),
+      readRecordId: () => this.readSessionRecord(input).then((record) => record.acpxRecordId),
+      terminate: (recordId) => terminate(recordId),
+    });
   }
 
   private async launchMcpQueueOwnerIfNeeded(input: BridgeSessionInput): Promise<void> {
-    if (!input.mcpCoordinatorSession) {
-      return;
-    }
-    const record = await this.readSessionRecord(input);
-    const prepared = await this.queueOwnerLauncher.launch(this.queueOwnerLaunchInput(input, record.acpxRecordId));
-    if (prepared?.agentCommand) input.agentCommand = prepared.agentCommand;
+    // Owned record read (Bot auto-ensure): a runtime-lane Bot session that
+    // has never been ensured resolves its record by ensuring it first — same
+    // as the CLI lane. Strict readSessionRecord stays for the other callers.
+    await ensureMcpQueueOwnerLaunched({
+      coordinatorSession: input.mcpCoordinatorSession,
+      readRecord: () => this.readOwnedSessionRecord(input),
+      launch: (launchInput) => this.queueOwnerLauncher.launch(launchInput),
+      onPreparedAgentCommand: (agentCommand) => { input.agentCommand = agentCommand; },
+      buildLaunchInput: (recordId) => this.queueOwnerLaunchInput(input, recordId),
+    });
   }
 
   private async readRawSessionRecord(
     input: BridgeSessionInput,
     stage: AcpxCommandStage = "read-session-record",
     format: "quiet" | "json" = "quiet",
+    timeoutMs = this.managementCommandTimeoutMs(),
   ): Promise<string> {
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
       "sessions",
@@ -748,11 +697,12 @@ export class BridgeRuntime {
       input.name,
     ], { format }));
     const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
-      timeoutMs: this.managementCommandTimeoutMs(),
+      timeoutMs,
       stage,
     }));
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "sessions show failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
     return result.stdout;
   }
@@ -805,10 +755,58 @@ export class BridgeRuntime {
     }
   }
 
-  private async readSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
-    const record = parseAcpxSessionRecordId(await this.readRawSessionRecord(input, "read-session-record", "json"));
-    if (record) return record;
-    throw new Error("failed to resolve acpx session record id");
+  private async readOwnedSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string; acpSessionId?: string }> {
+    try {
+      return await this.readSessionRecord(input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isMissingAcpxSessionError("", message)) {
+        throw error;
+      }
+    }
+    await this.ensureSession(input);
+    return await this.readSessionRecord(input);
+  }
+
+  private async readSessionRecord(input: BridgeSessionInput, timeoutMs = this.managementCommandTimeoutMs()): Promise<{ acpxRecordId: string; agentSessionId?: string; acpSessionId?: string }> {
+    const stdout = await this.readRawSessionRecord(input, "read-session-record", "json", timeoutMs);
+    const record = parseAcpxSessionRecordId(stdout);
+    if (!record) throw new Error("failed to resolve acpx session record id");
+    // The ACP session id is the native id for adapters that expose one (OMP
+    // publishes its own session id as the ACP id); the provider id is the
+    // fallback for adapters that only publish a provider-native id.
+    let acpSessionId: string | undefined;
+    try {
+      const parsed = JSON.parse(stdout) as { acpSessionId?: unknown };
+      acpSessionId = typeof parsed.acpSessionId === "string" && parsed.acpSessionId.length > 0
+        ? parsed.acpSessionId
+        : undefined;
+    } catch {
+      acpSessionId = undefined;
+    }
+    return { ...record, ...(acpSessionId ? { acpSessionId } : {}) };
+  }
+
+  /**
+   * Native-restore identity for a lane session (bridge: session name).
+   * Refuses turns while a native restore holds the physical session — a turn
+   * admitted mid-recovery would race the native writer.
+   */
+  private nativeRestoreSession(input: BridgeSessionInput): NativeModelRestoreSession {
+    return {
+      transportSession: input.name,
+      cwd: input.cwd,
+      agent: input.agent,
+      ...(input.driver ? { driver: input.driver } : {}),
+      ...(input.agentCommand ? { agentCommand: input.agentCommand } : {}),
+      ...(input.acpxAgent ? { acpxAgent: input.acpxAgent } : {}),
+      ...(input.rawCommand ? { rawCommand: input.rawCommand } : {}),
+      ...(input.agentArgv ? { agentArgv: input.agentArgv } : {}),
+    };
+  }
+
+  private assertNoActiveRecovery(input: BridgeSessionInput): void {
+    assertNoActiveNativeRestore(this.nativeRestoreSession(input));
   }
 
   async getAgentSessionId(input: {
@@ -822,8 +820,10 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ agentSessionId: string | undefined }> {
-    const record = await this.readSessionRecord(input);
-    return { agentSessionId: record.agentSessionId };
+    const agentSessionId = await runGetAgentSessionId({
+      readRecord: () => this.readSessionRecord(input),
+    });
+    return { agentSessionId };
   }
 
   async setMode(input: {
@@ -838,21 +838,21 @@ export class BridgeRuntime {
     name: string;
     modeId: string;
   }): Promise<Record<string, never>> {
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "set-mode",
-      "-s",
-      input.name,
-      input.modeId,
-    ]));
-    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    this.assertNoActiveRecovery(input);
+    await runSetSessionMode({
+      sessionName: input.name,
+      modeId: input.modeId,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "set-mode",
-    })));
-
-    if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "set-mode failed");
-    }
-
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "set-mode",
+        }));
+      },
+      control: true,
+    });
     return {};
   }
 
@@ -868,23 +868,40 @@ export class BridgeRuntime {
     name: string;
     modelId: string;
   }): Promise<Record<string, never>> {
-    // Pass the new model both as the `set model` value and the global --model.
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs({ ...input, model: input.modelId }, [
-      "set",
-      "-s",
-      input.name,
-      "model",
+    // Ordinary setter with OMP native-restore recovery (shared with the CLI
+    // lane in ../transport/native-model-restore.ts); only the I/O closures
+    // below are lane-specific.
+    await runSetModelWithNativeRestore(
+      this.nativeRestoreSession(input),
       input.modelId,
-    ]));
-    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment({ ...input, model: input.modelId }, {
-      timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "set-model",
-    })));
-
-    if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "set-model failed");
-    }
-
+      {
+        readSessionRecord: (timeoutMs) => this.readSessionRecord(input, timeoutMs),
+        runSetModel: async (modelId, opts) => {
+          const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs({ ...input, model: modelId }, [
+            "set",
+            "-s",
+            input.name,
+            "model",
+            modelId,
+          ]));
+          const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment({ ...input, model: modelId }, {
+            timeoutMs: opts.timeoutMs,
+            stage: "set-model",
+          })));
+          if (result.code !== 0) {
+            const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+            throw new Error(detail);
+          }
+        },
+        envForModel: (modelId?) => this.effectiveSpawnEnvironment(
+          modelId === undefined ? input : { ...input, model: modelId },
+        ),
+        managementTimeoutMs: this.managementCommandTimeoutMs(),
+        ...(this.options.now ? { now: this.options.now } : {}),
+        ...(this.options.ompModelRecovery ? { ompModelRecovery: this.options.ompModelRecovery } : {}),
+        ...(this.options.queueOwnerAbsence ? { queueOwnerAbsence: this.options.queueOwnerAbsence } : {}),
+      },
+    );
     return {};
   }
 
@@ -892,7 +909,10 @@ export class BridgeRuntime {
     await this.ensureSession(input);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, ['status','-s',input.name], {format:'json'}));
     const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {timeoutMs:this.managementCommandTimeoutMs(),stage:'get-session-model'}));
-    if(result.code !== 0) throw new Error('command advertisement read failed');
+    if(result.code !== 0) {
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
+    }
     const raw = JSON.parse(result.stdout) as {availableCommands?: import('../transport/types').AgentCommand[]};
     return raw.availableCommands;
   }
@@ -908,26 +928,23 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ current?: string; available: string[] }> {
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "status",
-      "-s",
-      input.name,
-    ], { format: "json" }));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    return await runGetSessionModel({
+      sessionName: input.name,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "get-session-model",
-    }));
-
-    if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "status failed");
-    }
-
-    return parseSessionStatusCatalog(result.stdout, `session "${input.name}"`);
+      buildArgv: (tail, format) => this.buildSessionArgs(input, tail, format ? { format } : {}),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "get-session-model",
+        }));
+      },
+    });
   }
 
   async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
     return probeAgentCapabilitiesViaInspector(input, {
-      timeoutMs: Math.min(this.sessionInitTimeoutMs(), ACPX_MODEL_INSPECT_TIMEOUT_MS),
+      timeoutMs: probeInspectTimeout(this.sessionInitTimeoutMs()),
       ...(this.options.loadAgentRegistry ? { loadAgentRegistry: this.options.loadAgentRegistry } : {}),
       ...(this.options.inspectAgentModels ? { inspectAgentModels: this.options.inspectAgentModels } : {}),
     });
@@ -963,69 +980,50 @@ export class BridgeRuntime {
     name: string;
     effort: string;
   }): Promise<Record<string, never>> {
+    this.assertNoActiveRecovery(input);
     const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
     await this.applyAdvertisedSessionEffort(input, input.effort, record);
     return {};
   }
 
   private async syncPersistedSessionEffort(input: BridgeSessionInput): Promise<void> {
-    const persisted = input.effort?.trim();
-    if (!persisted) return;
-    const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
-    const observed = parseSessionEffortRecord(record);
-    const acpxRecordId = parseAcpxSessionRecordId(record)?.acpxRecordId;
-    const effort = sessionEffortToReapply({
-      persisted,
-      observedCurrent: observed?.current,
-      advertised: observed?.available,
-      ownerWillBeReplaced: await this.queueOwnerWillBeReplaced(input, acpxRecordId),
-    });
-    if (!effort) return;
-    if (acpxRecordId) await this.coolQueueOwner(acpxRecordId);
-    await this.applyAdvertisedSessionEffort(input, effort, record);
+    // Orchestration lives in ../transport/acpx-session-ops.ts; only the I/O is lane-specific.
+    await syncPersistedSessionEffortFlow(
+      input.effort,
+      (record) => parseAcpxSessionRecordId(record)?.acpxRecordId,
+      {
+        readRecord: () => this.readRawSessionRecord(input, "get-session-effort", "json"),
+        ownerWillBeReplaced: (recordId) => this.queueOwnerWillBeReplaced(input, recordId),
+        coolOwner: (recordId) => this.coolQueueOwner(recordId),
+        applyEffort: (effort, record) => this.applyAdvertisedSessionEffort(input, effort, record),
+      },
+    );
   }
 
   private async coolQueueOwner(acpxRecordId: string): Promise<void> {
-    if (this.queueOwnerLauncher.cool) {
-      await this.queueOwnerLauncher.cool(acpxRecordId);
-      return;
-    }
-    await terminateAcpxQueueOwnerVerified(acpxRecordId);
+    await coolQueueOwnerWith(this.queueOwnerLauncher, acpxRecordId);
   }
 
   private async queueOwnerWillBeReplaced(
     input: BridgeSessionInput,
     acpxRecordId: string | undefined,
   ): Promise<boolean> {
-    if (!input.mcpCoordinatorSession || !acpxRecordId) return false;
-    const wouldReuse = this.queueOwnerLauncher.wouldReuse?.bind(this.queueOwnerLauncher);
-    if (!wouldReuse) return true;
-    return !(await wouldReuse(this.queueOwnerLaunchInput(input, acpxRecordId)));
+    return await willReplaceQueueOwner({
+      coordinatorSession: input.mcpCoordinatorSession,
+      acpxRecordId,
+      wouldReuse: this.queueOwnerLauncher.wouldReuse?.bind(this.queueOwnerLauncher),
+      buildLaunchInput: (recordId) => this.queueOwnerLaunchInput(input, recordId),
+    });
   }
 
   private queueOwnerLaunchInput(input: BridgeSessionInput, acpxRecordId: string): LaunchQueueOwnerInput {
-    const env = this.spawnEnvironment(input);
-    const adapterId = classifyPreinstalledAdapterCommandShape(input.agentCommand);
-    const adapterContext = adapterId && input.agentCommand
-      ? this.options.createAdapterContext?.({
-          id: adapterId,
-          sessionKey: input.sessionKey ?? input.name,
-          agentCommand: input.agentCommand,
-        })
-      : undefined;
-    return {
-      acpxRecordId,
-      coordinatorSession: input.mcpCoordinatorSession!,
-      ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
+    return buildQueueOwnerLaunchInput(queueOwnerRefFromBridgeInput(input), acpxRecordId, {
+      agentEnv: this.spawnEnvironment(input),
+      hostPolicyEnv: this.hostPolicyEnv,
       permissionMode: this.options.permissionMode ?? "approve-all",
       nonInteractivePermissions: this.options.nonInteractivePermissions ?? "deny",
-      ...(input.model?.trim() ? { sessionOptions: { model: input.model.trim() } } : {}),
-      ...(adapterId && input.agentCommand ? { agentCommand: input.agentCommand } : {}),
-      ...(adapterContext ? { adapterContext } : {}),
-      // Same bypass guard as the CLI lane: explicit agent env must not drop
-      // the host ceilings; agent-undefined stays omitted (baseEnv covers it).
-      ...(env ? { env: { ...env, ...this.hostPolicyEnv } } : {}),
-    };
+      ...(this.options.createAdapterContext ? { createAdapterContext: this.options.createAdapterContext } : {}),
+    });
   }
 
   private async applyAdvertisedSessionEffort(
@@ -1046,7 +1044,8 @@ export class BridgeRuntime {
       stage: "set-session-effort",
     })));
     if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "set effort failed");
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
     }
   }
 
@@ -1061,24 +1060,19 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ cancelled: boolean; message: string }> {
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "cancel",
-      "-s",
-      input.name,
-    ]));
-    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    return await runCancelSession({
+      sessionName: input.name,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "cancel",
-    })));
-
-    if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || "cancel failed");
-    }
-
-    return {
-      cancelled: true,
-      message: result.stdout.trim(),
-    };
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "cancel",
+        }));
+      },
+      control: true,
+    });
   }
 
   async removeSession(input: {
@@ -1093,23 +1087,20 @@ export class BridgeRuntime {
     name: string;
   }): Promise<Record<string, never>> {
     this.invalidateRecordIdCache(input);
-    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
-      "sessions",
-      "close",
-      input.name,
-    ]));
-    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    await runRemoveSession({
+      sessionName: input.name,
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "remove-session",
-    })));
-
-    if (result.code === 0) {
-      return {};
-    }
-    if (isMissingAcpxSessionError(result.stderr, result.stdout)) {
-      return {};
-    }
-    throw new Error(result.stderr || result.stdout || "sessions close failed");
+      buildArgv: (tail) => this.buildSessionArgs(input, tail),
+      execute: (argv, timeoutMs) => {
+        const spec = resolveSpawnCommand(this.command, argv);
+        return this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage: "remove-session",
+        }));
+      },
+      control: true,
+    });
+    return {};
   }
 
   async deleteSession(input: {
@@ -1123,18 +1114,10 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<Record<string, never>> {
-    let acpxRecordId: string;
-    try {
-      ({ acpxRecordId } = await this.readSessionRecord(input));
-    } catch {
-      return {}; // acpx session already gone → nothing to delete
-    }
-    // Close the acpx session (terminates the queue owner + agent process since
-    // acpx >=0.10), then unlink its on-disk files. See deleteAcpxSessionFiles for
-    // the residual orphan-stream-file risk this leaves (a file-unlink timing /
-    // Windows file-lock issue, not a live process — notably on Windows).
-    await this.removeSession(input);
-    await deleteAcpxSessionFiles({ acpxRecordId });
+    await runDeleteSession({
+      readRecord: () => this.readSessionRecord(input),
+      remove: () => this.removeSession(input),
+    });
     return {};
   }
 
@@ -1149,16 +1132,9 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<Record<string, never>> {
-    let acpxRecordId: string;
-    try {
-      ({ acpxRecordId } = await this.readSessionRecord(input));
-    } catch {
-      return {}; // acpx session already gone → no warm process to free
-    }
-    // Kill ONLY the warm queue-owner process; do NOT `sessions close` it (that
-    // marks the record `closed` → unresumable, history lost). The record stays
-    // open, so the next prompt resumes with full history.
-    await terminateAcpxQueueOwner(acpxRecordId);
+    await runFreeWarmProcess({
+      readRecord: () => this.readSessionRecord(input),
+    });
     return {};
   }
 
@@ -1189,18 +1165,22 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<{ warm: boolean }> {
-    const cacheKey = this.recordIdCacheKey(input);
-    let acpxRecordId = this.recordIdCache.get(cacheKey);
-    if (!acpxRecordId) {
-      try {
-        ({ acpxRecordId } = await this.readSessionRecord(input));
-      } catch {
-        return { warm: false }; // acpx session gone → nothing can be warm
-      }
-      this.recordIdCache.set(cacheKey, acpxRecordId);
-    }
-    const pid = await readQueueOwnerPid(acpxRecordId);
-    return { warm: pid !== undefined && isProcessAlive(pid) };
+    const warm = await runIsSessionWarm({
+      readCachedRecord: async () => {
+        const cacheKey = this.recordIdCacheKey(input);
+        let acpxRecordId = this.recordIdCache.get(cacheKey);
+        if (!acpxRecordId) {
+          try {
+            ({ acpxRecordId } = await this.readSessionRecord(input));
+          } catch {
+            return undefined; // acpx session gone → nothing can be warm
+          }
+          this.recordIdCache.set(cacheKey, acpxRecordId);
+        }
+        return { acpxRecordId };
+      },
+    });
+    return { warm };
   }
 
   async shutdown(): Promise<Record<string, never>> {
@@ -1299,85 +1279,7 @@ export class BridgeRuntime {
   }
 }
 
-export interface SpawnCaptureOptions extends CommandRunnerOptions {
-  cwd?: string;
-  /** Test seam: replaces node:child_process spawn. */
-  spawnFn?: typeof spawn;
-  /** Test seam: replaces terminateProcessTree for timeout kills. */
-  killProcessTreeFn?: (pid: number) => Promise<void>;
-}
-
-export function spawnCapture(
-  command: string,
-  args: string[],
-  options?: SpawnCaptureOptions,
-): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    const spawnFn = options?.spawnFn ?? spawn;
-    const child = spawnFn(command, args, {
-      cwd: options?.cwd,
-      env: options?.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    let stdout = "";
-    let stderr = "";
-    let stderrTail = "";
-
-    const timeoutId =
-      typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
-        ? setTimeout(() => {
-            // Same kill semantics as the acpx-cli transport's timed-out runner:
-            // tear down the whole spawned tree so no orphan keeps holding the lane.
-            const kill = options.killProcessTreeFn
-              ?? ((pid: number) => terminateProcessTree(pid, { detachedProcessGroup: false }));
-            void kill(child.pid ?? 0);
-            reject(new CommandTimeoutError(options.timeoutMs!, [command, ...args].join(" "), {
-              stage: options.stage,
-              stdout,
-              stderr,
-            }));
-          }, options.timeoutMs)
-        : undefined;
-
-    child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      const text = String(chunk);
-      stderr += text;
-      if (!options?.onStderrLine) return;
-      stderrTail += text;
-      // Split on both \n and \r so Windows CRLF and bare-\r progress bars both emit lines.
-      const matches = stderrTail.split(/\r\n|\r|\n/);
-      // Last element is the unterminated tail (or "" if input ended on a separator).
-      stderrTail = matches.pop() ?? "";
-      for (const line of matches) {
-        options.onStderrLine(line);
-      }
-    });
-    child.on("error", (error) => {
-      if (timeoutId) clearTimeout(timeoutId);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (options?.onStderrLine && stderrTail.length > 0) {
-        options.onStderrLine(stderrTail);
-      }
-      resolve({ code: code ?? 1, stdout, stderr });
-    });
-  });
-}
-
-async function defaultRunner(
-  command: string,
-  args: string[],
-  options?: CommandRunnerOptions,
-): Promise<CommandResult> {
-  return await spawnCapture(command, args, options);
-}
+const defaultRunner = defaultAcpxRunner;
 
 export async function runStreamingPrompt(
   command: string,
@@ -1390,29 +1292,23 @@ export async function runStreamingPrompt(
       env: options.env,
       stdio: ["ignore", "pipe", "pipe"],
     }) as unknown as PromptStreamProcess);
-  const setIntervalFn = options.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
-  const clearIntervalFn = options.clearIntervalFn ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
-  const rawStream = options.rawStream ?? false;
-  // Raw streaming drains the buffer on a tight cadence so the live view updates ~5×/s
-  // with low first-token latency. The batched paragraph path keeps the long fallback
-  // window (it flushes whole paragraphs on `\n\n` and only times out on a stall).
-  const maxSegmentWaitMs = options.maxSegmentWaitMs ?? (rawStream ? 200 : 30_000);
-  const flushCheckIntervalMs = options.flushCheckIntervalMs ?? (rawStream ? 80 : 5_000);
-  const now = options.now ?? (() => Date.now());
-
-  return await new Promise((resolve, reject) => {
-    const child = spawnPrompt(command, args);
-    let stdout = "";
-    let stderr = "";
-    const toolEventMode: ToolEventMode = options.toolEventMode ?? "text";
-    let flushPendingText = () => {};
-    const state = createStreamingPromptState(options.formatToolCalls ?? false, {
-      mode: toolEventMode,
-      driver: options.driver,
-      rawStream,
-      onBeforeActivityEvent: () => {
-        flushPendingText();
-      },
+  const toolEventMode: ToolEventMode = options.toolEventMode ?? "text";
+  // Shell lives in ../transport/acpx-streaming-prompt.ts; the bridge keeps its
+  // direct synchronous `onEvent` emission here (no queue, no chains, no sink).
+  const { code, stdout, stderr } = await runStreamingPromptFlow({
+    command,
+    args,
+    formatToolCalls: options.formatToolCalls,
+    toolEventMode,
+    ...(options.driver ? { driver: options.driver } : {}),
+    rawStream: options.rawStream,
+    spawnPrompt,
+    ...(options.setIntervalFn ? { setIntervalFn: options.setIntervalFn } : {}),
+    ...(options.clearIntervalFn ? { clearIntervalFn: options.clearIntervalFn } : {}),
+    ...(options.maxSegmentWaitMs !== undefined ? { maxSegmentWaitMs: options.maxSegmentWaitMs } : {}),
+    ...(options.flushCheckIntervalMs !== undefined ? { flushCheckIntervalMs: options.flushCheckIntervalMs } : {}),
+    ...(options.now ? { now: options.now } : {}),
+    handlers: {
       ...(onEvent && (toolEventMode === "structured" || toolEventMode === "both")
         ? { onToolEvent: (toolEvent) => onEvent({ type: "prompt.tool_event", event: toolEvent }) }
         : {}),
@@ -1421,7 +1317,7 @@ export async function runStreamingPrompt(
       // async `onThought` chain lives on the client side (acpx-bridge-transport),
       // so this side has no callback to await before resolving the prompt.
       ...(onEvent
-        ? { onThought: (chunk) => onEvent({ type: "prompt.thought", text: chunk }) }
+        ? { onThought: (chunk: string) => onEvent({ type: "prompt.thought", text: chunk }) }
         : {}),
       ...(onEvent
         ? { onPlan: (entries) => onEvent({ type: "prompt.plan", entries }) }
@@ -1432,60 +1328,15 @@ export async function runStreamingPrompt(
       ...(onEvent
         ? { onCommands: (commands) => onEvent({ type: "prompt.commands", commands }) }
         : {}),
-    });
-    let lastReplyAt = now();
-
-    const flushBuffer = () => {
-      // Raw streaming forwards the buffer verbatim (the live view concatenates chunks);
-      // the batched path trims paragraph edges into discrete segments.
-      const remaining = rawStream ? state.buffer : state.buffer.trim();
-      if (remaining.length > 0) {
-        state.buffer = "";
-        onEvent?.({ type: "prompt.segment", text: remaining });
-        lastReplyAt = now();
-      }
-    };
-
-    flushPendingText = () => {
-      for (const segment of state.segments.splice(0)) {
-        onEvent?.({ type: "prompt.segment", text: segment });
-        lastReplyAt = now();
-      }
-      flushBuffer();
-    };
-
-    const timer = setIntervalFn(() => {
-      if (state.buffer.trim().length > 0 && now() - lastReplyAt >= maxSegmentWaitMs) {
-        flushBuffer();
-      }
-    }, flushCheckIntervalMs);
-
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string | Buffer) => {
-      const text = String(chunk);
-      stdout += text;
-      parseStreamingDataChunk(state, text);
-      for (const segment of state.segments.splice(0)) {
-        onEvent?.({ type: "prompt.segment", text: segment });
-        lastReplyAt = now();
-      }
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", (error) => {
-      clearIntervalFn(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearIntervalFn(timer);
-      const remaining = state.finalize();
-      if (remaining.length > 0) {
-        onEvent?.({ type: "prompt.segment", text: remaining });
-      }
-      resolve({ code: code ?? 1, stdout, stderr });
-    });
+    },
+    emitter: {
+      emitSegment: (text) => {
+        onEvent?.({ type: "prompt.segment", text });
+      },
+      finish: async () => 0,
+    },
   });
+  return { code, stdout, stderr };
 }
 
 async function defaultPromptRunner(
@@ -1497,14 +1348,7 @@ async function defaultPromptRunner(
   return await runStreamingPrompt(command, args, onEvent, options);
 }
 
-async function shellSessionCreateRunner(
-  command: string,
-  args: string[],
-  cwd: string,
-  options?: CommandRunnerOptions,
-): Promise<CommandResult> {
-  return await spawnCapture(command, args, { ...options, cwd });
-}
+// shellSessionCreateRunner is imported from ../transport/acpx-spawn (unified Phase 1).
 
 export function selectLatestAcpxSessionIndexTmp(files: string[]): string | null {
   let latestTmp: string | null = null;
@@ -1578,13 +1422,6 @@ export async function tryRepairAcpxSessionIndex(deps: RepairAcpxSessionIndexDeps
   }
 }
 
-function isUnknownVerboseOption(stderr: string, stdout: string): boolean {
-  const combined = `${stderr}\n${stdout}`;
-  // Commander-style ("error: unknown option '--verbose'"), yargs, and generic "unrecognized".
-  return /(unknown|unrecognized)\b[^\n]*--verbose/i.test(combined);
-}
+// isUnknownVerboseOption lives in ../transport/acpx-ensure-session.ts (shared).
 
-function describeCleanupError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.length > 512 ? `${message.slice(0, 512)}…` : message;
-}
+// describeCleanupError lives in ../transport/acpx-session-ops.ts (shared).

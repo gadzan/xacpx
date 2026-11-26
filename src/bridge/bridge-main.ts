@@ -18,7 +18,6 @@ import {
 } from "./bridge-env";
 import { BridgeServer } from "./bridge-server";
 import { BridgeRuntime } from "./bridge-runtime";
-import { CliEngine } from "./engine/cli/cli-engine";
 import { EngineRouter } from "./engine/engine-router";
 import { SessionEngineBinding } from "./engine/session-engine-binding";
 import { RuntimeEngine, defaultWorkerEntryCandidates } from "./engine/runtime-engine";
@@ -157,15 +156,17 @@ export async function runBridgeMain(): Promise<void> {
         readCurrentGeneration: readBridgeGeneration,
       }),
     });
-  const cliEngine = new CliEngine(cliRuntime);
+  // The CLI lane needs no wrapper: BridgeRuntime is itself the cli engine
+  // (readonly kind = "cli").
+  const cliEngine = cliRuntime;
   // Explicit production wiring (Activation-E/F/G): RuntimeEngine is now
-  // instantiated alongside CliEngine and fronted by EngineRouter.
+  // instantiated alongside the CLI runtime and fronted by EngineRouter.
   // transport.engine selects the executor: "cli" pins CLI, "runtime" is
   // strict Runtime, and "auto" picks Runtime for eligible new sessions
   // (bridge transport + eligible permission/shape/record) else CLI.
   // engine=runtime strict mode works because the Router has a real
   // RuntimeEngine to route to.
-  let engine: CliEngine | EngineRouter = cliEngine;
+  let engine: BridgeRuntime | EngineRouter = cliEngine;
   try {
     const workerEntry = defaultWorkerEntryCandidates().find((p) => {
       try { return statSync(p).isFile(); } catch { return false; }

@@ -21,7 +21,6 @@ import { MessageInjectionError } from "../transport/message-injection";
 import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "./bridge-runtime";
-import { CliEngine } from "./engine/cli/cli-engine";
 import { EngineRouter, SessionEngineBinding, type BridgeEngine, type EngineSessionInput } from "./engine";
 import { EngineMismatchError, EngineUnsupportedError } from "./engine/engine-router";
 import { RuntimeError } from "./engine/runtime-engine";
@@ -119,13 +118,14 @@ export class BridgeServer {
     private readonly capabilityProbe?: () => Promise<BridgeEngineCapabilities>,
   ) {
     // EngineRouter is the single routing entrypoint. A raw BridgeRuntime
-    // (legacy tests / bridge-main) is wrapped as CliEngine behind a fresh
-    // router so affinity exists from day one. Passing a bare RuntimeEngine
+    // (legacy tests / bridge-main) already implements the cli engine surface
+    // (readonly kind = "cli"), so it is wired directly behind a fresh router
+    // for affinity from day one. Passing a bare RuntimeEngine
     // is a compile-time error — it must be wired through an EngineRouter
     // with proper SessionEngineBinding so kind-based routing is correct.
     this.engines = runtime instanceof EngineRouter
       ? runtime
-      : new EngineRouter(new SessionEngineBinding(), new CliEngine(runtime as BridgeRuntime));
+      : new EngineRouter(new SessionEngineBinding(), runtime as BridgeRuntime);
   }
   async handleLine(line: string, writeLine?: (line: string) => void): Promise<string | null> {
     if (writeLine) this.daemonWriter = writeLine;

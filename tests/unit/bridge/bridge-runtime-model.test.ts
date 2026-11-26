@@ -58,6 +58,87 @@ test("setModel issues `set ... model <id>` with the new model", async () => {
   expect(environments).toEqual([{ RESOLVED_MODEL: "claude-opus-4-8" }]);
 });
 
+test("setModel recovers an OMP restore failure through the shared native flow", async () => {
+  const ompRecord = JSON.stringify({
+    acpxRecordId: "omp-record-1",
+    acpSessionId: "native-session-9",
+    agentSessionId: "provider-session-3",
+  });
+  const calls: string[][] = [];
+  let setterAttempts = 0;
+  const run = async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("set") && args.includes("model")) {
+      setterAttempts += 1;
+      if (setterAttempts === 1) {
+        return { code: 1, stdout: "", stderr: "Could not restore model gpt-5.2/high: the provider rejected it." };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (args.includes("show")) {
+      return { code: 0, stdout: ompRecord, stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const recoveries: Array<{ command: string; cwd: string; agentSessionId: string; modelId: string }> = [];
+  const runtime = new BridgeRuntime("acpx", run, undefined, {
+    ompModelRecovery: { recoverOmpSessionModel: async (input) => { recoveries.push(input); } },
+    queueOwnerAbsence: { assertAcpxQueueOwnerAbsent: async () => {} },
+  });
+
+  await runtime.setModel({
+    agent: "omp",
+    driver: "omp",
+    rawCommand: "omp acp",
+    cwd: "/tmp/backend",
+    name: "backend:api-fix",
+    modelId: "gpt-5.2/high",
+  });
+
+  // The helper got the ACP (native) id, not the provider fallback — this is
+  // the Phase 3c record fix: the bridge used to drop acpSessionId.
+  expect(recoveries).toHaveLength(1);
+  expect(recoveries[0]).toMatchObject({
+    command: "omp",
+    cwd: "/tmp/backend",
+    agentSessionId: "native-session-9",
+    modelId: "gpt-5.2/high",
+  });
+  // Ordinary setter ran before (failed) and after (sync) the helper.
+  expect(calls.filter((args) => args.includes("set") && args.includes("model"))).toHaveLength(2);
+});
+
+test("prompt with an MCP coordinator auto-ensures a never-ensured Bot session", async () => {
+  const calls: string[][] = [];
+  let shows = 0;
+  const run = async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("show")) {
+      shows += 1;
+      // First read: the record does not exist yet.
+      if (shows === 1) return { code: 1, stdout: "", stderr: "No acpx session found for backend:demo" };
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "record-1" }), stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, {
+    launch: async () => {},
+  });
+
+  const result = await runtime.prompt({
+    agent: "codex",
+    cwd: "/tmp/backend",
+    name: "backend:demo",
+    mcpCoordinatorSession: "backend:main",
+    text: "hello",
+  });
+
+  expect(result).toEqual({ text: "" });
+  // show (missing) -> ensure creates the record -> show resolves it -> prompt.
+  expect(calls.some((args) => args.includes("ensure"))).toBe(true);
+  expect(calls.some((args) => args.includes("prompt"))).toBe(true);
+});
+
 test("setModel throws on a non-zero exit", async () => {
   const run = async () => ({ code: 1, stdout: "", stderr: "requested model unsupported" });
   const runtime = new BridgeRuntime("acpx", run);
