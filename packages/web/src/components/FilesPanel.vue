@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ChevronRight, Download, File, FileText, FileX, Folder, FolderGit2, GitBranch, List, Loader2, MoreHorizontal, Plus, RefreshCw, Undo2, Upload, X } from "lucide-vue-next";
+import { ChevronDown, ChevronRight, Download, File, FileText, FileX, Folder, FolderGit2, GitBranch, List, Loader2, MoreHorizontal, Plus, RefreshCw, Search, Undo2, Upload, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
@@ -113,6 +113,11 @@ const branchGroups = computed<SelectGroup[]>(() => [
 
 // Debounced file-name search.
 const searchInput = ref("");
+// The include/exclude patterns and the name/content switch are used far less than the
+// query itself, so they fold away behind one chevron instead of spending two extra rows
+// of the narrow inspector. The dot on the chevron says a filter is active.
+const filtersOpen = ref(false);
+const filtersActive = computed(() => !!(files.searchOpts.include || files.searchOpts.exclude));
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer);
@@ -279,26 +284,41 @@ watch(
 
       <!-- Files tab: pinned search (+ breadcrumb when browsing); only the listing scrolls. -->
       <div v-if="files.tab === 'files'" class="flex min-h-0 flex-1 flex-col">
-        <!-- search (pinned): query + match-case/whole-word/regex + include/exclude + name/content mode -->
-        <div class="shrink-0 px-2 py-1 space-y-1">
-          <div class="flex items-center gap-1">
+        <!-- search (pinned, ONE hairline row): query + match-case/whole-word/regex +
+             the filter fold. include/exclude and the name/content switch sit behind the
+             chevron — same controls, three rows reclaimed for the file tree. -->
+        <div class="shrink-0 px-2 pb-1 pt-1.5">
+          <div data-test="fs-search-row"
+               class="flex items-center gap-0.5 rounded-md border border-hairline py-0.5 pl-1.5 pr-0.5 transition-colors focus-within:border-accent/50">
+            <Search :size="12" class="shrink-0 text-fg-muted" />
             <input v-model="searchInput" data-test="fs-search" :placeholder="$t(searchPlaceholder)"
-                   class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-xs text-fg placeholder:text-fg-muted" @input="onSearchInput" />
-            <button data-test="search-matchcase" :title="$t('files.search.matchCase')" @click="files.searchOpts.matchCase = !files.searchOpts.matchCase"
-                    class="grid h-6 w-6 place-items-center rounded-sm text-xs" :class="files.searchOpts.matchCase ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">Aa</button>
-            <button data-test="search-wholeword" :title="$t('files.search.wholeWord')" @click="files.searchOpts.wholeWord = !files.searchOpts.wholeWord"
-                    class="grid h-6 w-6 place-items-center rounded-sm text-xs" :class="files.searchOpts.wholeWord ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">W</button>
-            <button data-test="search-regex" :title="$t('files.search.regex')" @click="files.searchOpts.regex = !files.searchOpts.regex"
-                    class="grid h-6 w-6 place-items-center rounded-sm font-mono text-xs" :class="files.searchOpts.regex ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">.*</button>
-            <button v-if="searchInput" :aria-label="$t('files.clearSearch')" class="text-fg-muted hover:text-fg" @click="clearSearch"><X :size="14" /></button>
+                   class="min-w-0 flex-1 bg-transparent px-1 py-1 text-xs text-fg outline-none placeholder:text-fg-muted" @input="onSearchInput" />
+            <button v-if="searchInput" data-test="fs-clear" :aria-label="$t('files.clearSearch')"
+                    class="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
+                    @click="clearSearch"><X :size="12" /></button>
+            <button data-test="search-matchcase" :title="$t('files.search.matchCase')" :aria-pressed="files.searchOpts.matchCase" @click="files.searchOpts.matchCase = !files.searchOpts.matchCase"
+                    class="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-xs transition-colors" :class="files.searchOpts.matchCase ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fill-hover'">Aa</button>
+            <button data-test="search-wholeword" :title="$t('files.search.wholeWord')" :aria-pressed="files.searchOpts.wholeWord" @click="files.searchOpts.wholeWord = !files.searchOpts.wholeWord"
+                    class="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-xs transition-colors" :class="files.searchOpts.wholeWord ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fill-hover'">W</button>
+            <button data-test="search-regex" :title="$t('files.search.regex')" :aria-pressed="files.searchOpts.regex" @click="files.searchOpts.regex = !files.searchOpts.regex"
+                    class="grid h-6 w-6 shrink-0 place-items-center rounded-sm font-mono text-xs transition-colors" :class="files.searchOpts.regex ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fill-hover'">.*</button>
+            <button data-test="search-filters" :title="$t(filtersOpen ? 'files.search.hideFilters' : 'files.search.showFilters')"
+                    :aria-expanded="filtersOpen"
+                    class="relative grid h-6 w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
+                    @click="filtersOpen = !filtersOpen">
+              <ChevronDown :size="13" class="transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="filtersOpen ? 'rotate-180' : ''" />
+              <span v-if="filtersActive && !filtersOpen" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
+            </button>
           </div>
-          <div class="flex items-center gap-1">
-            <input v-model="files.searchOpts.include" data-test="search-include" :placeholder="$t('files.search.include')" class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
-            <input v-model="files.searchOpts.exclude" data-test="search-exclude" :placeholder="$t('files.search.exclude')" class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
-          </div>
-          <div class="flex items-center gap-1 text-xs">
-            <button data-test="search-mode-name" @click="files.searchOpts.mode = 'name'" class="rounded-sm px-2 py-0.5" :class="files.searchOpts.mode === 'name' ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byName") }}</button>
-            <button data-test="search-mode-content" @click="files.searchOpts.mode = 'content'" class="rounded-sm px-2 py-0.5" :class="files.searchOpts.mode === 'content' ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byContent") }}</button>
+          <div v-show="filtersOpen" data-test="search-filters-row" class="mt-1 space-y-1">
+            <div class="flex items-center gap-1">
+              <input v-model="files.searchOpts.include" data-test="search-include" :placeholder="$t('files.search.include')" class="min-w-0 flex-1 rounded-sm border border-hairline bg-transparent px-1.5 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
+              <input v-model="files.searchOpts.exclude" data-test="search-exclude" :placeholder="$t('files.search.exclude')" class="min-w-0 flex-1 rounded-sm border border-hairline bg-transparent px-1.5 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
+            </div>
+            <div class="flex items-center gap-1 text-xs">
+              <button data-test="search-mode-name" @click="files.searchOpts.mode = 'name'" class="rounded-sm px-2 py-0.5 transition-colors" :class="files.searchOpts.mode === 'name' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted hover:bg-fill-hover'">{{ $t("files.search.byName") }}</button>
+              <button data-test="search-mode-content" @click="files.searchOpts.mode = 'content'" class="rounded-sm px-2 py-0.5 transition-colors" :class="files.searchOpts.mode === 'content' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted hover:bg-fill-hover'">{{ $t("files.search.byContent") }}</button>
+            </div>
           </div>
         </div>
 

@@ -187,7 +187,7 @@ onUnmounted(() => clearInterval(timer));
   <div class="flex h-full flex-1 flex-col">
     <!-- header (desktop only: <lg the single mobile top bar in DashboardView /
          DirectBotPane carries the title + subtitle instead of this chip row) -->
-    <div data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+    <div data-conversation-header class="hidden border-b border-hairline lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-transparent px-3 lg:px-5 py-1.5 lg:py-0">
       <h1 :title="currentSession?.displayName || chat.sessionAlias || undefined"
           class="hidden min-w-0 truncate lg:block text-sm font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
       <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
@@ -268,7 +268,7 @@ onUnmounted(() => clearInterval(timer));
     <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
          inset is applied ONCE here (the bottommost element) and never stacks on top of the
          composer's own padding — env() is 0 off-PWA, so desktop stays at 1rem. -->
-    <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
+    <div class="shrink-0 bg-gradient-to-t from-raised to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
          :style="keyboardInset ? { paddingBottom: '0.5rem' } : undefined"
          data-test="composer-area">
       <!-- Same centered 48rem column as the transcript rows (MessageList mx-auto

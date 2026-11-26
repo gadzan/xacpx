@@ -205,6 +205,18 @@ export default {
   palette: { placeholder: "Jump to a session…", noMatches: "no matches" },
   chat: {
     emptyStateTitle: "Continue where you left off",
+    bento: {
+      subtitle: "Everything reachable from this account: instances, recent sessions, and the agents behind them.",
+      onlineInstances: "Online instances",
+      noneOnline: "No instance connected",
+      recentSessions: "Recent sessions",
+      sessions: "Sessions",
+      agents: "Agents in use",
+      agentMix: "Agent mix",
+      emptyRecent: "No recent sessions yet",
+      resumeHint: "Open it directly",
+      resume: "Open",
+    },
     clearContext: {
       title: "Clear context",
       body: "Start a fresh context for this session. The session stays; the current history cannot be restored.",
@@ -439,6 +451,8 @@ export default {
       exclude: "files to exclude",
       byName: "By name",
       byContent: "By content",
+      showFilters: "Show path filters",
+      hideFilters: "Hide path filters",
       noContentMatches: "No matches in files",
     },
     menu: {

@@ -1040,7 +1040,7 @@ const rowSwipes = computed(() => {
   <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5 max-lg:pb-24">
     <!-- Sticky so the instance list scrolls under the mode row. -->
     <div v-if="store.instances.length" data-test="instance-nav-track-wrap"
-         class="sticky top-0 z-10 -mx-2 -mt-1.5 bg-surface px-2 pb-1 pt-1.5">
+         class="sticky top-0 z-10 -mx-2 -mt-1.5 bg-surface px-2 pb-1 pt-1.5 lg:bg-bg">
       <!-- The rail is the 32px recessed fill. On a coarse pointer the row grows
            to 44 so each segment owns a real 44 hit box, while the rail and the
            selected pill keep their 32 and 28 visual heights. `px-0.5` is the
@@ -1060,7 +1060,7 @@ const rowSwipes = computed(() => {
              overlay, which would land above the raised thumb and make the selected
              segment read as a hole instead of a raised one. -->
         <span aria-hidden="true" data-test="instance-nav-rail"
-              class="pointer-events-none absolute inset-x-0 top-1/2 h-8 -translate-y-1/2 rounded-btn bg-fill-track dark:bg-bg"></span>
+              class="pointer-events-none absolute inset-x-0 top-1/2 h-8 -translate-y-1/2 rounded-btn bg-fill-track dark:bg-surface"></span>
         <span aria-hidden="true" data-test="instance-nav-indicator"
               class="pointer-events-none absolute left-0.5 top-1/2 h-7 w-[calc(50%_-_2px)] -translate-y-1/2 rounded-sm bg-raised shadow-press transition-transform duration-150 ease-ui motion-reduce:transition-none"
               :class="navMode === 'bots' ? 'translate-x-full' : 'translate-x-0'"></span>
@@ -1095,12 +1095,13 @@ const rowSwipes = computed(() => {
       </div>
     </div>
     <!-- One instance card: header row + session area (flat or grouped) + footer.
-         The card background is the level-1 zone of the tinted-zone hierarchy; group
-         zones inside are one step lighter (visually isomorphic across all modes). -->
+         A hairline border, no fill: the card used to add a second grey behind the
+         tree rows, which read as nested boxes. The hierarchy now comes from the
+         border and the indent guide line inside it. -->
     <!-- No whole-card opacity: offline text fell below AA (muted name 3.21 dark / 2.52 light);
          the dimmed state reads from the muted name/label/dot, which pass AA at full opacity. -->
     <div v-for="inst in store.instances" :key="inst.id" data-test="instance-card"
-         class="rounded-lg bg-surface/60 p-[3px]">
+         class="rounded-lg border border-hairline px-1 py-1">
       <!-- Instance header: a flex CONTAINER (not one <button>) so the expand
            toggle and the sibling Desktop entry stay independent interactive
            controls — a nested <button> is invalid HTML and breaks keyboard
@@ -1383,7 +1384,7 @@ const rowSwipes = computed(() => {
                     class="grid h-10 w-10 lg:h-5 lg:w-5 shrink-0 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
                     @click.stop="openGroupDialog(inst, grp.key)"><Plus :size="12" /></button>
           </div>
-          <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : ''">
+          <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : 'lg:ml-1.5 lg:border-l lg:border-hairline lg:pl-1'">
             <div
               v-for="s in sectionRows(grp)"
               :key="s.alias"
@@ -1552,14 +1553,15 @@ const rowSwipes = computed(() => {
         <div v-if="inst.sessionsLoaded && !activeSessions(inst).length && !archivedIsExpanded(inst.id)" data-test="no-sessions"
              class="px-2.5 py-1 text-xs leading-4 text-fg-muted">{{ $t("instance.noSessions") }}</div>
 
-        <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria.
-             The sleeping-sessions toggle lives in the instance header's filter menu. -->
-        <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">
+        <!-- Per-instance footer: a full-width bordered create row (the primary verb, so
+             it gets a label and a 1px edge instead of a bare icon) plus the icon-only
+             manage entry. Both are labelled via title+aria. -->
+        <div class="flex items-center gap-1 px-0.5 pb-0.5 pt-1">
           <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
-                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft"
-                  @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>
+                  class="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-sm border border-hairline px-2 text-xs font-medium text-fg-muted transition-colors hover:border-accent/40 hover:bg-accent-soft hover:text-accent-text"
+                  @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="12" class="shrink-0" /><span class="truncate">{{ $t("instance.newSession") }}</span></button>
           <button data-test="manage-instance" :title="$t('instance.manage')" :aria-label="$t('instance.manage')"
-                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+                  class="grid h-8 w-8 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
                   @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="13" /></button>
         </div>
         </template>

@@ -805,26 +805,37 @@ onUnmounted(() => {
 });
 </script>
 <template>
-  <div class="flex h-dvh flex-col bg-bg text-fg"
+  <div class="flex h-dvh flex-col bg-bg text-fg lg:flex-row"
        @touchstart.passive="swipe.onTouchStart"
        @touchend.passive="swipe.onTouchEnd"
        @touchcancel.passive="swipe.onTouchCancel">
+    <!-- Inset workbench (desktop): the sidebar sits straight on the L0 canvas and
+         everything else — the global bar, the pane and the files panel — is ONE raised
+         card inset 8px from the window edges. Below lg the card dissolves back into the
+         plain full-bleed column stack, and it drops out of the flow on the mobile home
+         list (`max-lg:flex-none`) so the sidebar can own the rest of the screen. -->
+    <div data-test="workbench"
+         class="flex min-w-0 flex-1 flex-col overflow-hidden lg:my-2 lg:mr-2 lg:rounded-[14px] lg:border lg:border-hairline lg:bg-raised lg:shadow-card"
+         :class="[leftCollapsed ? 'lg:ml-2' : '', nothingSelected ? 'max-lg:flex-none' : '']">
     <!-- Global bar: with the pane content bar below it, the shell's two rows. The
          conversation actions live in that content bar on desktop. -->
     <!-- pt-[env(safe-area-inset-top)]: in an installed iOS PWA (viewport-fit=cover)
          the content runs under the notch / status bar; extend the bar's surface up
          so its controls sit below the inset instead of behind the notch. env() is 0
          on desktop, so this is a no-op there. -->
-    <header data-test="global-bar" class="sticky top-0 z-30 h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between gap-2 bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl"
+    <header data-test="global-bar" class="sticky top-0 z-30 h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between gap-2 bg-surface px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl lg:h-11 lg:border-b lg:border-hairline lg:bg-transparent lg:px-2.5 lg:pt-0 lg:backdrop-blur-none"
            :class="mobileSingleBar ? 'hidden lg:flex' : 'flex'">
-      <div data-test="global-brand" class="flex shrink-0 items-center gap-2">
+      <!-- The brand lives in the sidebar head on desktop. This copy exists only while
+           that head is gone (collapsed sidebar) or below lg (no sidebar head at all), so
+           exactly one [data-test="global-brand"] is in the DOM at any time. -->
+      <div v-if="!isDesktop || leftCollapsed" data-test="global-brand" class="flex shrink-0 items-center gap-2">
         <BrandLogo />
         <ConnectionBadge />
       </div>
-      <div v-if="currentKey" class="hidden min-w-0 flex-1 items-center lg:flex">
+      <div v-if="currentKey" class="hidden min-w-0 flex-1 items-center self-stretch lg:flex">
         <CenterTabStrip :session-key="currentKey" @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
       </div>
-      <div class="flex items-center gap-1.5">
+      <div class="ml-auto flex items-center gap-1.5">
         <!-- Collapses to the icon + shortcut at the 1024 boundary so the strip keeps room. -->
         <button
           data-test="global-search"
@@ -916,48 +927,6 @@ onUnmounted(() => {
       <div v-if="rightOpen" data-test="drawer-backdrop"
            class="fixed inset-0 z-30 bg-black/30 lg:hidden" @click="navigateBack" />
 
-      <!-- Left: instances. Static column ≥ lg (unchanged). Below lg it is ONLY the home
-           screen: with nothing selected the tree is the full-width main content; once a
-           session / bot / group is open it is hidden and ← in the top bar comes back here.
-           One InstanceTree instance, no second copy with diverging local state. -->
-      <div data-test="column" data-drawer="left"
-           class="flex shrink-0 flex-col bg-surface transition-[width] motion-reduce:transition-none max-lg:relative max-lg:w-full lg:static"
-           :class="[
-             leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[232px]',
-             nothingSelected ? '' : 'max-lg:hidden',
-           ]">
-        <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
-          <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
-          <div class="flex items-center gap-2">
-            <button data-test="toggle-left" :aria-label='$t("nav.hideSidebar")' :title='$t("nav.hideSidebar")'
-                    class="hidden h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
-                    @click="leftCollapsed = true"><PanelLeftClose :size="15" /></button>
-          </div>
-        </div>
-        <InstanceTree ref="instanceTree" @select="onSelect" @select-bot="onSelectBot" @select-group="onSelectGroup" @open-desktop="openDesktop" />
-        <!-- Sidebar footer (desktop): the theme toggle and the settings link, which
-             the global header no longer renders there. -->
-        <div data-test="sidebar-footer" class="mt-auto hidden shrink-0 items-center gap-1 border-t border-hairline px-2 py-2 lg:flex">
-          <button
-            data-test="sidebar-theme-toggle"
-            :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
-            class="grid h-8 w-8 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            @click="theme.toggle()"
-          >
-            <Moon v-if="theme.mode === 'dark'" :size="15" />
-            <Sun v-else :size="15" />
-          </button>
-          <router-link
-            to="/settings"
-            data-test="sidebar-settings-link"
-            :aria-label='$t("nav.settings")'
-            class="grid h-8 w-8 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            <Settings :size="15" />
-          </router-link>
-        </div>
-      </div>
-
       <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
       <button v-if="leftCollapsed" data-test="expand-left" :aria-label='$t("nav.showSidebar")' :title='$t("nav.showSidebar")'
               class="hidden w-5 shrink-0 items-center justify-center bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
@@ -1003,6 +972,7 @@ onUnmounted(() => {
           </GroupPane>
           <EmptySessionState v-else-if="nothingSelected" class="absolute inset-0"
                              :sessions="recentSessions" :instances="fabInstances"
+                             :total-instances="instances.instances.length"
                              @select="onSelect" @create="createSessionIn" />
           <ChatPane class="absolute inset-0"
                     :inert="directBotsStore.isBotSelected || groupsStore.isGroupSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"
@@ -1053,7 +1023,7 @@ onUnmounted(() => {
            fixed `w-72` drawer width applies. -->
       <div v-if="showRightColumn"
            data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden bg-surface shadow-float transition-transform duration-150 ease-ui motion-reduce:transition-none pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
+           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden bg-surface shadow-float transition-transform duration-150 ease-ui motion-reduce:transition-none pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:bg-transparent lg:shadow-none lg:pt-0 lg:border-l lg:border-hairline"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'"
            :style="isDesktop ? { width: rightWidth + 'px' } : undefined">
         <!-- Resize handle: a thin grab strip on the panel's left edge (desktop only).
@@ -1087,6 +1057,58 @@ onUnmounted(() => {
           <TaskPanel v-if="rightTab === 'tasks'" />
           <FilesPanel v-else :instance-id="chat.instanceId" />
         </div>
+      </div>
+    </div>
+    </div><!-- /workbench -->
+
+    <!-- Left: instances. On desktop this column sits OUTSIDE the workbench card, full
+         height on the bare canvas, and `lg:order-first` puts it before the card even
+         though it is last in the DOM (it has to be: below lg it must follow the global
+         bar, which lives inside the card).
+         Below lg it is ONLY the home screen: with nothing selected the tree is the
+         full-width main content; once a session / bot / group is open it is hidden and ←
+         in the top bar comes back here. One InstanceTree instance, no second copy with
+         diverging local state. -->
+    <div data-test="column" data-drawer="left"
+         class="flex min-h-0 shrink-0 flex-col bg-surface transition-[width] motion-reduce:transition-none max-lg:relative max-lg:w-full max-lg:flex-1 lg:static lg:order-first lg:bg-bg"
+         :class="[
+           leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[232px]',
+           nothingSelected ? '' : 'max-lg:hidden',
+         ]">
+      <!-- Desktop sidebar head: the wordmark and the connection dot, then the collapse
+           control. Its height matches the global bar so the two rows share one baseline. -->
+      <div v-if="!leftCollapsed" class="hidden h-11 shrink-0 items-center gap-1 pl-3 pr-2 lg:flex">
+        <!-- Desktop only: below lg this head is `hidden`, so the id stays parked on the
+             bar's copy and the DOM never carries two of them. -->
+        <div :data-test="isDesktop ? 'global-brand' : undefined" class="flex min-w-0 flex-1 items-center gap-1.5">
+          <BrandLogo />
+          <ConnectionBadge />
+        </div>
+        <button data-test="toggle-left" :aria-label='$t("nav.hideSidebar")' :title='$t("nav.hideSidebar")'
+                class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                @click="leftCollapsed = true"><PanelLeftClose :size="15" /></button>
+      </div>
+      <InstanceTree ref="instanceTree" @select="onSelect" @select-bot="onSelectBot" @select-group="onSelectGroup" @open-desktop="openDesktop" />
+      <!-- Sidebar footer (desktop): the theme toggle and the settings link, which
+           the global header no longer renders there. -->
+      <div data-test="sidebar-footer" class="mt-auto hidden shrink-0 items-center gap-1 border-t border-hairline px-2 py-2 lg:flex">
+        <button
+          data-test="sidebar-theme-toggle"
+          :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
+          class="grid h-8 w-8 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          @click="theme.toggle()"
+        >
+          <Moon v-if="theme.mode === 'dark'" :size="15" />
+          <Sun v-else :size="15" />
+        </button>
+        <router-link
+          to="/settings"
+          data-test="sidebar-settings-link"
+          :aria-label='$t("nav.settings")'
+          class="grid h-8 w-8 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <Settings :size="15" />
+        </router-link>
       </div>
     </div>
 
