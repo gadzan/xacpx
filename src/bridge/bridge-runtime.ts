@@ -217,6 +217,8 @@ type QueueOwnerLaunchPort = Pick<AcpxQueueOwnerLauncher, "launch"> & {
 };
 
 export class BridgeRuntime {
+  readonly kind = "cli" as const;
+
   // undefined = not yet probed; true/false = probed result.
   // Older acpx builds don't accept --verbose; we feature-detect lazily on first
   // ensure failure that looks like "unknown option", then disable verbose for
