@@ -46,6 +46,23 @@ test("a non-contention native failure propagates instead of masquerading as a li
   })).rejects.toBe(failure);
 });
 
+test("the helper reports owning the lock before its handshake", async () => {
+  const root = await mkdtemp(join(tmpdir(), "xacpx-file-lock-locked-"));
+  roots.push(root);
+  const events: string[] = [];
+  const lock = await acquireFileLock(join(root, "owner.lock"), {
+    onDiagnostic: (event) => { events.push(event); },
+  });
+  try {
+    // The ownership report precedes the handshake, and both arrive before
+    // acquire() resolves, so a caller can wait for the lock itself instead of
+    // for a settle delay.
+    expect(events).toEqual(["lock_helper_spawned", "lock_helper_locked", "lock_helper_started"]);
+  } finally {
+    await lock.release();
+  }
+});
+
 const windowsTest = process.platform === "win32" ? test : test.skip;
 windowsTest("Windows file locks fold filename case when identifying the same resource", async () => {
   const root = await mkdtemp(join(tmpdir(), "xacpx-file-lock-case-"));
