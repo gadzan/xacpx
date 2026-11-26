@@ -70,6 +70,7 @@ npm test                   # tsc --noEmit + tests/unit/**/*.test.ts
 - 插件包使用 `tsc -p packages/<name>/tsconfig.json` 单独生成 `.d.ts` 文件，因为 `bun build` 目前不支持生成声明文件。
 - `packages/web` 以 `@ganglion/xacpx-web` 单独发布，发布包没有运行时依赖。hub 依赖这个包，不再把 `dist/` 拷进自己；web 包缺 `dist/index.html`，或 hub 丢掉这个依赖时，`verify:publish` 失败。
 - `platform-packages/*`（`@ganglion/xacpx-rmux-bridge-*` 平台二进制）不在 root workspaces 内，由 `scripts/pack-rmux-bridge-platform.mjs` 打包，不走 `build:packages`。
+- 根 `bun.lock` 对上述平台包只有*声明*、没有解析记录，因此 `bun install` 永远不会装其中一个，本地 checkout 会以 `terminal: false` 运行且只有一行日志。`node ./scripts/ensure-rmux-platform.mjs` 会装上当前 OS/arch 对应的那个（已存在但残缺时会先删除——bun 不会修补缺失文件）；`scripts/dev-channel-web.mjs` 在链接前自动执行它，`--check` 则只检查并报错。
 
 ### 三种本地运行模式
 

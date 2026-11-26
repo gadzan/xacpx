@@ -207,6 +207,7 @@ packages/channel-<name>/
 - 插件包用 `tsc -p packages/<name>/tsconfig.json` 单独 emit `.d.ts`，因为 bun build 目前不出 `.d.ts`。
 - `packages/web` 以 `@ganglion/xacpx-web` 单独发布，发布包没有运行时依赖。`bun run build:relay` 不再把它的 `dist/` 拷进 hub；hub 从这个包解析看板。web 包缺 `dist/index.html`，或 hub 不再依赖 `@ganglion/xacpx-web` 时，`verify:publish` 失败。
 - `platform-packages/*`（`@ganglion/xacpx-rmux-bridge-*` 平台二进制）在 root workspaces 之外，由 `scripts/pack-rmux-bridge-platform.mjs` 打包，不走 `build:packages`。
+- 根 `bun.lock` 对上述平台包只有*声明*、没有解析记录，因此 `bun install` 永远不会装其中一个，本地 checkout 会以 `terminal: false` 运行且只有一行日志。`node ./scripts/ensure-rmux-platform.mjs` 会装上当前 OS/arch 对应的那个（已存在但残缺时会先删除——bun 不会修补缺失文件）；`scripts/dev-channel-web.mjs` 在链接前自动执行它，`--check` 则只检查并报错。
 
 ---
 
