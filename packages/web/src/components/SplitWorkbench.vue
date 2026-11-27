@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, provide, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Bot, MessagesSquare, Plus, Search, X } from "lucide-vue-next";
+import { Bot, MessagesSquare, X } from "lucide-vue-next";
 import {
   SPLIT_MAX_COLUMNS,
   SPLIT_MIN_WIDTH_PX,
   paneKeyFor,
   primaryKeyFor,
+  splitPrimaryKey,
   useSplitLayoutStore,
   type SplitColumn,
   type SplitLayoutState,
@@ -17,9 +18,16 @@ import { useInstancesStore } from "../stores/instances";
 import { pushToast } from "../lib/use-toasts";
 import ChatPane from "./ChatPane.vue";
 import DirectBotPane from "./DirectBotPane.vue";
+import SplitAddButton, { type SplitPickItem } from "./SplitAddButton.vue";
 
 const props = defineProps<{ primary: SplitPaneTarget }>();
-const emit = defineEmits<{ promote: [target: SplitPaneTarget] }>();
+const emit = defineEmits<{
+  promote: [target: SplitPaneTarget];
+  showFiles: [];
+  navigateBot: [instanceId: string, botId: string];
+  navigateGroup: [instanceId: string, groupId: string];
+  back: [];
+}>();
 
 const { t } = useI18n();
 const splitLayout = useSplitLayoutStore();
@@ -30,6 +38,9 @@ const MIN_WIDTH_PX = SPLIT_MIN_WIDTH_PX;
 const MAX_COLUMNS = SPLIT_MAX_COLUMNS;
 
 const primaryKey = computed(() => primaryKeyFor(props.primary));
+// Columns open dispatched sessions under the layout that hosts them (consumed
+// via inject by DirectBotPane + DispatchedSessionCard).
+provide(splitPrimaryKey, primaryKey);
 // Prime the layout for this primary (creates + persists on first access). The
 // reactive read below then tracks column edits without side effects in render.
 watch(primaryKey, (key) => { splitLayout.ensureLayout(key); }, { immediate: true });
@@ -97,20 +108,12 @@ function onDividerDblClick(): void {
   splitLayout.equalizeColumns(primaryKey.value);
 }
 
-// --- + 分栏 picker ------------------------------------------------------------
-const pickerOpen = ref(false);
-const pickerQuery = ref("");
-
-interface PickItem {
-  key: string;
-  kind: "session" | "bot";
-  target: SplitPaneTarget;
-  label: string;
-  sub: string;
-}
+// --- + 分栏 picker ---------------------------------------------------------------
+// The button owns its open/query state (see SplitAddButton); the workbench only
+// supplies the not-yet-open targets and performs the pick.
+interface PickItem extends SplitPickItem {}
 
 const pickItems = computed<PickItem[]>(() => {
-  const query = pickerQuery.value.trim().toLowerCase();
   const taken = new Set(columns.value.map((column) => paneKeyFor(column.target)));
   const items: PickItem[] = [];
   for (const instance of instances.instances) {
@@ -119,7 +122,6 @@ const pickItems = computed<PickItem[]>(() => {
       const target: SplitPaneTarget = { kind: "session", instanceId: instance.id, sessionAlias: session.alias };
       if (taken.has(paneKeyFor(target))) continue;
       const label = session.displayName || session.alias;
-      if (query && !`${label} ${session.alias} ${session.agent} ${instance.name}`.toLowerCase().includes(query)) continue;
       items.push({
         key: `session:${instance.id}:${session.alias}`,
         kind: "session",
@@ -132,16 +134,13 @@ const pickItems = computed<PickItem[]>(() => {
       if (!bot.enabled || bot.retired) continue;
       const target: SplitPaneTarget = { kind: "bot", instanceId: instance.id, botId: bot.id };
       if (taken.has(paneKeyFor(target))) continue;
-      if (query && !`${bot.name} ${instance.name}`.toLowerCase().includes(query)) continue;
       items.push({ key: `bot:${instance.id}:${bot.id}`, kind: "bot", target, label: bot.name, sub: instance.name });
     }
   }
   return items;
 });
 
-function openPicker(): void {
-  pickerOpen.value = true;
-  pickerQuery.value = "";
+function onPickerOpened(): void {
   // Bots load lazily per instance; fetch whatever the picker may list.
   for (const instance of instances.instances) {
     if (!instance.online || directBots.botsLoaded[instance.id]) continue;
@@ -152,21 +151,22 @@ function pick(item: PickItem): void {
   const added = splitLayout.addColumn(primaryKey.value, item.target, "manual");
   if (!added) {
     pushToast("info", columns.value.length >= MAX_COLUMNS ? "split.maxReached" : "split.alreadyOpen");
-    return;
   }
-  pickerOpen.value = false;
 }
 
 // --- prune columns whose session/Bot vanished server-side ---------------------
 // Only once every involved instance finished loading its lists: a paginated fetch
 // that has not reached a row yet must never drop its column.
+// Prune columns whose session/Bot vanished server-side. A session list is only
+// authoritative once fully loaded (`sessionsLoaded && !sessionsHasMore`): a
+// paginated fetch that has not reached a row yet must never drop its column.
 const listsSignature = computed(() => {
   const ids = new Set<string>([props.primary.instanceId]);
   for (const column of columns.value) ids.add(column.target.instanceId);
   return [...ids]
     .map((id) => {
       const instance = instances.byId(id);
-      return `${id}:${instance?.sessionsLoaded ? 1 : 0}:${directBots.botsLoaded[id] ? 1 : 0}`;
+      return `${id}:${instance?.sessionsLoaded ? 1 : 0}:${instance?.sessionsHasMore ? 1 : 0}:${directBots.botsLoaded[id] ? 1 : 0}`;
     })
     .join("|");
 });
@@ -174,7 +174,10 @@ watch(listsSignature, () => {
   if (columns.value.length === 0) return;
   const ids = new Set<string>([props.primary.instanceId]);
   for (const column of columns.value) ids.add(column.target.instanceId);
-  const ready = [...ids].every((id) => instances.byId(id)?.sessionsLoaded && directBots.botsLoaded[id]);
+  const ready = [...ids].every((id) => {
+    const instance = instances.byId(id);
+    return !!instance?.sessionsLoaded && !instance.sessionsHasMore && !!directBots.botsLoaded[id];
+  });
   if (!ready) return;
   splitLayout.pruneMissingTargets(
     primaryKey.value,
@@ -202,7 +205,9 @@ watch(listsSignature, () => {
                :style="{ flex: `${column.widthFraction} 1 0%`, minWidth: `${MIN_WIDTH_PX}px` }"
                :class="column.id === layout.focusedColumnId ? 'ring-1 ring-inset ring-accent' : ''"
                @pointerdown="focusColumn(column.id)">
-        <header data-test="split-column-header"
+        <!-- Unsplit: no redundant headers/rail — the pane owns its chrome and the
+             + button docks into its #actions slot next to ConversationActions. -->
+        <header v-if="columns.length > 1" data-test="split-column-header"
                 class="flex h-9 shrink-0 items-center gap-1.5 border-b border-hairline px-2">
           <MessagesSquare v-if="column.target.kind === 'session'" :size="13" class="shrink-0 text-fg-muted" aria-hidden="true" />
           <Bot v-else :size="13" class="shrink-0 text-fg-muted" aria-hidden="true" />
@@ -221,58 +226,39 @@ watch(listsSignature, () => {
                     :title="t('split.closePane')" :aria-label="t('split.closePane')"
                     @click.stop="closeColumn(column)"><X :size="13" /></button>
           </span>
+          <!-- Split mode: the + button docks into the LAST column header
+               (no standalone rail) while columns stay below the cap. -->
+          <span v-if="index === columns.length - 1 && columns.length < MAX_COLUMNS"
+                class="flex shrink-0 items-center">
+            <SplitAddButton :items="pickItems" @opened="onPickerOpened" @pick="pick" />
+          </span>
         </header>
         <div class="min-h-0 flex-1">
           <ChatPane v-if="column.target.kind === 'session'"
                     :instance-id="column.target.instanceId"
                     :session-alias="column.target.sessionAlias"
-                    pane-mode="split" />
+                    pane-mode="split"
+                    @show-files="emit('showFiles')">
+            <template #actions>
+              <slot name="actions" />
+              <SplitAddButton v-if="columns.length === 1" :items="pickItems" @opened="onPickerOpened" @pick="pick" />
+            </template>
+          </ChatPane>
           <DirectBotPane v-else
                          :instance-id="column.target.instanceId"
                          :bot-id="column.target.botId"
                          :topic-id="column.target.topicId"
-                         pane-mode="split" />
+                         pane-mode="split"
+                         @navigate-bot="(instanceId, botId) => emit('navigateBot', instanceId, botId)"
+                         @navigate-group="(instanceId, groupId) => emit('navigateGroup', instanceId, groupId)"
+                         @back="emit('back')">
+            <template #actions>
+              <slot name="actions" />
+              <SplitAddButton v-if="columns.length === 1" :items="pickItems" @opened="onPickerOpened" @pick="pick" />
+            </template>
+          </DirectBotPane>
         </div>
       </section>
     </template>
-    <div class="relative flex w-10 shrink-0 items-start justify-center pt-1">
-      <button type="button" data-test="split-add"
-              class="rounded-md px-1.5 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
-              :title="t('split.addSplit')"
-              @click="pickerOpen ? (pickerOpen = false) : openPicker()">{{ t("split.addSplit") }}</button>
-      <div v-if="pickerOpen" data-test="split-picker"
-           class="absolute right-0 top-10 z-40 max-h-80 w-72 overflow-y-auto thin-scroll rounded-lg border border-hairline bg-raised p-1.5 shadow-float">
-        <div class="flex items-center gap-1.5 rounded-md border border-hairline bg-bg/50 px-2 py-1">
-          <Search :size="12" class="shrink-0 text-fg-muted" aria-hidden="true" />
-          <input data-test="split-picker-search" v-model="pickerQuery" type="text"
-                 class="min-w-0 flex-1 bg-transparent text-xs text-fg outline-none placeholder:text-fg-muted"
-                 :placeholder="t('split.searchPlaceholder')" />
-        </div>
-        <p class="px-2 pb-0.5 pt-2 text-xs font-medium text-fg-muted">{{ t("split.sessions") }}</p>
-        <button v-for="item in pickItems.filter((i) => i.kind === 'session')" :key="item.key" type="button"
-                data-test="split-pick-session"
-                class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fill-hover"
-                @click="pick(item)">
-          <MessagesSquare :size="13" class="shrink-0 text-fg-muted" aria-hidden="true" />
-          <span class="min-w-0 flex-1">
-            <span class="block truncate text-xs font-medium text-fg">{{ item.label }}</span>
-            <span class="block truncate text-xs text-fg-muted">{{ item.sub }}</span>
-          </span>
-        </button>
-        <p class="px-2 pb-0.5 pt-2 text-xs font-medium text-fg-muted">{{ t("split.bots") }}</p>
-        <button v-for="item in pickItems.filter((i) => i.kind === 'bot')" :key="item.key" type="button"
-                data-test="split-pick-bot"
-                class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fill-hover"
-                @click="pick(item)">
-          <Bot :size="13" class="shrink-0 text-fg-muted" aria-hidden="true" />
-          <span class="min-w-0 flex-1">
-            <span class="block truncate text-xs font-medium text-fg">{{ item.label }}</span>
-            <span class="block truncate text-xs text-fg-muted">{{ item.sub }}</span>
-          </span>
-        </button>
-        <p v-if="pickItems.length === 0" data-test="split-picker-empty"
-           class="px-2 py-2 text-xs text-fg-muted">{{ t("split.empty") }}</p>
-      </div>
-    </div>
   </div>
 </template>

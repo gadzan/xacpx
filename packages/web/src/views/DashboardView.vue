@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { connectEvents, sendSubscribe, TerminalRequestError, isRetryableTerminalError } from "../api/events";
 import { useInstancesStore, supportsRmuxTerminal, supportsDesktop } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
-import { useDirectBotsStore, loadPersistedBotSelection } from "../stores/direct-bots";
+import { botPaneKeyFor, useDirectBotsStore, loadPersistedBotSelection } from "../stores/direct-bots";
 import { useTasksStore } from "../stores/tasks";
 import { useGroupsStore, loadPersistedGroupSelection } from "../stores/groups";
 import { useNoticesStore } from "../stores/notices";
@@ -766,30 +766,40 @@ onMounted(async () => {
     chat.applyEvent(event);
     directBotsStore.applyEvent(event);
     groupsStore.applyEvent(event);
-    // Bot-dispatched sessions auto-open as split columns under the visible Bot's
-    // layout: refresh that instance's sessions first so the new row resolves, then
-    // open (a dismissed session stays closed until reopened from the Bot pane).
     if (event.kind === "control-event") {
       const inner = (event as unknown as { event?: {
         type?: string;
         message?: { conversationId?: string; topicId?: string; dispatchedSession?: { sessionAlias?: string } };
       } }).event;
       const dispatched = inner?.type === "conversation-message" ? inner.message?.dispatchedSession : undefined;
+      // Bot-dispatched sessions auto-open as split columns under the visible Bot's
+      // layout: refresh that instance's sessions first so the new row resolves, then
+      // open (a dismissed session stays closed until reopened from the Bot pane).
+      // Desktop only (the workbench never mounts elsewhere), and aware of Bot
+      // columns: a dispatch from a Bot running in any column of the current
+      // layout auto-opens there, not just from the selected Bot.
       if (
         dispatched?.sessionAlias
-        && event.instanceId === directBotsStore.instanceId
-        && directBotsStore.isBotSelected
-        && directBotsStore.selectedBotId
-        && inner?.message?.conversationId === directBotsStore.activeConversationId
-        && inner?.message?.topicId === directBotsStore.activeTopicId
+        && isDesktop.value
+        && inner?.message?.conversationId
+        && splitPrimary.value
       ) {
-        const primary = primaryKeyFor({
-          kind: "bot",
-          instanceId: directBotsStore.instanceId,
-          botId: directBotsStore.selectedBotId,
+        const layoutKey = primaryKeyFor(splitPrimary.value);
+        const columns = splitLayout.layoutsByPrimary[layoutKey]?.columns ?? [];
+        const matchesSelection = event.instanceId === directBotsStore.instanceId
+          && directBotsStore.isBotSelected
+          && directBotsStore.selectedBotId
+          && inner.message.conversationId === directBotsStore.activeConversationId
+          && inner.message.topicId === directBotsStore.activeTopicId;
+        const matchesColumn = columns.some((column) => {
+          if (column.target.kind !== "bot" || column.target.instanceId !== event.instanceId) return false;
+          const pane = directBotsStore.botPanesByKey[botPaneKeyFor(column.target.instanceId, column.target.botId)];
+          return !!pane?.conversationId && pane.conversationId === inner.message!.conversationId;
         });
-        void instances.loadSessions(event.instanceId).catch(() => {});
-        splitLayout.autoOpenDispatchedSession(primary, event.instanceId, dispatched.sessionAlias);
+        if (matchesSelection || matchesColumn) {
+          void instances.loadSessions(event.instanceId).catch(() => {});
+          splitLayout.autoOpenDispatchedSession(layoutKey, event.instanceId, dispatched.sessionAlias);
+        }
       }
     }
     // If the selected turn completed while the browser was offline, the authoritative
@@ -1036,6 +1046,10 @@ onUnmounted(() => {
             :primary="splitPrimary"
             class="absolute inset-0 z-10"
             @promote="onSplitPromote"
+            @show-files="onShowFiles"
+            @navigate-bot="onSelectBot"
+            @navigate-group="onSelectGroup"
+            @back="navigateBack"
           >
             <template #actions>
               <ConversationActions v-if="isDesktop"

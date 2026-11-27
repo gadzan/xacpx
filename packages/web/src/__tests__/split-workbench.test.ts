@@ -1,9 +1,11 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { computed } from "vue";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import {
   paneKeyFor,
   primaryKeyFor,
+  splitPrimaryKey,
   useSplitLayoutStore,
   type SplitPaneTarget,
 } from "../stores/split-layout";
@@ -11,12 +13,14 @@ import { useChatStore } from "../stores/chat";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
 import SplitWorkbench from "../components/SplitWorkbench.vue";
+import DispatchedSessionCard from "../components/DispatchedSessionCard.vue";
 import ChatPane from "../components/ChatPane.vue";
 import DirectBotPane from "../components/DirectBotPane.vue";
 import MessageList from "../components/MessageList.vue";
 import PromptInput from "../components/PromptInput.vue";
 import DashboardView from "../views/DashboardView.vue";
 import { api } from "../api/client";
+import { MSG } from "@ganglion/xacpx-relay-protocol";
 
 // DashboardView drives on real browser APIs; copy the behavioral-suite harness:
 // stub the WS client (capturing its callbacks), the router and the brand icons.
@@ -185,10 +189,24 @@ describe("split workbench store flows", () => {
 });
 
 describe("SplitWorkbench.vue", () => {
+  // Pane stubs render their #actions slot so the single-column + button (which
+  // docks into the pane header) stays queryable.
+  const paneStubs = {
+    ChatPane: {
+      name: "ChatPane",
+      props: ["instanceId", "sessionAlias", "paneMode"],
+      template: '<div data-stub="chat-pane"><slot name="actions" /></div>',
+    },
+    DirectBotPane: {
+      name: "DirectBotPane",
+      props: ["instanceId", "botId", "topicId", "paneMode"],
+      template: '<div data-stub="direct-bot-pane"><slot name="actions" /></div>',
+    },
+  };
   function mountWorkbench(primary: SplitPaneTarget = sessionTarget("a1")) {
     return mount(SplitWorkbench, {
       props: { primary },
-      global: { stubs: { ChatPane: true, DirectBotPane: true } },
+      global: { stubs: paneStubs },
     });
   }
 
@@ -242,7 +260,7 @@ describe("SplitWorkbench.vue", () => {
     expect(botPane.props("botId")).toBe("b1");
   });
 
-  it("a fifth column is refused at the 4-column cap", async () => {
+  it("at the 4-column cap no + button renders and the store stays capped", async () => {
     seedInstance(["a1", "a2", "a3", "a4", "a5"]);
     const store = useSplitLayoutStore();
     const primary = primaryKeyFor(sessionTarget("a1"));
@@ -253,12 +271,9 @@ describe("SplitWorkbench.vue", () => {
     const wrapper = mountWorkbench();
     await flushPromises();
     expect(wrapper.findAll('[data-test="split-column"]')).toHaveLength(4);
-    await wrapper.find('[data-test="split-add"]').trigger("click");
-    await wrapper.find('[data-test="split-pick-session"]').trigger("click");
-    await flushPromises();
+    // The add affordance hides instead of offering a doomed pick.
+    expect(wrapper.find('[data-test="split-add"]').exists()).toBe(false);
     expect(store.layoutFor(primary).columns).toHaveLength(4);
-    // The failed pick keeps the picker open instead of silently swallowing it.
-    expect(wrapper.find('[data-test="split-picker"]').exists()).toBe(true);
   });
 
   it("divider dblclick equalizes uneven columns", async () => {
@@ -310,6 +325,75 @@ describe("SplitWorkbench.vue", () => {
     const emitted = wrapper.emitted("promote");
     expect(emitted).toBeTruthy();
     expect(emitted![0]![0]).toEqual(sessionTarget("a2"));
+  });
+
+  it("single column renders no split chrome and docks + into the pane actions", async () => {
+    seedInstance();
+    const wrapper = mountWorkbench();
+    await flushPromises();
+    expect(wrapper.findAll('[data-test="split-column"]')).toHaveLength(1);
+    expect(wrapper.find('[data-test="split-column-header"]').exists()).toBe(false);
+    const add = wrapper.find('[data-test="split-add"]');
+    expect(add.exists()).toBe(true);
+    // The button lives inside the pane's own header actions (zero desktop regression).
+    expect(add.element.closest('[data-stub="chat-pane"]')).not.toBeNull();
+  });
+
+  it("split columns show compact headers with + docked in the last one", async () => {
+    seedInstance();
+    const wrapper = mountWorkbench();
+    await flushPromises();
+    await wrapper.find('[data-test="split-add"]').trigger("click");
+    await wrapper.find('[data-test="split-pick-session"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll('[data-test="split-column"]')).toHaveLength(2);
+    expect(wrapper.findAll('[data-test="split-column-header"]')).toHaveLength(2);
+    expect(wrapper.findAll('[data-test="split-add"]')).toHaveLength(1);
+  });
+
+  it("forwards the session pane show-files event to the parent", async () => {
+    seedInstance();
+    const wrapper = mountWorkbench();
+    await flushPromises();
+    wrapper.findComponent({ name: "ChatPane" }).vm.$emit("show-files");
+    expect(wrapper.emitted("showFiles")).toBeTruthy();
+  });
+
+  it("forwards bot pane navigation events to the parent", async () => {
+    seedInstance();
+    const wrapper = mountWorkbench(botTarget("b1"));
+    await flushPromises();
+    // Single bot column: no header chrome either.
+    expect(wrapper.find('[data-test="split-column-header"]').exists()).toBe(false);
+    const pane = wrapper.findComponent({ name: "DirectBotPane" });
+    expect(pane.exists()).toBe(true);
+    pane.vm.$emit("navigateBot", "i1", "b2");
+    pane.vm.$emit("navigateGroup", "i1", "g1");
+    pane.vm.$emit("back");
+    expect(wrapper.emitted("navigateBot")).toEqual([["i1", "b2"]]);
+    expect(wrapper.emitted("navigateGroup")).toEqual([["i1", "g1"]]);
+    expect(wrapper.emitted("back")).toBeTruthy();
+  });
+
+  it("prune waits for fully-loaded session lists (sessionsHasMore)", async () => {
+    seedInstance(["a1"]);
+    const instances = useInstancesStore();
+    const inst = instances.byId("i1")!;
+    inst.sessionsLoaded = true;
+    // Page 2 not fetched yet: a2 may still exist — the column must survive.
+    inst.sessionsHasMore = true;
+    const store = useSplitLayoutStore();
+    const primary = primaryKeyFor(sessionTarget("a1"));
+    store.ensureLayout(primary);
+    store.addColumn(primary, sessionTarget("a2"), "manual");
+    const wrapper = mountWorkbench();
+    await flushPromises();
+    expect(store.layoutFor(primary).columns).toHaveLength(2);
+    // List complete and a2 absent → prune.
+    inst.sessionsHasMore = false;
+    await flushPromises();
+    expect(store.layoutFor(primary).columns).toHaveLength(1);
+    expect(wrapper.findAll('[data-test="split-column"]')).toHaveLength(1);
   });
 });
 
@@ -426,13 +510,77 @@ describe("DirectBotPane dispatched sessions", () => {
     expect(store.layoutFor(primary).focusedColumnId).toBe(opened.id);
   });
 
-  it("hides the menu when the pane is a background split column", async () => {
+  it("a scoped pane renders its own real timeline instead of a placeholder", async () => {
     seedBotConversation();
-    vi.spyOn(api, "rpc").mockRejectedValue(new Error("offline"));
-    const wrapper = mount(DirectBotPane, { props: { instanceId: "i1", botId: "other", paneMode: "split" } });
+    // Scope resolution + timeline pages served from RPC mocks; the selection
+    // (nothing selected) must not matter.
+    const directBots = useDirectBotsStore();
+    directBots.instanceId = null;
+    directBots.selectedBotId = null;
+    directBots.activeConversationId = null;
+    directBots.activeTopicId = null;
+    // The selection's transcript is empty: a feed-driven menu still lists 1.
+    directBots.messages = [];
+    vi.spyOn(api, "rpc").mockImplementation(async (_instanceId: unknown, method: unknown) => {
+      if (method === MSG.botsList) return { bots: directBots.botsByInstance["i1"] };
+      if (method === MSG.conversationsList) return { conversations: [{ id: "c1", botId: "b1" }] };
+      if (method === MSG.topicsList) return { topics: directBots.topicsByConversation["i1:c1"] };
+      if (method === MSG.runsList) return { runs: [], activeRunId: undefined };
+      if (method === MSG.conversationTimeline) {
+        return {
+          entries: [
+            {
+              kind: "message",
+              message: {
+                id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "system",
+                content: "dispatched", createdAt: "2026-01-01T00:00:00.000Z",
+                dispatchedSession: { sessionAlias: "s9", agent: "codex", workspace: "w" },
+              },
+            },
+          ],
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+        };
+      }
+      throw new Error(`unexpected rpc ${String(method)}`);
+    });
+    const wrapper = mount(DirectBotPane, { props: { instanceId: "i1", botId: "b1", paneMode: "split" } });
     await flushPromises();
-    expect(wrapper.find('[data-test="bot-background-pane"]').exists()).toBe(true);
-    expect(wrapper.find('[data-test="dispatched-menu-button"]').exists()).toBe(false);
+    // No placeholder: the real timeline mounts and the dispatched menu derives
+    // from the pane's own feed (the selection's messages stay empty).
+    expect(wrapper.find('[data-test="bot-background-pane"]').exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "ConversationTimeline" }).exists()).toBe(true);
+    expect(directBots.messages).toHaveLength(0);
+    const button = wrapper.find('[data-test="dispatched-menu-button"]');
+    expect(button.exists()).toBe(true);
+    expect(button.text()).toContain("1");
+  });
+});
+
+describe("DispatchedSessionCard layout primary", () => {
+  function dispatchedMessage(alias: string): unknown {
+    return {
+      id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "system",
+      content: "dispatched", createdAt: "2026-01-01T00:00:00.000Z",
+      dispatchedSession: { sessionAlias: alias, agent: "codex", workspace: "w" },
+    };
+  }
+
+  it("opens under the injected layout primary, not the selection fallback", async () => {
+    seedInstance(["s9"]);
+    const store = useSplitLayoutStore();
+    const injected = primaryKeyFor(botTarget("b1"));
+    store.ensureLayout(injected);
+    const wrapper = mount(DispatchedSessionCard, {
+      props: { message: dispatchedMessage("s9") as never, instanceId: "i1" },
+      global: { provide: { [splitPrimaryKey as symbol]: computed(() => injected) } },
+    });
+    await wrapper.find('[data-test="dispatched-session-open"]').trigger("click");
+    await flushPromises();
+    const layout = store.layoutFor(injected);
+    expect(layout.columns.some((c) => c.target.kind === "session" && c.target.sessionAlias === "s9")).toBe(true);
+    // The selection-fallback layout stayed untouched (only its own primary).
+    expect(store.layoutFor(primaryKeyFor(sessionTarget("s9"))).columns).toHaveLength(1);
   });
 });
 
@@ -529,5 +677,38 @@ describe("DashboardView split workbench wiring", () => {
     expect(chat.instanceId).toBe("i1");
     expect(chat.sessionAlias).toBe("s9");
     expect(workbench.props("primary")).toEqual(sessionTarget("s9"));
+  });
+
+  it("auto-opens dispatched sessions from a bot running in a split column", async () => {
+    seedBotSelection();
+    const instances = useInstancesStore();
+    vi.spyOn(instances, "loadSessions").mockResolvedValue(undefined);
+    mount(DashboardView, {
+      global: { stubs: { ChatPane: true, InstanceTree: true, SplitWorkbench: true, "router-link": true } },
+    });
+    await flushPromises();
+    // A second Bot lives in a column of the current layout; the selection stays
+    // on b1, but the column's pane resolved conversation c2.
+    const store = useSplitLayoutStore();
+    const layoutKey = primaryKeyFor(botTarget("b1"));
+    store.ensureLayout(layoutKey);
+    store.addColumn(layoutKey, botTarget("b2"), "manual");
+    const directBots = useDirectBotsStore();
+    directBots.getBotPaneState("i1", "b2").conversationId = "c2";
+    captured.onEvent!({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "conversation-message",
+        message: {
+          id: "m9", conversationId: "c2", topicId: "t2", seq: 9, role: "system",
+          content: "dispatched", createdAt: "2026-01-01T00:00:00.000Z",
+          dispatchedSession: { sessionAlias: "s9", agent: "codex", workspace: "w" },
+        },
+      },
+    });
+    await flushPromises();
+    const layout = store.layoutFor(layoutKey);
+    expect(layout.columns.some((c) => c.target.kind === "session" && c.target.sessionAlias === "s9")).toBe(true);
   });
 });

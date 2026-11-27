@@ -7,6 +7,12 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 
 const emit = defineEmits<{
   close: [];
+  created: [topicId: string];
+}>();
+
+const props = defineProps<{
+  /** Explicit scope: create inside this conversation instead of the selection's. */
+  scope?: { instanceId: string; conversationId: string } | null;
 }>();
 
 const directBotsStore = useDirectBotsStore();
@@ -16,16 +22,19 @@ const creatingTopic = ref(false);
 
 async function handleCreateTopic(): Promise<void> {
   const title = newTopicTitle.value.trim();
-  if (!title || !directBotsStore.instanceId || !directBotsStore.activeConversationId) return;
+  const instanceId = props.scope?.instanceId ?? directBotsStore.instanceId;
+  const conversationId = props.scope?.conversationId ?? directBotsStore.activeConversationId;
+  if (!title || !instanceId || !conversationId) return;
 
   creatingTopic.value = true;
   try {
-    await directBotsStore.createTopic(
-      directBotsStore.instanceId,
-      directBotsStore.activeConversationId,
+    const topic = await directBotsStore.createTopic(
+      instanceId,
+      conversationId,
       title,
     );
     newTopicTitle.value = "";
+    emit("created", topic.id);
     emit("close");
   } catch (err: unknown) {
     directBotsStore.generalError = err instanceof Error ? err.message : String(err);

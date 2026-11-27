@@ -1,4 +1,10 @@
 import { defineStore } from "pinia";
+import type { InjectionKey, Ref } from "vue";
+
+/** Injection key through which SplitWorkbench shares its layout's primary key
+ *  with the columns it hosts (scoped panes open dispatched sessions under the
+ *  layout they live in, not under the global selection). */
+export const splitPrimaryKey: InjectionKey<Ref<string> | null> = Symbol("splitPrimaryKey");
 
 export type SplitPaneTarget =
   | { kind: "session"; instanceId: string; sessionAlias: string }

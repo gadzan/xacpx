@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, inject, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ChevronDown,
@@ -12,8 +12,8 @@ import {
   Trash2,
   X,
 } from "lucide-vue-next";
-import { botPaneKeyFor, useDirectBotsStore } from "../stores/direct-bots";
-import { paneKeyFor, primaryKeyFor, useSplitLayoutStore } from "../stores/split-layout";
+import { useDirectBotsStore } from "../stores/direct-bots";
+import { paneKeyFor, primaryKeyFor, splitPrimaryKey, useSplitLayoutStore } from "../stores/split-layout";
 import { useGroupsStore } from "../stores/groups";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import {
@@ -44,6 +44,7 @@ import TraceOverlay from "./TraceOverlay.vue";
 import { traceEventsToParts } from "../lib/group-run-presentation";
 import { compareMemberTurns, runBudgetOf } from "../lib/run-detail";
 import { pushToast } from "../lib/use-toasts";
+import { sortTopicsNewestFirst } from "../lib/topic-order";
 import { useConversationTimelineFeed } from "../lib/use-timeline-feed";
 import { activeSpeakerTurnId, type RoomView, type TimelineLiveTurn } from "../lib/room-view";
 import { textBubblesOf } from "../lib/turn-presentation";
@@ -70,14 +71,14 @@ const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
 const { t } = useI18n();
 
-const bot = computed(() => directBotsStore.currentBot);
+const bot = computed(() => scopedTarget.value ? scopedBot.value : directBotsStore.currentBot);
 // One copy set for the empty Bot page: the intro hint follows the composer's
 // state (enabled -> "send a message", disabled Bot -> enable it first, loading ->
 // no hint while the composer shows the loading placeholder).
 const emptyHint = computed<string | null>(() => {
   if (bot.value?.retired) return null;
   if (bot.value && !bot.value.enabled) return t("bot.chat.emptyHintDisabled");
-  if (!directBotsStore.topicReady) return null;
+  if (!viewTopicReady.value) return null;
   return t("bot.chat.emptyHint");
 });
 
@@ -87,7 +88,10 @@ const emptyHint = computed<string | null>(() => {
 // empty page must not invent a `/review`.
 const composerRef = ref<InstanceType<typeof ConversationPromptInput> | null>(null);
 const starterCommands = computed(() => {
-  const { instanceId, activeConversationId, activeTopicId, selectedBotId } = directBotsStore;
+  const instanceId = viewInstanceId.value;
+  const activeConversationId = viewConversationId.value;
+  const activeTopicId = viewActiveTopicId.value;
+  const selectedBotId = viewBotId.value;
   if (!instanceId || !activeConversationId || !activeTopicId || !selectedBotId) return [];
   if (bot.value?.retired || (bot.value && !bot.value.enabled)) return [];
   return useConversationCommandsStore()
@@ -103,9 +107,10 @@ function fillStarter(name: string): void {
   composerRef.value?.fillDraft(`/${name} `);
   composerRef.value?.focusInput();
 }
-const instance = computed(() =>
-  directBotsStore.instanceId ? instancesStore.byId(directBotsStore.instanceId) : undefined,
-);
+const instance = computed(() => {
+  const id = scopedTarget.value?.instanceId ?? directBotsStore.instanceId;
+  return id ? instancesStore.byId(id) : undefined;
+});
 
 const botDriver = computed(() => {
   if (!bot.value || !instance.value) return undefined;
@@ -115,23 +120,23 @@ const botDriver = computed(() => {
 const avatarState = computed(() => botAvatarState({
   retired: bot.value?.retired,
   online: instance.value?.online,
-  runState: directBotsStore.activeRun?.state,
-  liveStatus: directBotsStore.liveTurn?.status,
+  runState: viewActiveRun.value?.state,
+  liveStatus: viewLiveTurn.value?.status,
   waiting: avatarHasOpenInteraction(directBotsStore.pendingInteraction, {
-    instanceId: directBotsStore.instanceId,
+    instanceId: viewInstanceId.value,
     botId: bot.value?.id,
-    run: directBotsStore.activeRun,
-    memberTurnId: directBotsStore.activeMemberTurn?.id,
+    run: viewActiveRun.value,
+    memberTurnId: viewActiveMemberTurn.value?.id,
   }),
 }));
 const avatarActivityKey = computed(() => [
-  directBotsStore.instanceId, bot.value?.id, directBotsStore.activeConversationId,
-  directBotsStore.activeTopicId, directBotsStore.activeRun?.id,
+  viewInstanceId.value, bot.value?.id, viewConversationId.value,
+  viewActiveTopicId.value, viewActiveRun.value?.id,
 ].join(":"));
 /** One rhythm per Bot, shared with its sidebar row, so both faces blink together. */
-const blinkKey = computed(() => [directBotsStore.instanceId, bot.value?.id].filter(Boolean).join(":"));
-const observedCompletion = computed(() => !!directBotsStore.activeRun
-  && directBotsStore.liveCompletedRunId === directBotsStore.activeRun.id);
+const blinkKey = computed(() => [viewInstanceId.value, bot.value?.id].filter(Boolean).join(":"));
+const observedCompletion = computed(() => !!viewActiveRun.value
+  && directBotsStore.liveCompletedRunId === viewActiveRun.value.id);
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
@@ -176,6 +181,9 @@ function setDirectDetail(
  *  Run's full member list, then show the Run-wide drawer. The live Run is
  *  rendered immediately while the read model catches up. */
 async function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }): Promise<void> {
+  // The run drawer is a primary-pane surface (it reads the selection-scoped
+  // trace cache); scoped columns open dispatched sessions instead.
+  if (scopedTarget.value) return;
   const iId = directBotsStore.instanceId;
   if (!iId) return;
   const runId = payload.runId ?? directBotsStore.activeRun?.id;
@@ -366,6 +374,10 @@ function openMobileTopics(): void {
 }
 
 function requireTopicContext(): { instanceId: string; conversationId: string } | null {
+  const target = scopedTarget.value;
+  if (target) {
+    return paneScopeConvId.value ? { instanceId: target.instanceId, conversationId: paneScopeConvId.value } : null;
+  }
   const instanceId = directBotsStore.instanceId;
   const conversationId = directBotsStore.activeConversationId;
   if (!instanceId || !conversationId) return null;
@@ -379,7 +391,7 @@ async function previewTopic(topicId: string) {
 }
 
 const otherBots = computed(() => {
-  const instanceId = directBotsStore.instanceId;
+  const instanceId = viewInstanceId.value;
   const currentId = bot.value?.id;
   if (!instanceId || !currentId) return [];
   return (directBotsStore.botsByInstance[instanceId] ?? [])
@@ -387,7 +399,7 @@ const otherBots = computed(() => {
 });
 
 const memberGroups = computed(() => {
-  const instanceId = directBotsStore.instanceId;
+  const instanceId = viewInstanceId.value;
   const currentId = bot.value?.id;
   if (!instanceId || !currentId) return [];
   return (groupsStore.groupsByInstance[instanceId] ?? []).filter((group) => group.botIds.includes(currentId));
@@ -400,7 +412,7 @@ const navGroups = computed<DropdownGroup[]>(() => [
 ]);
 
 function openOtherBot(botId: string): void {
-  const instanceId = directBotsStore.instanceId;
+  const instanceId = viewInstanceId.value;
   if (!instanceId) return;
   navDd.closeMenu();
   closeSheet();
@@ -408,7 +420,7 @@ function openOtherBot(botId: string): void {
 }
 
 function openGroup(groupId: string): void {
-  const instanceId = directBotsStore.instanceId;
+  const instanceId = viewInstanceId.value;
   if (!instanceId) return;
   navDd.closeMenu();
   closeSheet();
@@ -499,12 +511,12 @@ function openForkFromTopic(topic: TopicSummaryDto): void {
 
 /** The newest terminal Run this pane already knows about, for the label only. */
 function terminalRunForTopic(topicId: string): ConversationRunDto | undefined {
-  const active = directBotsStore.activeRun;
+  const active = viewActiveRun.value;
   return active && active.topicId === topicId && isTerminalRunState(active.state) ? active : undefined;
 }
 
 function openForkFromRun(run: ConversationRunDto): void {
-  const topic = directBotsStore.currentTopics.find((candidate) => candidate.id === run.topicId);
+  const topic = viewTopics.value.find((candidate) => candidate.id === run.topicId);
   if (!topic || !forkSupported.value || !isTerminalRunState(run.state)) return;
   closeTraceOverlay();
   forkTarget.value = { topic, sourcePoint: { type: "run", runId: run.id }, resolvedRun: run };
@@ -513,7 +525,7 @@ function openForkFromRun(run: ConversationRunDto): void {
 /** Fork at one visible message row (design §5.2), with the same ownership
  *  proof the Group pane uses: the row must be in this Topic's own timeline. */
 function openForkFromMessage(messageId: string): void {
-  const topic = directBotsStore.currentTopic;
+  const topic = viewTopic.value;
   if (!topic || !forkMessageSupported.value) return;
   const entry = (timelineFeed.timeline.value?.entries ?? [])
     .find((candidate) => candidate.kind === "message" && candidate.message.id === messageId);
@@ -525,13 +537,18 @@ const detailRunForkable = computed(() =>
   forkSupported.value && !!detailTarget.value && isTerminalRunState(detailTarget.value.run.state));
 
 const forkSourceAvailable = computed(() => {
-  const sourceTopicId = directBotsStore.currentTopic?.forkedFrom?.sourceTopicId;
-  return !!sourceTopicId && directBotsStore.currentTopics.some((topic) => topic.id === sourceTopicId);
+  const sourceTopicId = viewTopic.value?.forkedFrom?.sourceTopicId;
+  return !!sourceTopicId && viewTopics.value.some((topic) => topic.id === sourceTopicId);
 });
 
 function openForkSourceTopic(): void {
-  const sourceTopicId = directBotsStore.currentTopic?.forkedFrom?.sourceTopicId;
-  if (sourceTopicId && directBotsStore.currentTopics.some((topic) => topic.id === sourceTopicId)) {
+  const sourceTopicId = viewTopic.value?.forkedFrom?.sourceTopicId;
+  if (!sourceTopicId) return;
+  if (scopedTarget.value) {
+    if (viewTopics.value.some((topic) => topic.id === sourceTopicId)) setScopedTopic(sourceTopicId);
+    return;
+  }
+  if (directBotsStore.currentTopics.some((topic) => topic.id === sourceTopicId)) {
     void directBotsStore.switchTopic(sourceTopicId);
   }
 }
@@ -557,44 +574,140 @@ const scopedTarget = computed(() =>
     : null,
 );
 
-/** True while the global selection shows exactly this pane's Bot: only then do the
- *  timeline, live turn and composer belong to this pane. */
-const selectionMatches = computed(() => {
+/** Background-column scope resolution: (bot) → { conversationId, topicId } via
+ *  the store (mirrors selectBot, never touches the selection). An explicit
+ *  topicId prop always wins over discovery. */
+const paneScopeConvId = ref<string | null>(null);
+const paneScopeTopicId = ref<string | null>(null);
+const paneScopeReady = ref(false);
+const paneScopeError = ref(false);
+let paneScopeGen = 0;
+async function resolvePaneScope(target: { instanceId: string; botId: string; topicId?: string }): Promise<void> {
+  const gen = ++paneScopeGen;
+  paneScopeReady.value = false;
+  paneScopeError.value = false;
+  paneScopeConvId.value = null;
+  paneScopeTopicId.value = target.topicId ?? null;
+  const stored = directBotsStore.getBotPaneState(target.instanceId, target.botId);
+  if (!target.topicId && stored.topicId) paneScopeTopicId.value = stored.topicId;
+  if (stored.conversationId) paneScopeConvId.value = stored.conversationId;
+  const resolved = await directBotsStore.ensureBotPaneScope(target.instanceId, target.botId);
+  if (paneScopeGen !== gen) return;
+  if (!resolved) {
+    paneScopeError.value = true;
+    return;
+  }
+  paneScopeConvId.value = resolved.conversationId;
+  if (target.topicId) {
+    // Explicit prop wins — persist it so a remount keeps showing it.
+    paneScopeTopicId.value = target.topicId;
+    directBotsStore.getBotPaneState(target.instanceId, target.botId).topicId = target.topicId;
+  } else {
+    paneScopeTopicId.value = resolved.topicId;
+  }
+  paneScopeReady.value = true;
+}
+watch(
+  scopedTarget,
+  (target) => {
+    if (target) void resolvePaneScope(target);
+    else {
+      paneScopeGen += 1;
+      paneScopeConvId.value = null;
+      paneScopeTopicId.value = null;
+      paneScopeReady.value = false;
+      paneScopeError.value = false;
+    }
+  },
+  { immediate: true },
+);
+function retryPaneScope(): void {
   const target = scopedTarget.value;
-  if (!target) return true;
-  return directBotsStore.instanceId === target.instanceId
-    && directBotsStore.selectedBotId === target.botId;
-});
-/** A scoped pane on a non-selected Bot must not show foreign content: it renders a
- *  compact placeholder instead (the column header owns the "set as primary" action). */
-const isBackgroundPane = computed(() => !!scopedTarget.value && !selectionMatches.value);
+  if (target) void resolvePaneScope(target);
+}
 
 const scopedBot = computed(() => {
   const target = scopedTarget.value;
   if (!target) return undefined;
   return (directBotsStore.botsByInstance[target.instanceId] ?? []).find((b) => b.id === target.botId);
 });
-const scopedDriver = computed(() => {
+/** Selection-independent identity for every downstream computed: scoped panes
+ *  resolve from props + resolved scope, the primary pane from the selection. */
+const viewInstanceId = computed(() => scopedTarget.value?.instanceId ?? directBotsStore.instanceId);
+const viewBotId = computed(() => scopedTarget.value?.botId ?? directBotsStore.selectedBotId);
+const viewConversationId = computed(() =>
+  scopedTarget.value ? paneScopeConvId.value : directBotsStore.activeConversationId,
+);
+const viewActiveTopicId = computed(() =>
+  scopedTarget.value ? paneScopeTopicId.value : directBotsStore.activeTopicId,
+);
+const viewTopicReady = computed(() =>
+  scopedTarget.value ? paneScopeReady.value : directBotsStore.topicReady,
+);
+function scopedTriple(): { iId: string; cId: string; tId: string } | null {
   const target = scopedTarget.value;
-  if (!target) return undefined;
-  return instancesStore.byId(target.instanceId)?.agents.find((a) => a.name === scopedBot.value?.agent)?.driver;
+  if (!target || !paneScopeConvId.value || !paneScopeTopicId.value) return null;
+  return { iId: target.instanceId, cId: paneScopeConvId.value, tId: paneScopeTopicId.value };
+}
+const viewActiveRun = computed(() => {
+  const s = scopedTriple();
+  return s
+    ? directBotsStore.activeRunForTopic(s.iId, s.cId, s.tId)
+    : directBotsStore.activeRun;
 });
-// The pane entry always exists for a scoped target (creates the botPanesByKey record
-// the topic switcher below syncs through).
-watch(scopedTarget, (target) => {
-  if (target) directBotsStore.getBotPaneState(target.instanceId, target.botId);
-}, { immediate: true });
-const scopedEntry = computed(() => {
+const viewLiveTurn = computed(() => {
+  const s = scopedTriple();
+  return s
+    ? directBotsStore.liveTurnForTopic(s.iId, s.cId, s.tId)
+    : directBotsStore.liveTurn;
+});
+const viewActiveMemberTurn = computed(() => {
+  const s = scopedTriple();
+  return s
+    ? directBotsStore.activeMemberTurnForTopic(s.iId, s.cId, s.tId)
+    : directBotsStore.activeMemberTurn;
+});
+const viewTopics = computed(() => {
   const target = scopedTarget.value;
-  if (!target) return null;
-  return directBotsStore.botPanesByKey[botPaneKeyFor(target.instanceId, target.botId)] ?? null;
+  if (!target || !paneScopeConvId.value) return directBotsStore.currentTopics;
+  return sortTopicsNewestFirst(
+    directBotsStore.topicsByConversation[`${target.instanceId}:${paneScopeConvId.value}`] ?? [],
+  );
 });
-const resolvedTopicId = computed(() => {
+const viewTopic = computed(() => {
+  if (!scopedTarget.value) return directBotsStore.currentTopic;
+  return viewTopics.value.find((t) => t.id === viewActiveTopicId.value);
+});
+const viewPlanEntries = computed(() =>
+  scopedTarget.value
+    ? viewActiveRun.value ? directBotsStore.planByRunId[viewActiveRun.value.id] ?? [] : []
+    : directBotsStore.planEntries,
+);
+/** Scoped topic switch: move the pane's own topic (feed + live follow), refresh
+ *  the tracked run. The global selection is untouched. */
+function setScopedTopic(topicId: string): void {
   const target = scopedTarget.value;
-  if (!target) return directBotsStore.activeTopicId;
-  return target.topicId ?? scopedEntry.value?.topicId
-    ?? (selectionMatches.value ? directBotsStore.activeTopicId : null);
-});
+  if (!target || !paneScopeConvId.value) return;
+  paneScopeTopicId.value = topicId;
+  directBotsStore.getBotPaneState(target.instanceId, target.botId).topicId = topicId;
+  void directBotsStore.discoverScopedRun(target.instanceId, paneScopeConvId.value, topicId);
+}
+function onTopicSelect(topicId: string): void {
+  if (scopedTarget.value) setScopedTopic(topicId);
+  else void directBotsStore.switchTopic(topicId);
+}
+function onCreateTopicRequest(): void {
+  // Scoped columns create inside their own conversation through the same
+  // dialog (bound to an explicit scope); the primary pane keeps the dialog
+  // bound to the global selection.
+  scopedTopicDialogOpen.value = true;
+  if (!scopedTarget.value) newTopicDialogOpen.value = true;
+}
+function onScopedTopicCreated(topicId: string): void {
+  scopedTopicDialogOpen.value = false;
+  setScopedTopic(topicId);
+}
+const scopedTopicDialogOpen = ref(false);
 
 const removalOpen = ref(false);
 
@@ -610,8 +723,8 @@ const timelineSupported = computed(() => supportsConversationTimelineV1(instance
 
 /** Direct is the single-participant Room: same read model, same shell. */
 const roomView = computed<RoomView>(() => ({
-  conversationId: directBotsStore.activeConversationId ?? null,
-  topicId: directBotsStore.activeTopicId ?? null,
+  conversationId: viewConversationId.value ?? null,
+  topicId: viewActiveTopicId.value ?? null,
   participants: bot.value
     ? [{
         botId: bot.value.id,
@@ -628,8 +741,8 @@ const roomView = computed<RoomView>(() => ({
 /** The live bubble exists only while the MemberTurn is known: the overlay is
  *  keyed by `memberTurnId`, so a reply can never attach to the wrong turn. */
 const liveOverlay = computed<TimelineLiveTurn[]>(() => {
-  const live = directBotsStore.liveTurn;
-  const member = directBotsStore.activeMemberTurn;
+  const live = viewLiveTurn.value;
+  const member = viewActiveMemberTurn.value;
   if (!live || !member) return [];
   return [{
     memberTurnId: member.id,
@@ -643,36 +756,55 @@ const liveOverlay = computed<TimelineLiveTurn[]>(() => {
   }];
 });
 
-const timelineReloadKey = computed(() => [
-  directBotsStore.messages.length,
-  directBotsStore.newestSeq ?? 0,
-  directBotsStore.activeRun?.id ?? "",
-  directBotsStore.activeRun?.state ?? "",
-  directBotsStore.activeMemberTurn?.id ?? "",
-  directBotsStore.activeMemberTurn?.state ?? "",
-].join(":"));
+const timelineReloadKey = computed(() => {
+  if (scopedTarget.value) {
+    const s = scopedTriple();
+    return [
+      paneScopeReady.value ? 1 : 0,
+      s ? directBotsStore.topicRevisionFor(s.iId, s.cId, s.tId) : 0,
+      viewActiveRun.value?.id ?? "",
+      viewActiveRun.value?.state ?? "",
+      viewActiveMemberTurn.value?.id ?? "",
+      viewActiveMemberTurn.value?.state ?? "",
+    ].join(":");
+  }
+  return [
+    directBotsStore.messages.length,
+    directBotsStore.newestSeq ?? 0,
+    directBotsStore.activeRun?.id ?? "",
+    directBotsStore.activeRun?.state ?? "",
+    directBotsStore.activeMemberTurn?.id ?? "",
+    directBotsStore.activeMemberTurn?.state ?? "",
+  ].join(":");
+});
 
 const timelineFeed = useConversationTimelineFeed({
-  instanceId: computed(() => directBotsStore.instanceId),
-  conversationId: computed(() => directBotsStore.activeConversationId),
-  topicId: computed(() => directBotsStore.activeTopicId),
+  instanceId: computed(() => viewInstanceId.value),
+  conversationId: computed(() => viewConversationId.value),
+  topicId: computed(() => viewActiveTopicId.value),
   enabled: timelineSupported,
-  roomReady: computed(() => directBotsStore.topicReady),
+  roomReady: computed(() => viewTopicReady.value),
   reloadKey: timelineReloadKey,
 });
 
 const splitLayout = useSplitLayoutStore();
+/** The layout primary hosting this pane (provided by SplitWorkbench; null for
+ *  the standalone primary pane). Scoped columns open dispatched sessions here. */
+const injectedPrimaryKey = inject(splitPrimaryKey, null);
 const dispatchedDd = useDropdown();
 
 /** Sessions this topic dispatched (system dispatch notices), de-duplicated by alias.
- *  Only meaningful while the selection shows this pane — otherwise the loaded rows
- *  belong to another Bot and the menu stays hidden. */
+ *  Scoped columns read their own timeline feed; the primary pane reads the selection. */
 const dispatchedSessions = computed(() => {
-  if (!selectionMatches.value) return [];
-  const topicId = resolvedTopicId.value;
+  const topicId = viewActiveTopicId.value;
   if (!topicId) return [];
   const seen = new Map<string, { sessionAlias: string; displayName?: string; agent: string }>();
-  for (const message of directBotsStore.messages) {
+  const rows = scopedTarget.value
+    ? (timelineFeed.timeline.value?.entries ?? [])
+      .filter((entry) => entry.kind === "message")
+      .map((entry) => (entry as { message: (typeof directBotsStore.messages)[number] }).message)
+    : directBotsStore.messages;
+  for (const message of rows) {
     if (message.topicId !== topicId || !message.dispatchedSession) continue;
     const dispatched = message.dispatchedSession;
     if (seen.has(dispatched.sessionAlias)) continue;
@@ -693,8 +825,16 @@ function dispatchedColumns(primary: string, instanceId: string, sessionAlias: st
   );
 }
 function dispatchedBotPrimary(): string | null {
-  const instanceId = scopedTarget.value?.instanceId ?? directBotsStore.instanceId;
-  const botId = scopedTarget.value?.botId ?? directBotsStore.selectedBotId;
+  const target = scopedTarget.value;
+  if (target) {
+    // A column opens under the layout that hosts it (injected by SplitWorkbench);
+    // without one, fall back to the selection-derived key.
+    const injected = injectedPrimaryKey?.value;
+    if (injected) return injected;
+    return primaryKeyFor({ kind: "bot", instanceId: target.instanceId, botId: target.botId });
+  }
+  const instanceId = directBotsStore.instanceId;
+  const botId = directBotsStore.selectedBotId;
   return instanceId && botId ? primaryKeyFor({ kind: "bot", instanceId, botId }) : null;
 }
 function dispatchedInstanceId(): string | null {
@@ -731,12 +871,13 @@ function isDispatchedOpen(sessionAlias: string): boolean {
   return dispatchedColumns(primary, instanceId, sessionAlias).length > 0;
 }
 
-// Stable per-bot scroll identity for split columns (selection-independent). Legacy
+// Stable per-bot scroll identity for split columns (selection-independent, includes
+// the resolved topic so switching topics starts at the newest page). Legacy
 // single-pane mode passes nothing and the timeline keeps its existing behaviour.
 const paneScrollKey = computed(() => {
   const target = scopedTarget.value;
   if (!target) return undefined;
-  const topicId = resolvedTopicId.value;
+  const topicId = paneScopeTopicId.value;
   return paneKeyFor({
     kind: "bot",
     instanceId: target.instanceId,
@@ -749,15 +890,6 @@ const paneScrollKey = computed(() => {
 
 <template>
   <div class="relative flex h-full flex-col bg-bg text-fg" :data-pane-mode="paneMode ?? 'single'">
-    <!-- Background split column: the selection (and its transcript) belongs to another
-         pane, so show identity only. The column header owns the set-as-primary action. -->
-    <div v-if="isBackgroundPane" data-test="bot-background-pane"
-         class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-      <BotAvatar :avatar="scopedBot?.avatar" :driver="scopedDriver" :name="scopedBot?.name ?? scopedTarget?.botId" :size="40" static />
-      <p class="text-sm font-semibold text-fg">{{ scopedBot?.name ?? scopedTarget?.botId }}</p>
-      <p class="max-w-xs text-xs text-fg-muted">{{ $t("split.backgroundBody") }}</p>
-    </div>
-    <template v-else>
     <!-- Mobile floating identity (<lg), modeled on the reference mock: the
          timeline runs full-height and the identity floats OVER it — back and ⋯ as
          glass discs at the edges, a centered glass pill (name only) with a large
@@ -795,18 +927,18 @@ const paneScrollKey = computed(() => {
     <div v-if="timelineSupported && isMobile" ref="mobileTopicHost" class="parked-topic">
       <TopicSwitcher
         variant="direct"
-        :topics="directBotsStore.currentTopics"
-        :active-topic-id="directBotsStore.activeTopicId"
+        :topics="viewTopics"
+        :active-topic-id="viewActiveTopicId"
         :preview-topic="previewTopic"
         :rename-topic="renameTopic"
         :archive-topic="archiveTopic"
         :restore-topic="restoreTopic"
         :teardown-topic="teardownTopic"
         :clear-topic="clearTopic"
-        :fork-topic="forkSupported ? openForkFromTopic : undefined"
+        :fork-topic="!scopedTarget && forkSupported ? openForkFromTopic : undefined"
         :abandon-unknown-runs="abandonUnknownRuns"
-        @select="directBotsStore.switchTopic"
-        @create="newTopicDialogOpen = true"
+        @select="onTopicSelect"
+        @create="onCreateTopicRequest"
       />
     </div>
     <MobileConnStrip />
@@ -840,18 +972,18 @@ const paneScrollKey = computed(() => {
             <TopicSwitcher
               v-if="!isMobile"
               variant="direct"
-              :topics="directBotsStore.currentTopics"
-              :active-topic-id="directBotsStore.activeTopicId"
+              :topics="viewTopics"
+              :active-topic-id="viewActiveTopicId"
               :preview-topic="previewTopic"
               :rename-topic="renameTopic"
               :archive-topic="archiveTopic"
               :restore-topic="restoreTopic"
               :teardown-topic="teardownTopic"
               :clear-topic="clearTopic"
-              :fork-topic="forkSupported ? openForkFromTopic : undefined"
+              :fork-topic="!scopedTarget && forkSupported ? openForkFromTopic : undefined"
               :abandon-unknown-runs="abandonUnknownRuns"
-              @select="directBotsStore.switchTopic"
-              @create="newTopicDialogOpen = true"
+              @select="onTopicSelect"
+              @create="onCreateTopicRequest"
             />
             <span aria-hidden="true">·</span>
             <!-- Role segment and its separator render together, and only for a
@@ -926,6 +1058,7 @@ const paneScrollKey = computed(() => {
         </div>
       </div>
         <button
+          v-if="!scopedTarget"
           type="button"
           data-test="edit-bot-button"
           :title="$t('bot.actions.edit')"
@@ -936,6 +1069,7 @@ const paneScrollKey = computed(() => {
           <Pencil :size="14" />
         </button>
         <button
+          v-if="!scopedTarget"
           type="button"
           data-test="delete-bot-button"
           :title="bot?.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
@@ -955,7 +1089,7 @@ const paneScrollKey = computed(() => {
     </div>
 
     <!-- Error Banner if any general error -->
-    <div v-if="directBotsStore.generalErrorCode || directBotsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
+    <div v-if="!scopedTarget && (directBotsStore.generalErrorCode || directBotsStore.generalError)" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
       <span>{{ directBotsStore.generalErrorCode ? $t(`bot.errors.${directBotsStore.generalErrorCode}`) : directBotsStore.generalError }}</span>
       <button type="button" @click="directBotsStore.generalError = null; directBotsStore.generalErrorCode = null">
         <X :size="14" />
@@ -982,13 +1116,13 @@ const paneScrollKey = computed(() => {
       :empty-hint="emptyHint"
       :is-run-queued="directBotsStore.isRunQueued"
       :load-older="timelineFeed.loadOlder"
-      :top-inset-class="directBotsStore.currentTopic?.forkedFrom
+      :top-inset-class="viewTopic?.forkedFrom
         ? 'pt-[0.5rem] lg:pt-5'
         : 'pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5'"
       banner-inset-class="mt-[calc(6rem+env(safe-area-inset-top))] lg:mt-0"
-      :forked-from="directBotsStore.currentTopic?.forkedFrom ?? null"
-      :fork-source-available="forkSourceAvailable"
-      :fork-message="forkMessageSupported ? openForkFromMessage : undefined"
+      :forked-from="scopedTarget ? null : (viewTopic?.forkedFrom ?? null)"
+      :fork-source-available="scopedTarget ? false : forkSourceAvailable"
+      :fork-message="!scopedTarget && forkMessageSupported ? openForkFromMessage : undefined"
       @open-source-topic="openForkSourceTopic"
       @open-detail="openTimelineDetail"
     >
@@ -1027,9 +1161,10 @@ const paneScrollKey = computed(() => {
     >
       <p class="max-w-sm text-xs text-fg-muted">{{ $t("conversation.timeline.upgradeRequired") }}</p>
     </div>
-    <!-- One Run-wide detail drawer (design §8.4). -->
+    <!-- One Run-wide detail drawer (design §8.4). Primary pane only: the drawer
+         reads the selection-scoped trace cache. -->
     <TraceOverlay
-      v-if="detailTarget"
+      v-if="detailTarget && !scopedTarget"
       id="direct-trace-overlay"
       :run="detailTarget.run"
       :member-turns="detailMembers"
@@ -1039,7 +1174,7 @@ const paneScrollKey = computed(() => {
       :interactions="detailInteractions"
       :capability="detailCapability"
       :cancel-pending="!!stopPendingMember"
-      :topic-title="directBotsStore.currentTopic?.title"
+      :topic-title="viewTopic?.title"
       :fork-available="detailRunForkable"
       :attempt="detailEffectiveAttempt"
       :attempts="detailTracePage?.attempts"
@@ -1069,7 +1204,7 @@ const paneScrollKey = computed(() => {
       data-test="direct-plan-panel"
       class="mx-auto w-full max-w-3xl px-4 lg:px-0"
     >
-      <PlanPanel :entries="directBotsStore.planEntries" class="w-full" />
+      <PlanPanel :entries="viewPlanEntries" class="w-full" />
     </div>
 
     <!-- No status bar on a Direct Bot. It only ever had one speaker, so its one line
@@ -1079,8 +1214,10 @@ const paneScrollKey = computed(() => {
 
     <ConversationPromptInput
       ref="composerRef"
-      :disabled="!timelineSupported || bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
-      :deliver="directBotsStore.sendPrompt"
+      :disabled="!timelineSupported || bot?.retired === true || !viewTopicReady || (!!viewActiveTopicId && viewTopic?.status !== 'active')"
+      :scope="scopedTarget ? { instanceId: scopedTarget.instanceId, conversationId: viewConversationId, topicId: viewActiveTopicId, botId: scopedTarget.botId } : null"
+      :scope-ready="paneScopeReady"
+      :deliver="scopedTarget ? undefined : directBotsStore.sendPrompt"
     />
     <div v-if="unavailable" data-test="run-detail-unavailable"
          class="flex items-center justify-between bg-warn/10 px-3 lg:px-5 py-2 text-xs text-fg">
@@ -1091,10 +1228,23 @@ const paneScrollKey = computed(() => {
         {{ $t("bot.prompt.retry") }}
       </button>
     </div>
+    <!-- Scoped column scope failure: the bot/conversation/topic could not be
+         resolved (or the RPC failed). Retry re-runs resolution. -->
+    <div v-if="scopedTarget && paneScopeError"
+         data-test="scoped-scope-error"
+         class="flex items-center justify-between border-b border-hairline bg-danger/[0.07] px-4 py-1.5 text-xs text-danger-text">
+      <span>{{ $t("bot.errors.discoveryFailed") }}</span>
+      <button type="button"
+              class="rounded-btn border border-hairline bg-raised/75 px-2 py-0.5 font-medium text-fg shadow-btn-raised transition-colors hover:bg-raised dark:bg-white/[0.06] dark:hover:bg-white/[0.11]"
+              @click="retryPaneScope">
+        {{ $t("bot.prompt.retry") }}
+      </button>
+    </div>
     <!-- History failure: Retry reloads the topic (history + durable run
       discovery). Shown whenever the timeline failed to converge — the
-      composer may still be enabled, but the newest window is stale/holed. -->
-    <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId"
+      composer may still be enabled, but the newest window is stale/holed.
+      Primary pane only; scoped columns surface feed errors inline. -->
+    <div v-if="!scopedTarget && directBotsStore.historyError && directBotsStore.activeTopicId"
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
       <span>{{ $t(`bot.errors.${directBotsStore.historyError}`) }}</span>
       <button type="button"
@@ -1103,9 +1253,9 @@ const paneScrollKey = computed(() => {
         {{ $t("bot.prompt.retry") }}
       </button>
     </div>
-    <!-- Edit Bot Dialog -->
+    <!-- Edit Bot Dialog (primary pane only) -->
     <BotDialog
-      v-if="editDialogOpen && directBotsStore.instanceId && bot"
+      v-if="editDialogOpen && !scopedTarget && directBotsStore.instanceId && bot"
       :instance-id="directBotsStore.instanceId"
       :instance-name="instance?.name ?? directBotsStore.instanceId"
       :bot="bot"
@@ -1113,7 +1263,7 @@ const paneScrollKey = computed(() => {
     />
 
     <BotRemovalDialog
-      v-if="removalOpen && directBotsStore.instanceId && bot"
+      v-if="removalOpen && !scopedTarget && directBotsStore.instanceId && bot"
       :bot-name="bot.name"
       :preview="() => directBotsStore.previewBotRemoval(directBotsStore.instanceId!, bot!.id)"
       :remove="(input) => directBotsStore.removeBot(directBotsStore.instanceId!, { botId: bot!.id, ...input })"
@@ -1125,12 +1275,19 @@ const paneScrollKey = computed(() => {
     />
 
     <NewTopicDialog
-      v-if="newTopicDialogOpen"
+      v-if="newTopicDialogOpen && !scopedTarget"
       @close="newTopicDialogOpen = false"
     />
 
+    <NewTopicDialog
+      v-if="scopedTarget && scopedTopicDialogOpen && paneScopeConvId"
+      :scope="{ instanceId: scopedTarget.instanceId, conversationId: paneScopeConvId }"
+      @created="onScopedTopicCreated"
+      @close="scopedTopicDialogOpen = false"
+    />
+
     <ForkTopicDialog
-      v-if="forkTarget"
+      v-if="forkTarget && !scopedTarget"
       :source-topic="forkTarget.topic"
       :source-point="forkTarget.sourcePoint"
       :resolved-run="forkTarget.resolvedRun ?? null"
@@ -1149,7 +1306,7 @@ const paneScrollKey = computed(() => {
               @click="openMobileTopics">
         <Hash :size="18" class="shrink-0 text-fg-muted" />
         <span class="min-w-0 flex-1 truncate">{{ $t("mobileBar.switchTopic") }}</span>
-        <span class="max-w-32 truncate text-xs text-fg-muted">{{ directBotsStore.currentTopic?.title ?? $t("bot.topic.default") }}</span>
+        <span class="max-w-32 truncate text-xs text-fg-muted">{{ viewTopic?.title ?? $t("bot.topic.default") }}</span>
         <ChevronDown :size="14" class="shrink-0 text-fg-muted" />
       </button>
       <button type="button" data-test="sheet-bot-nav"
@@ -1191,7 +1348,6 @@ const paneScrollKey = computed(() => {
       </button>
       <p v-if="memberGroups.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noGroup") }}</p>
     </MobileSheet>
-    </template>
 
   </div>
 </template>

@@ -50,7 +50,8 @@ const scopedPane = computed(() =>
     : null,
 );
 // Scoped-aware views over the transcript + pane flags. Live turn / plan / queue stay
-// on the legacy selection proxies (a later milestone owns per-pane live state).
+// on the selection proxies only in legacy single-pane mode: a scoped column reads
+// its own keyed state so two columns never share one pane's live status.
 const paneMessages = computed(() => scopedPane.value?.messages ?? chat.messages);
 const paneError = computed<string>({
   get: () => scopedPane.value?.error ?? chat.error,
@@ -62,6 +63,26 @@ const paneError = computed<string>({
 const paneHasMoreOlder = computed(() => scopedPane.value?.hasMoreOlder ?? chat.hasMoreOlder);
 const paneLoadingOlder = computed(() => scopedPane.value?.loadingOlder ?? chat.loadingOlder);
 const paneLoadingHistory = computed(() => scopedPane.value?.loadingHistory ?? chat.loadingHistory);
+const paneLiveTurn = computed(() =>
+  scopedTarget.value
+    ? chat.liveTurnFor(scopedTarget.value.instanceId, scopedTarget.value.sessionAlias)
+    : chat.liveTurn,
+);
+const panePlan = computed(() =>
+  scopedTarget.value
+    ? chat.planFor(scopedTarget.value.instanceId, scopedTarget.value.sessionAlias)
+    : chat.sessionPlan,
+);
+const paneQueue = computed(() =>
+  scopedTarget.value
+    ? chat.queueFor(scopedTarget.value.instanceId, scopedTarget.value.sessionAlias)
+    : chat.sessionQueue,
+);
+const paneBusy = computed(() =>
+  scopedTarget.value
+    ? chat.busyFor(scopedTarget.value.instanceId, scopedTarget.value.sessionAlias)
+    : chat.busy,
+);
 const paneHistoryCapped = computed(() => scopedPane.value?.historyCapped ?? chat.historyCapped);
 const paneSessionKey = computed(() =>
   effInstanceId.value && effSessionAlias.value
@@ -98,11 +119,11 @@ const keyboardInset = useVirtualKeyboardInset();
 // status (bottom layer) → plan (middle) → input (top). Visual overlap uses
 // negative margin + reserved padding so content is never clipped.
 // Keep expansion state here so toggles survive stack rerenders.
-const planExpanded = ref(chat.busy);
-const showPlan = computed(() => (chat.sessionPlan?.length ?? 0) > 0);
+const planExpanded = ref(paneBusy.value);
+const showPlan = computed(() => (panePlan.value?.length ?? 0) > 0);
 // Pending-prompt queue joins the same document-flow stack as its own layer
 // (between plan and input).
-const showQueue = computed(() => chat.sessionQueue.length > 0);
+const showQueue = computed(() => paneQueue.value.length > 0);
 
 /**
  * The form an agent opened on THIS session, if one is open (or just closed).
@@ -230,7 +251,7 @@ const currentDriver = computed(
     ?? instance.value?.agents.find((a) => a.name === currentSession.value?.agent)?.driver,
 );
 const modelRecovery = computed(() => isOmpModelRestoreFailure(currentDriver.value, paneError.value));
-const modelRestore = computed(() => ompRestoreFailure(currentDriver.value, chat.error));
+const modelRestore = computed(() => ompRestoreFailure(currentDriver.value, paneError.value));
 
 // Booting state: an optimistic session whose create RPC is still cold-starting the agent.
 // The "starting… Ns" elapsed readout reuses the always-on `nowMs` ticker (declared below
@@ -341,7 +362,7 @@ onUnmounted(() => clearInterval(timer));
     <!-- min-h-0 keeps the column height chain intact (flex min-height:auto would let a
          long transcript blow past the pane). -->
     <div class="flex min-h-0 flex-1" data-test="chat-body">
-      <MessageList class="min-w-0" :messages="paneMessages" :live-turn="chat.liveTurn" :driver="currentDriver"
+      <MessageList class="min-w-0" :messages="paneMessages" :live-turn="paneLiveTurn" :driver="currentDriver"
                    :session-key="paneSessionKey"
                    :scroll-pane-key="paneScrollKey"
                    :scroll-to-scheduled="chat.scrollRequest"
@@ -373,9 +394,10 @@ onUnmounted(() => clearInterval(timer));
         class="composer-stack flex flex-col"
         data-test="composer-stack"
       >
-        <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan!" :active="chat.busy" variant="stack"
+        <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="panePlan!" :active="paneBusy" variant="stack"
                    class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] sm:mx-3" />
         <QueueStrip v-if="showQueue" key="queue-layer"
+                    :instance-id="effInstanceId" :session-alias="effSessionAlias"
                     class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] sm:mx-3"
                     :class="{ 'stack-layer--pull': showPlan }" />
         <!-- Agent question, as its own layer directly above the composer: the
@@ -397,7 +419,7 @@ onUnmounted(() => clearInterval(timer));
                                      @dismiss="onInteractionDismiss" />
         <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
              :class="{ 'stack-layer--pull': showPlan || showQueue }">
-          <PromptInput ref="promptInput" :busy="chat.busy" :draft-key="paneSessionKey"
+          <PromptInput ref="promptInput" :busy="paneBusy" :draft-key="paneSessionKey"
                        :instance-id="effInstanceId" :session-alias="effSessionAlias"
                        @send="onSend" @cancel="onCancel" />
         </div>

@@ -309,6 +309,22 @@ export const useChatStore = defineStore("chat", () => {
   const liveToolSteps = computed(() => (liveTurn.value ? toolStepsOf(liveTurn.value.parts) : []));
   const busy = computed(() => liveTurn.value !== null);
 
+  /** Per-pane live/plan/queue/busy for split columns: same backing maps as the
+   *  selected proxies above, keyed by explicit (instanceId, sessionAlias) so a
+   *  background column never reads the primary pane's live state. */
+  function liveTurnFor(id: string, alias: string): LiveTurn | null {
+    return liveTurns.value[bufKey(id, alias)] ?? null;
+  }
+  function planFor(id: string, alias: string): PlanEntryDto[] | null {
+    return plans.value[bufKey(id, alias)] ?? null;
+  }
+  function queueFor(id: string, alias: string): QueueItemDto[] {
+    return queues.value[bufKey(id, alias)] ?? [];
+  }
+  function busyFor(id: string, alias: string): boolean {
+    return liveTurnFor(id, alias) !== null;
+  }
+
   const sending = computed<boolean>({
     get: () => selectedPane()?.sending ?? false,
     set: (v) => {
@@ -1865,5 +1881,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, historyCapped, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, clearContext, cancelQueuedItem, purgeTailCache, reconcileTailCache, sessionsByKey, getSessionState, ensureSessionLoaded, loadHistoryFor, loadOlderFor, sendPromptFor, cancelTurnFor };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveTurnFor, sessionPlan, planFor, sessionUsage, sessionCommands, liveToolSteps, busy, busyFor, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, historyCapped, queues, sessionQueue, queueFor, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, clearContext, cancelQueuedItem, purgeTailCache, reconcileTailCache, sessionsByKey, getSessionState, ensureSessionLoaded, loadHistoryFor, loadOlderFor, sendPromptFor, cancelTurnFor };
 });

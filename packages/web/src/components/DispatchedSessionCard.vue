@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, inject } from "vue";
 import type { ConversationMessageDto } from "@ganglion/xacpx-relay-protocol";
 import { useChatStore } from "../stores/chat";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
-import { primaryKeyFor, useSplitLayoutStore } from "../stores/split-layout";
+import { primaryKeyFor, splitPrimaryKey, useSplitLayoutStore } from "../stores/split-layout";
 
 const props = defineProps<{
   message: ConversationMessageDto;
@@ -15,6 +15,8 @@ const chat = useChatStore();
 const directBots = useDirectBotsStore();
 const instances = useInstancesStore();
 const splitLayout = useSplitLayoutStore();
+/** Layout primary hosting this card (provided by SplitWorkbench; null standalone). */
+const injectedPrimaryKey = inject(splitPrimaryKey, null);
 
 const dispatched = computed(() => props.message.dispatchedSession ?? null);
 const displayName = computed(() => dispatched.value?.displayName ?? dispatched.value?.sessionAlias ?? "");
@@ -29,6 +31,9 @@ const sessionRow = computed(() => {
 const isRunning = computed(() => !!sessionRow.value && sessionRow.value.running === true && sessionRow.value.archived !== true);
 
 const currentPrimary = computed(() => {
+  // The layout hosting this card knows best (injected by SplitWorkbench).
+  // Fallbacks preserve standalone contexts: selected Bot, then selected session.
+  if (injectedPrimaryKey?.value) return injectedPrimaryKey.value;
   if (chat.instanceId && chat.sessionAlias) {
     return primaryKeyFor({ kind: "session", instanceId: chat.instanceId, sessionAlias: chat.sessionAlias });
   }
