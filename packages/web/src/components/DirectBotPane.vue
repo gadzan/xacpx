@@ -678,8 +678,13 @@ const timelineFeed = useConversationTimelineFeed({
         {{ $t("bot.status.disabled") }}
       </span>
 
-      <div v-if="timelineSupported" data-test="bot-header-meta" class="flex min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar text-xs text-fg-muted">
+      <!-- No `overflow-*` anywhere on this row: any overflow value other than
+           `visible` forces its cross axis to `auto` too, which would cut the Topic
+           popover off at this row's 22px height (it opens at `top-full`). Flexible
+           text truncates on its own instead. -->
+      <div v-if="timelineSupported" data-test="bot-header-meta" class="flex min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted">
         <TopicSwitcher
+          class="shrink-0"
           v-if="!isMobile"
           variant="direct"
           :topics="directBotsStore.currentTopics"
@@ -699,16 +704,16 @@ const timelineFeed = useConversationTimelineFeed({
         <!-- Role segment and its separator render together, and only for a
              non-blank role, so a role-less Bot reads "Default · repo · agent". -->
         <template v-if="bot?.role?.trim()">
-          <span class="truncate font-medium text-fg/80">{{ bot.role }}</span>
+          <span class="min-w-0 truncate font-medium text-fg/80">{{ bot.role }}</span>
           <span aria-hidden="true">·</span>
         </template>
-        <span class="flex items-center gap-1">
-          <Folder :size="10" />
-          <span>{{ bot?.workspace }}</span>
+        <span class="flex min-w-0 items-center gap-1">
+          <Folder :size="10" class="shrink-0" />
+          <span class="min-w-0 truncate">{{ bot?.workspace }}</span>
         </span>
         <span>·</span>
-        <span>{{ bot?.agent }}</span>
-        <span v-if="bot?.model">· {{ bot.model }}</span>
+        <span class="min-w-0 truncate">{{ bot?.agent }}</span>
+        <span v-if="bot?.model" class="min-w-0 truncate">· {{ bot.model }}</span>
       </div>
 
       <!-- Actions: Edit, Delete -->

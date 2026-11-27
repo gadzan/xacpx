@@ -721,8 +721,11 @@ const worktreeRunId = computed(() => {
                           style="--avatar-ring: rgb(var(--c-raised))" />
       </button>
       <h2 class="shrink-0 truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
-      <div class="flex min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar text-xs text-fg-muted">
+      <!-- No `overflow-*` on this row: it would force the cross axis to `auto` and
+           clip the Topic popover, which opens at `top-full`. -->
+      <div class="flex min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted">
         <TopicSwitcher
+          class="shrink-0"
           v-if="timelineSupported && !isMobile && !needsFirstTopic"
           :topics="groupsStore.currentTopics"
           :active-topic-id="groupsStore.activeTopicId"

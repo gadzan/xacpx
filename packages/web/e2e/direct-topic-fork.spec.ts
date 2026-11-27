@@ -503,3 +503,37 @@ test("a base-only Direct fork keeps the Topic menu but hides the row control", a
   await expect(page.getByTestId("menu-fork")).toBeVisible();
   expect(harness.forkRequests).toHaveLength(0);
 });
+
+/**
+ * Regression guard for 02ece2bb: the header's metadata row briefly carried
+ * `overflow-x-auto`, which per the overflow spec also makes overflow-y `auto`
+ * and cut the Topic popover off at the row's height. Clicks and DOM queries
+ * still worked, so only the geometry catches it.
+ */
+test("the desktop Topic panel clears the header row instead of being clipped by it", async ({ page, hub }, info) => {
+  test.skip(info.project.name !== "chromium-desktop", "the header popover only exists on desktop");
+  await openDirect(page, hub, []);
+  await page.getByTestId("topic-menu").first().click();
+  const panel = page.getByTestId("topic-panel");
+  await expect(panel).toBeVisible();
+
+  const facts = await panel.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const clippedBy: string[] = [];
+    for (let cur = el.parentElement; cur; cur = cur.parentElement) {
+      const cs = getComputedStyle(cur);
+      if (cs.overflowX === "visible" && cs.overflowY === "visible") continue;
+      const pr = cur.getBoundingClientRect();
+      if (r.bottom > pr.bottom + 1 || r.top < pr.top - 1) {
+        clippedBy.push(`${cur.tagName.toLowerCase()}.${(cur.getAttribute("class") ?? "").split(" ").slice(0, 3).join(".")}`);
+      }
+    }
+    return { height: r.height, width: r.width, top: r.top, clippedBy };
+  });
+
+  expect(facts.clippedBy, "clipping ancestors").toEqual([]);
+  expect(facts.height).toBeGreaterThan(60);
+  // Everything the popover is for sits inside the visible box.
+  await expect(page.getByTestId("topic-row").first()).toBeVisible();
+  await expect(page.getByTestId("new-topic-button")).toBeVisible();
+});
