@@ -1037,10 +1037,10 @@ const rowSwipes = computed(() => {
 </script>
 
 <template>
-  <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5 max-lg:pb-24">
+  <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5 max-lg:pb-24 lg:min-w-[232px]">
     <!-- Sticky so the instance list scrolls under the mode row. -->
     <div v-if="store.instances.length" data-test="instance-nav-track-wrap"
-         class="sticky top-0 z-10 -mx-2 -mt-1.5 bg-surface px-2 pb-1 pt-1.5">
+         class="sticky top-0 z-10 -mx-2 -mt-1.5 bg-surface px-2 pb-1 pt-1.5 lg:bg-bg">
       <!-- The rail is the 32px recessed fill. On a coarse pointer the row grows
            to 44 so each segment owns a real 44 hit box, while the rail and the
            selected pill keep their 32 and 28 visual heights. `px-0.5` is the
@@ -1060,7 +1060,7 @@ const rowSwipes = computed(() => {
              overlay, which would land above the raised thumb and make the selected
              segment read as a hole instead of a raised one. -->
         <span aria-hidden="true" data-test="instance-nav-rail"
-              class="pointer-events-none absolute inset-x-0 top-1/2 h-8 -translate-y-1/2 rounded-btn bg-fill-track dark:bg-bg"></span>
+              class="pointer-events-none absolute inset-x-0 top-1/2 h-8 -translate-y-1/2 rounded-btn border border-hairline bg-fill-track dark:bg-surface"></span>
         <span aria-hidden="true" data-test="instance-nav-indicator"
               class="pointer-events-none absolute left-0.5 top-1/2 h-7 w-[calc(50%_-_2px)] -translate-y-1/2 rounded-sm bg-raised shadow-press transition-transform duration-150 ease-ui motion-reduce:transition-none"
               :class="navMode === 'bots' ? 'translate-x-full' : 'translate-x-0'"></span>
@@ -1094,25 +1094,30 @@ const rowSwipes = computed(() => {
         </button>
       </div>
     </div>
-    <!-- One instance card: header row + session area (flat or grouped) + footer.
-         The card background is the level-1 zone of the tinted-zone hierarchy; group
-         zones inside are one step lighter (visually isomorphic across all modes). -->
+    <!-- One instance: a bare section, not a card. The sidebar is ambient chrome —
+         drawing a frame around every instance put four nested rectangles in a 232px
+         column and stole the card weight from the workbench. Instances are separated
+         by space alone; the tree's indent line carries the structure. -->
     <!-- No whole-card opacity: offline text fell below AA (muted name 3.21 dark / 2.52 light);
          the dimmed state reads from the muted name/label/dot, which pass AA at full opacity. -->
     <div v-for="inst in store.instances" :key="inst.id" data-test="instance-card"
-         class="rounded-lg bg-surface/60 p-[3px]">
+         class="py-1">
       <!-- Instance header: a flex CONTAINER (not one <button>) so the expand
            toggle and the sibling Desktop entry stay independent interactive
            controls — a nested <button> is invalid HTML and breaks keyboard
            semantics. -->
-      <div class="group flex min-h-7 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-surface-2">
+      <div class="group flex min-h-7 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-fill-hover">
         <button type="button"
                 class="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left transition-colors"
                 :aria-expanded="isExpanded(inst.id)"
                 data-test="instance-header-toggle"
                 @click="toggle(inst.id)">
           <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="isExpanded(inst.id) ? 'rotate-90' : ''" />
-          <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
+          <!-- A 6px jewel with a soft halo, not an 8px gumdrop: online is the default
+               state and should read at a glance, not shout. -->
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full"
+                :class="inst.online ? 'bg-run ring-2 ring-run/20' : 'bg-fg-muted opacity-45'"
+                data-test="online-dot" />
           <span class="truncate text-ui font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
                 :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
           <span v-if="inst.online" class="shrink-0 font-mono text-xs tabular-nums text-fg-muted">{{ activeSessions(inst).length }}</span>
@@ -1129,7 +1134,7 @@ const rowSwipes = computed(() => {
                 data-test="instance-desktop"
                 :title="$t('desktop.title')"
                 :aria-label="$t('desktop.title')"
-                class="grid h-10 w-10 lg:h-6 lg:w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-accent"
+                class="grid h-10 w-10 lg:h-6 lg:w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-accent"
                 @click="emit('openDesktop', inst.id)">
           <Monitor :size="13" />
         </button>
@@ -1140,7 +1145,7 @@ const rowSwipes = computed(() => {
                   :aria-haspopup="true"
                   :aria-expanded="filterDd.open && filterFor === inst.id"
                   class="relative grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm transition-colors"
-                  :class="filterDd.open && filterFor === inst.id ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+                  :class="filterDd.open && filterFor === inst.id ? 'bg-fill-strong text-fg' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
                   @click.stop="toggleFilterFor(inst.id, $event.currentTarget as HTMLElement)">
             <Filter :size="14" />
             <span v-if="archivedIsExpanded(inst.id)" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
@@ -1153,7 +1158,7 @@ const rowSwipes = computed(() => {
               <p class="px-2 pb-1 pt-1.5 text-xs text-fg-muted">{{ $t("instance.filterShow") }}</p>
               <button type="button" data-test="filter-sleeping-sessions"
                       class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm font-medium text-fg"
-                      :class="[mobile ? 'h-11' : 'h-8', !mobile && filterDd.highlight === 0 ? 'bg-surface-2' : '']"
+                      :class="[mobile ? 'h-11' : 'h-8', !mobile && filterDd.highlight === 0 ? 'bg-fill-strong' : '']"
                       @click="void toggleArchived(inst.id)">
                 <Moon :size="14" class="shrink-0 text-fg-muted" />
                 <span class="flex-1 truncate">{{ $t("instance.sleepingSessions") }}</span>
@@ -1179,8 +1184,21 @@ const rowSwipes = computed(() => {
           </div>
           <div v-if="((directBotsStore.loadingBotsByInstance[inst.id] ?? 0) > 0 && !directBotsStore.botsLoaded[inst.id]) || ((groupsStore.loadingGroupsByInstance[inst.id] ?? 0) > 0 && !groupsStore.groupsLoaded[inst.id])"
                data-test="bots-loading"
-               class="py-1 pl-2.5 text-xs text-fg-muted">
-            {{ $t("instance.loading") }}
+               role="status"
+               :aria-label="$t('instance.loading')"
+               class="space-y-px py-0.5">
+            <!-- Bot-shaped placeholders instead of the word "loading": the list keeps its
+                 final rhythm, so nothing jumps when the real rows arrive. -->
+            <div v-for="(w, i) in [{ title: 62, role: 40 }, { title: 48, role: 66 }, { title: 56, role: 34 }]"
+                 :key="i"
+                 class="flex h-10 items-center gap-2 rounded-sm px-2.5"
+                 :style="{ '--sk-delay': `${i * 110}ms` }">
+              <span class="sk-bar h-7 w-7 shrink-0 rounded-full bg-fg/[0.08]" />
+              <span class="flex min-w-0 flex-1 flex-col gap-1.5">
+                <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.08]" :style="{ width: `${w.title}%` }" />
+                <span class="sk-bar h-2 rounded-sm bg-fg/[0.05]" :style="{ width: `${w.role}%` }" />
+              </span>
+            </div>
           </div>
           <div v-else-if="directBotsStore.botsLoaded[inst.id] && groupsStore.groupsLoaded[inst.id] && mixedEmpty(inst.id)"
                data-test="no-bots"
@@ -1209,7 +1227,7 @@ const rowSwipes = computed(() => {
               type="button"
               data-test="bots-disabled-toggle"
               :aria-expanded="disabledBotsOpen.has(inst.id)"
-              class="bot-disabled-toggle mt-1 flex h-7 w-full items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+              class="bot-disabled-toggle mt-1 flex h-7 w-full items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
               @click="toggleDisabledBots(inst.id)"
             >
               <ChevronRight :size="11" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="disabledBotsOpen.has(inst.id) ? 'rotate-90' : ''" />
@@ -1250,7 +1268,7 @@ const rowSwipes = computed(() => {
                 class="bot-menu-trigger mr-1 grid h-10 w-10 shrink-0 place-items-center rounded-sm text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:h-7 lg:w-7 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100"
                 @click.stop="toggleBotMenu(inst.id, entry.bot.id, $event.currentTarget as HTMLElement)"
               >
-                <span class="grid h-7 w-7 place-items-center rounded-sm transition-colors hover:bg-surface-2 hover:text-fg">
+                <span class="grid h-7 w-7 place-items-center rounded-sm transition-colors hover:bg-fill-hover hover:text-fg">
                   <MoreHorizontal :size="16" />
                 </span>
               </button>
@@ -1277,7 +1295,7 @@ const rowSwipes = computed(() => {
                 <GroupAvatarStack :bots="groupMemberBots(inst.id, entry.group)" :instance-id="inst.id" :size="40" :name="entry.group.title"
                                   :total-count="entry.group.botIds.length" :disabled-count="groupDisabledCount(inst.id, entry.group)"
                                   decorative
-                                  :style="{ '--avatar-ring': groupsStore.selectedGroupId === entry.group.id && groupsStore.instanceId === inst.id ? 'rgb(var(--c-raised))' : 'rgb(var(--c-surface))' }" />
+                                  :style="{ '--avatar-ring': groupsStore.selectedGroupId === entry.group.id && groupsStore.instanceId === inst.id ? 'rgb(var(--c-raised))' : 'var(--avatar-ring-default, rgb(var(--c-bg)))' }" />
                 <div class="flex min-w-0 flex-1 flex-col">
                   <span class="flex min-w-0 items-center gap-1">
                     <span data-test="group-name" class="min-w-0 truncate text-ui font-medium"
@@ -1303,7 +1321,7 @@ const rowSwipes = computed(() => {
                 class="mr-1 grid h-10 w-10 shrink-0 place-items-center rounded-sm text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:h-7 lg:w-7 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100"
                 @click.stop="toggleGroupMenu(inst.id, entry.group.id, $event.currentTarget as HTMLElement)"
               >
-                <span class="grid h-7 w-7 place-items-center rounded-sm transition-colors hover:bg-surface-2 hover:text-fg">
+                <span class="grid h-7 w-7 place-items-center rounded-sm transition-colors hover:bg-fill-hover hover:text-fg">
                   <MoreHorizontal :size="16" />
                 </span>
               </button>
@@ -1320,12 +1338,13 @@ const rowSwipes = computed(() => {
             </div>
           </template>
 
-          <!-- Mixed footer: New Bot + New Group side by side, then manage. -->
-          <div class="flex items-center gap-0.5 pb-px pl-2 pt-1">
+          <!-- Mixed footer: New Bot + New Group, then manage. Same quiet-row language
+               as the sessions footer — no accent fill, no borders. -->
+          <div class="flex items-center gap-0.5 px-0.5 pb-px pt-1">
             <button
               type="button"
               data-test="new-bot-button"
-              class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent-text hover:bg-accent-soft transition-colors"
+              class="flex h-7 items-center gap-1 rounded-sm px-2 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
               @click="botDialogFor = { instanceId: inst.id, instanceName: inst.name }"
             >
               <Plus :size="12" />
@@ -1334,7 +1353,7 @@ const rowSwipes = computed(() => {
             <button
               type="button"
               data-test="new-group-button"
-              class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent-text transition-colors hover:bg-accent-soft"
+              class="flex h-7 items-center gap-1 rounded-sm px-2 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
               @click="groupDialogFor = { instanceId: inst.id, instanceName: inst.name }"
             >
               <Plus :size="12" />
@@ -1344,7 +1363,7 @@ const rowSwipes = computed(() => {
               data-test="manage-instance-from-bots"
               :title="$t('instance.manage')"
               :aria-label="$t('instance.manage')"
-              class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+              class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
               @click="manageFor = { id: inst.id, name: inst.name }"
             >
               <Settings2 :size="13" />
@@ -1362,7 +1381,14 @@ const rowSwipes = computed(() => {
                 class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs leading-4 font-medium text-accent-text hover:bg-accent-soft disabled:text-fg-muted disabled:hover:bg-transparent"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
           <ChevronRight v-if="!inst.sessionsLoading" :size="11" />
-          <span v-if="inst.sessionsLoading" data-test="sessions-loading">{{ $t("instance.loading") }}</span>
+          <span v-if="inst.sessionsLoading" data-test="sessions-loading" role="status" :aria-label="$t('instance.loading')"
+                  class="flex w-full flex-col gap-1.5 py-0.5">
+            <span v-for="(w, i) in [76, 54, 66]" :key="i" class="flex items-center gap-1.5"
+                  :style="{ '--sk-delay': `${i * 110}ms` }">
+              <span class="sk-bar h-1.5 w-1.5 shrink-0 rounded-full bg-fg/10" />
+              <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.08]" :style="{ width: `${w}%` }" />
+            </span>
+          </span>
           <template v-else>{{ $t("instance.loadSessions") }}</template>
         </button>
         <div v-for="grp in sectionsFor(inst)" :key="grp.key ?? '~flat'"
@@ -1383,7 +1409,7 @@ const rowSwipes = computed(() => {
                     class="grid h-10 w-10 lg:h-5 lg:w-5 shrink-0 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
                     @click.stop="openGroupDialog(inst, grp.key)"><Plus :size="12" /></button>
           </div>
-          <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : ''">
+          <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : 'lg:ml-1.5 lg:border-l lg:border-hairline lg:pl-1'">
             <div
               v-for="s in sectionRows(grp)"
               :key="s.alias"
@@ -1419,13 +1445,13 @@ const rowSwipes = computed(() => {
                        inside that session's pane, so a dot here is the only thing an
                        operator looking elsewhere gets before the window closes. -->
                   <span v-else-if="!s.archived && directBotsStore.sessionQuestionPendingFor(inst.id, s.alias)" data-test="attention-dot" data-attention="question"
-                        class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-warn"
+                        class="pulse-dot h-1.5 w-1.5 shrink-0 rounded-full bg-warn ring-2 ring-warn/25"
                         :title="t('bot.interaction.waiting')" :aria-label="t('bot.interaction.waiting')" />
                   <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
-                        class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-run-bright" />
+                        class="pulse-dot h-1.5 w-1.5 shrink-0 rounded-full bg-run-bright ring-2 ring-run/25" />
                   <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
-                        class="h-2 w-2 shrink-0 rounded-full bg-info" />
-                  <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
+                        class="h-1.5 w-1.5 shrink-0 rounded-full bg-info ring-2 ring-info/20" />
+                  <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-1.5 w-1.5 shrink-0 rounded-full bg-run ring-2 ring-run/20" />
                   <!-- Agent brand glyph (driver icon) BEFORE the name, in place of a text badge —
                        saves horizontal space; the agent name stays available on hover. Redundant
                        inside an agent-mode group (the group header already carries it) → dropped.
@@ -1454,7 +1480,7 @@ const rowSwipes = computed(() => {
                   ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
                   <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
                          v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
-                         class="min-w-0 flex-1 rounded-sm border border-accent bg-surface-2 px-1 py-px text-ui text-fg outline-none"
+                         class="min-w-0 flex-1 rounded-sm border border-accent ui-well px-1 py-px text-ui text-fg outline-none"
                          @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
                          @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
                          v-focus />
@@ -1488,7 +1514,7 @@ const rowSwipes = computed(() => {
                 <div v-if="inst.online" data-test="session-actions" class="relative mr-1 shrink-0">
                   <button data-test="session-menu" :aria-label="$t('common.more')"
                           :aria-haspopup="true" :aria-expanded="menuDd.open && menuFor === `${inst.id}:${s.alias}`"
-                          class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+                          class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-fill-hover hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
                           @click.stop="openSwipeFor = null; toggleMenuFor(`${inst.id}:${s.alias}`, $event.currentTarget as HTMLElement)"><MoreHorizontal :size="13" /></button>
                 </div>
               </div>
@@ -1516,10 +1542,16 @@ const rowSwipes = computed(() => {
             <!-- Grouped modes page sleeping rows per group (5 at a time) while the
                  instance-level sleeping filter is on: one load-more at the group bottom. -->
             <template v-if="grp.key !== null && inst.online && archivedIsExpanded(inst.id)">
-              <div v-if="grp.archivedState?.loading" data-test="group-archived-loading"
-                   class="py-0.5 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
+              <div v-if="grp.archivedState?.loading" data-test="group-archived-loading" role="status"
+                 :aria-label="$t('instance.loading')" class="space-y-1 py-0.5 pl-2.5">
+              <span v-for="(w, i) in [58, 42]" :key="i" class="flex items-center gap-1.5"
+                    :style="{ '--sk-delay': `${i * 110}ms` }">
+                <span class="sk-bar h-1.5 w-1.5 shrink-0 rounded-full bg-fg/10" />
+                <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.07]" :style="{ width: `${w}%` }" />
+              </span>
+            </div>
               <button v-else-if="grp.archivedState?.hasMore" data-test="group-load-more"
-                      class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent-text transition-colors hover:bg-surface-2"
+                      class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent-text transition-colors hover:bg-fill-hover"
                       @click.stop="loadMoreGroupArchived(inst, grp.key)">
                 {{ $t("instance.loadMoreSessions") }}
               </button>
@@ -1545,21 +1577,22 @@ const rowSwipes = computed(() => {
               <!-- Instance-level ACTIVE-list load-more, deliberately NOT mode-gated: grouped modes
                    still page active sessions 20 at a time, and this is their only "next page" entry. -->
               <button v-if="inst.sessionsHasMore && !inst.sessionsLoading" data-test="sessions-load-more"
-                class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent-text transition-colors hover:bg-surface-2"
+                class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent-text transition-colors hover:bg-fill-hover"
                 @click.stop="store.loadMoreSessions(inst.id).catch(() => {})">
           {{ $t("instance.loadMoreSessions") }}
         </button>
         <div v-if="inst.sessionsLoaded && !activeSessions(inst).length && !archivedIsExpanded(inst.id)" data-test="no-sessions"
              class="px-2.5 py-1 text-xs leading-4 text-fg-muted">{{ $t("instance.noSessions") }}</div>
 
-        <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria.
-             The sleeping-sessions toggle lives in the instance header's filter menu. -->
-        <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">
+        <!-- Per-instance footer. Both entries are quiet action rows: the sidebar's
+             verbs stay muted until hovered, so the only card in the column is the
+             selected row itself. -->
+        <div class="flex items-center gap-0.5 px-0.5 pb-0.5 pt-1">
           <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
-                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft"
-                  @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>
+                  class="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-sm px-2 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
+                  @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="12" class="shrink-0" /><span class="truncate">{{ $t("instance.newSession") }}</span></button>
           <button data-test="manage-instance" :title="$t('instance.manage')" :aria-label="$t('instance.manage')"
-                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+                  class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
                   @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="13" /></button>
         </div>
         </template>

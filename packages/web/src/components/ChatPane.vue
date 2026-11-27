@@ -187,7 +187,7 @@ onUnmounted(() => clearInterval(timer));
   <div class="flex h-full flex-1 flex-col">
     <!-- header (desktop only: <lg the single mobile top bar in DashboardView /
          DirectBotPane carries the title + subtitle instead of this chip row) -->
-    <div data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+    <div data-conversation-header class="hidden border-b border-hairline lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-transparent px-3 lg:px-5 py-1.5 lg:py-0">
       <h1 :title="currentSession?.displayName || chat.sessionAlias || undefined"
           class="hidden min-w-0 truncate lg:block text-sm font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
       <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
@@ -197,17 +197,17 @@ onUnmounted(() => clearInterval(timer));
         <!-- Session name as the leading chip. Mobile only: on lg+ the <h1> above already
              shows it at the front of this row, so showing it here too would duplicate. -->
         <span data-test="ctx-chip-session"
-              class="flex shrink-0 items-center whitespace-nowrap rounded-sm bg-surface-2 px-2 py-0.5 text-xs font-semibold text-fg lg:hidden">{{ currentSession?.displayName || chat.sessionAlias }}</span>
+              class="flex shrink-0 items-center whitespace-nowrap rounded-md border border-hairline bg-bg/45 px-2 py-0.5 text-xs font-semibold text-fg lg:hidden">{{ currentSession?.displayName || chat.sessionAlias }}</span>
         <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
-                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted hover:bg-fg/5"
+                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-hairline bg-bg/45 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted hover:bg-fill-hover"
                 :title='$t("chat.browseFiles")'
-                @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-warn" /><span>{{ currentSession.workspace }}</span></button>
+                @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-accent/80" /><span>{{ currentSession.workspace }}</span></button>
         <span v-if="instance?.name" data-test="ctx-chip-instance"
-              class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><span class="font-mono text-accent-text">@</span><span>{{ instance.name }}</span></span>
+              class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-hairline bg-bg/45 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><span class="font-mono text-accent-text">@</span><span>{{ instance.name }}</span></span>
         <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
-              class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
+              class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-hairline bg-bg/45 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
         <button v-if="files.gitSummary" data-test="git-summary"
-                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted hover:bg-fg/5"
+                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-hairline bg-bg/45 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted hover:bg-fill-hover"
                 :title="files.gitSummary.branch || $t('chat.viewChanges')"
                 @click="files.tab = 'changes'; emit('show-files')">
           <GitBranch :size="11" class="shrink-0" :class="files.gitSummary.changedCount > 0 ? 'text-warn' : 'text-fg-muted'" />
@@ -239,7 +239,7 @@ onUnmounted(() => clearInterval(timer));
         <AlertTriangle :size="22" class="text-danger" aria-hidden="true" />
         <p class="text-sm font-medium text-danger-text">{{ $t("session.startFailed") }}</p>
         <p class="max-w-sm break-words text-xs text-fg-muted">{{ currentSession.createError }}</p>
-        <button data-test="booting-dismiss" class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg hover:bg-fg/5"
+        <button data-test="booting-dismiss" class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg hover:bg-fill-hover"
                 @click="dismissBooting">{{ $t("common.dismiss") }}</button>
       </template>
       <template v-else>
@@ -247,7 +247,7 @@ onUnmounted(() => clearInterval(timer));
         <p class="text-sm font-medium text-fg">{{ $t("session.starting", { agent: currentSession?.agent }) }}
           <span class="ml-1 font-mono tabular-nums text-fg-muted">{{ bootElapsed }}s</span></p>
         <p class="max-w-sm text-xs text-fg-muted">{{ $t("session.startingHint") }}</p>
-        <button data-test="booting-cancel" class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-fg/5"
+        <button data-test="booting-cancel" class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-fill-hover"
                 @click="dismissBooting">{{ $t("common.cancel") }}</button>
       </template>
     </div>
@@ -268,7 +268,7 @@ onUnmounted(() => clearInterval(timer));
     <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
          inset is applied ONCE here (the bottommost element) and never stacks on top of the
          composer's own padding — env() is 0 off-PWA, so desktop stays at 1rem. -->
-    <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
+    <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:from-raised lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
          :style="keyboardInset ? { paddingBottom: '0.5rem' } : undefined"
          data-test="composer-area">
       <!-- Same centered 48rem column as the transcript rows (MessageList mx-auto

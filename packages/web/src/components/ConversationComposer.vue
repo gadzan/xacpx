@@ -207,7 +207,7 @@ function onInput(event: Event): void {
     <div
       ref="surface"
       data-test="composer-surface"
-      class="relative bg-glass-strong backdrop-blur-glass backdrop-saturate-glass shadow-glass-float transition-[background-color,border-radius] duration-200 ease-out focus-within:ring-2 focus-within:ring-accent"
+      class="relative bg-bg/55 shadow-card ring-1 ring-inset ring-hairline transition-[background-color,border-radius] duration-200 ease-out focus-within:bg-raised focus-within:ring-2 focus-within:ring-accent dark:bg-white/[0.045] dark:focus-within:bg-white/[0.07]"
       :class="[expanded ? 'rounded-2xl' : 'rounded-3xl', surfaceDisabled ? 'cursor-not-allowed opacity-60' : '']"
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >

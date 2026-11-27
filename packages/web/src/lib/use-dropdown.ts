@@ -293,3 +293,66 @@ export function focusSoon(el: HTMLElement | null | undefined): void {
   if (!el) return;
   void nextTick(() => el.focus());
 }
+
+/** Where a floating panel can actually be drawn. */
+export interface DropdownPlacement {
+  /** Open above the trigger (there is no room below it). */
+  upward: boolean;
+  /** Pixel cap for the panel, or null when the space is roomy (or unmeasurable). */
+  maxHeight: number | null;
+}
+
+// A panel may be as tall as the shared `max-h-80`, and never collapses below the
+// height of a few rows — a cap under that would be a worse answer than a flip.
+const PANEL_MAX_HEIGHT = 320;
+const PANEL_MIN_HEIGHT = 140;
+const VIEWPORT_GAP = 8;
+/** Below this much room, a bottom-anchored panel is worth flipping instead. */
+const FLIP_BELOW = 220;
+
+/**
+ * Fit a popover between the trigger and the edges of the box that will clip it.
+ *
+ * A dropdown rendered inside a scrollable dialog form used to open downward no
+ * matter what, so a field near the footer pushed its list under the footer and
+ * the form's `overflow-y-auto` cut it in half. This measures the trigger against
+ * the nearest clipping ancestors (crossed with the viewport) and reports whether
+ * the panel should flip upward plus the height it may occupy.
+ *
+ * jsdom reports zeroed rects, so this returns the neutral answer there — callers
+ * keep their CSS defaults and the unit tests see exactly the markup they did
+ * before.
+ */
+export function measureDropdownPlacement(
+  trigger: HTMLElement | null | undefined,
+  placement: "bottom" | "bottom-end" | "top" | "top-end" = "bottom",
+): DropdownPlacement {
+  const explicitTop = placement === "top" || placement === "top-end";
+  const neutral: DropdownPlacement = { upward: explicitTop, maxHeight: null };
+  if (!trigger || typeof window === "undefined") return neutral;
+  const rect = trigger.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return neutral;
+
+  // Every clipping ancestor narrows the window, so intersect them all (a form
+  // inside a dialog inside the viewport). `overflow-*` on one axis clips both.
+  let clipTop = VIEWPORT_GAP;
+  let clipBottom = window.innerHeight - VIEWPORT_GAP;
+  for (let el = trigger.parentElement; el; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    const clips = [cs.overflowX, cs.overflowY].some((v) => v !== "visible");
+    if (!clips) continue;
+    const box = el.getBoundingClientRect();
+    if (box.height === 0) continue;
+    clipTop = Math.max(clipTop, box.top);
+    clipBottom = Math.min(clipBottom, box.bottom);
+  }
+
+  const spaceBelow = clipBottom - rect.bottom - VIEWPORT_GAP;
+  const spaceAbove = rect.top - clipTop - VIEWPORT_GAP;
+  // An explicit top placement is the caller's call; otherwise flip only when
+  // below is both short and worse than above.
+  const upward = explicitTop || (spaceBelow < FLIP_BELOW && spaceAbove > spaceBelow);
+  const space = Math.floor(upward ? spaceAbove : spaceBelow);
+  const maxHeight = space < PANEL_MAX_HEIGHT ? Math.max(PANEL_MIN_HEIGHT, space) : null;
+  return { upward, maxHeight };
+}

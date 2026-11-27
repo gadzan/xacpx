@@ -78,10 +78,10 @@ const emit = defineEmits<{ pick: [index: number] }>();
       :title="row.title"
       :data-test="row.testId ?? itemTestId"
       v-bind="row.data"
-      class="flex w-full items-center gap-2 rounded-sm text-left text-sm"
+      class="flex w-full items-center gap-2 rounded-item text-left text-sm"
       :class="[
         mobile ? 'min-h-[46px] px-3' : 'h-8 px-2',
-        index === activeIndex ? 'bg-surface-2' : 'hover:bg-surface-2',
+        index === activeIndex ? 'bg-fill-strong' : 'hover:bg-fill-hover',
         row.disabled ? 'text-fg-muted' : '',
       ]"
       @pointerdown.prevent

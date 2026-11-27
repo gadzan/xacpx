@@ -196,10 +196,13 @@ test("the more sheet's Files entry opens the Files drawer on the files tab", asy
   // Drawer is open...
   expect(right.classes()).toContain("translate-x-0");
   expect(right.classes()).not.toContain("translate-x-full");
-  // ...and showing the Files tab as active.
+  // ...and showing the Files tab as active. The rail's tabs use the same 2px
+  // underline as the center strip, so the active state is the rule, not a pill.
   const filesTab = wrapper.find('[data-test="right-tab-files"]');
-  expect(filesTab.classes()).toContain("text-accent-text");
+  expect(filesTab.classes()).toContain("border-accent");
+  expect(filesTab.classes()).toContain("text-fg");
   expect(filesTab.classes()).toContain("font-semibold");
+  expect(wrapper.find('[data-test="right-tab-tasks"]').classes()).toContain("border-transparent");
   // The sheet that launched it is gone.
   expect(document.querySelector('[data-test="mobile-more-sheet"]')).toBeNull();
 });
@@ -245,7 +248,8 @@ test("tasks drawer opens via the more sheet's Tasks entry", async () => {
   await flushPromises();
   expect(right.classes()).toContain("translate-x-0");
   expect(right.classes()).not.toContain("translate-x-full");
-  expect(wrapper.find('[data-test="right-tab-tasks"]').classes()).toContain("text-accent-text");
+  expect(wrapper.find('[data-test="right-tab-tasks"]').classes()).toContain("border-accent");
+  expect(wrapper.find('[data-test="right-tab-files"]').classes()).toContain("border-transparent");
 });
 
 test("backdrop click closes the open files/tasks drawer", async () => {

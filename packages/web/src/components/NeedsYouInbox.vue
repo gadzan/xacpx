@@ -227,7 +227,7 @@ function onDesktopPointerdown(e: PointerEvent): void {
         <p class="min-w-0 break-words text-sm text-fg">{{ questionFor(entry) }}</p>
         <div class="flex items-center gap-2 pt-1">
           <button type="button" data-test="needs-you-select"
-                  class="min-h-12 min-w-0 flex-1 truncate rounded-lg px-3 text-left text-sm text-accent-text transition-colors hover:bg-surface-2 lg:min-h-0 lg:py-1"
+                  class="min-h-12 min-w-0 flex-1 truncate rounded-lg px-3 text-left text-sm text-accent-text transition-colors hover:bg-fill-hover lg:min-h-0 lg:py-1"
                   @click="selectedId = entry.request.requestId">
             {{ destinationLabel(entry) }}
           </button>
@@ -279,7 +279,7 @@ function onDesktopPointerdown(e: PointerEvent): void {
           <p class="min-w-0 break-words text-sm text-fg">{{ questionFor(entry) }}</p>
           <div class="flex items-center gap-2 pt-1">
             <button type="button" data-test="needs-you-select"
-                    class="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-left text-sm text-accent-text transition-colors hover:bg-surface-2"
+                    class="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-left text-sm text-accent-text transition-colors hover:bg-fill-hover"
                     @click="selectedId = entry.request.requestId">
               {{ destinationLabel(entry) }}
             </button>

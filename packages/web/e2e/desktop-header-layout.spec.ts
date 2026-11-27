@@ -15,13 +15,17 @@ test.describe("desktop header layout", () => {
     await expect(page.getByTestId("chat-body")).toBeVisible({ timeout: 30_000 });
   }
 
-  test("stacks exactly two rows above the transcript and keeps the brand in the global bar", async ({ page }) => {
+  test("stacks exactly two rows above the transcript and keeps one brand in the sidebar head", async ({ page }) => {
     await openSession(page);
 
     const bar = page.getByTestId("global-bar");
-    await expect(bar.getByTestId("global-brand")).toBeVisible();
     await expect(bar.getByTestId("tab-chat")).toBeVisible();
     await expect(bar.getByTestId("global-search")).toBeVisible();
+    // The wordmark moved into the sidebar head; the bar keeps the tab strip and the
+    // search field. Exactly one copy exists in the document.
+    await expect(page.getByTestId("global-brand")).toHaveCount(1);
+    await expect(page.locator('[data-drawer="left"] [data-test="global-brand"]')).toBeVisible();
+    await expect(bar.getByTestId("global-brand")).toHaveCount(0);
     await expect(page.locator('[data-test="sidebar-brand"]')).toHaveCount(0);
 
     const rows = await page.evaluate(() => {

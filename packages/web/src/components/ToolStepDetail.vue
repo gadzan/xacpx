@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
-import { AlertTriangle, Loader2 } from "lucide-vue-next";
+import { AlertTriangle } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
 import DetailHeadline from "./DetailHeadline.vue";
 import { stripTruncationMarks } from "../lib/tool-summary";
@@ -41,9 +41,12 @@ const showErrorBanner = computed(() => {
 <template>
   <div data-test="tool-step-body" class="space-y-1">
     <DetailHeadline :text="step.title" />
-    <div v-if="hydrating" data-test="tool-step-hydrating" class="flex items-center gap-1.5 py-1 text-fg-muted">
-      <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />
-      <span>{{ $t("tools.loadingDetails") }}</span>
+    <!-- The detail body is a code box, so the placeholder is one too. -->
+    <div v-if="hydrating" data-test="tool-step-hydrating" role="status" :aria-label="$t('tools.loadingDetails')"
+         class="space-y-1.5 rounded-lg border border-hairline bg-bg/55 p-2.5">
+      <span class="sk-bar block h-2.5 w-2/3 rounded-sm bg-fg/[0.08]" :style="{ '--sk-delay': '0ms' }" />
+      <span class="sk-bar block h-2.5 w-1/2 rounded-sm bg-fg/[0.06]" :style="{ '--sk-delay': '110ms' }" />
+      <span class="sk-bar block h-2.5 w-3/5 rounded-sm bg-fg/[0.05]" :style="{ '--sk-delay': '220ms' }" />
     </div>
     <template v-else>
       <div v-if="showErrorBanner" data-test="tool-step-error"

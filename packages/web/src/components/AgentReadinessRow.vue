@@ -134,7 +134,7 @@ watch(
 </script>
 
 <template>
-  <div :data-test="`arr-row-${agentName}`" class="mt-1 space-y-1 rounded-sm bg-surface-2/60 px-2 py-1.5 text-xs">
+  <div :data-test="`arr-row-${agentName}`" class="mt-1 space-y-1 rounded-sm ui-well px-2 py-1.5 text-xs">
     <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
       <span v-if="installedHint" data-test="arr-installed" class="text-fg-muted">{{ installedHint }}</span>
       <span data-test="arr-status" class="font-medium" :class="statusClass">{{ $t(statusKey) }}</span>
@@ -149,7 +149,7 @@ watch(
       <button type="button" data-test="arr-check" :disabled="!hasWorkspace || checking"
               :title="$t('agents.readinessCheckHint', { name: agentName })"
               :aria-label="$t('agents.readinessCheckHint', { name: agentName })"
-              class="inline-flex items-center gap-1 rounded-sm bg-surface-2 px-2 py-0.5 text-xs text-fg transition-colors hover:bg-accent-soft disabled:opacity-50"
+              class="inline-flex items-center gap-1 rounded-sm ui-well px-2 py-0.5 text-xs text-fg transition-colors hover:bg-accent-soft disabled:opacity-50"
               @click="check">
         <RefreshCw :size="12" :class="checking ? 'animate-spin motion-reduce:animate-none' : ''" aria-hidden="true" />
         {{ $t("agents.readinessCheck") }}
@@ -157,7 +157,7 @@ watch(
     </div>
     <ul v-if="modelItems.length" data-test="arr-model-list" class="flex flex-wrap gap-1">
       <li v-for="m in modelItems" :key="m.id" data-test="arr-model-item"
-          class="rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[11px] text-fg">{{ m.label }}</li>
+          class="rounded-sm ui-well px-1.5 py-0.5 font-mono text-[11px] text-fg">{{ m.label }}</li>
     </ul>
     <p v-if="!hasWorkspace" data-test="arr-no-workspace" class="text-fg-muted">{{ $t("agents.readinessNoWorkspace") }}</p>
   </div>

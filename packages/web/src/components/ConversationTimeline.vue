@@ -172,7 +172,7 @@ defineExpose({ scrollToBottom });
     <div
       v-if="forkedFrom"
       data-test="topic-fork-banner"
-      class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline bg-surface-2 px-4 py-2 text-xs text-fg-muted lg:px-5"
+      class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline bg-accent-soft px-4 py-1.5 text-xs text-fg-muted lg:px-5"
       :class="bannerInsetClass"
     >
       <GitFork :size="13" class="shrink-0 text-accent" />
@@ -209,11 +209,11 @@ defineExpose({ scrollToBottom });
           type="button"
           data-test="timeline-load-older"
           :disabled="loadingOlder"
-          class="flex items-center gap-1.5 rounded-full bg-surface px-3 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
+          class="flex items-center gap-1.5 rounded-pill border border-hairline bg-bg/60 px-3 py-1 text-xs font-medium text-fg-muted shadow-press transition-colors hover:bg-fill-hover hover:text-fg disabled:opacity-50 dark:bg-white/[0.04]"
           @click="handleLoadOlder"
         >
           <Loader2 v-if="loadingOlder" :size="12" class="animate-spin motion-reduce:animate-none" />
-          <span>{{ loadingOlder ? $t("common.loading") : $t("chat.loadOlder") }}</span>
+          <span>{{ $t("chat.loadOlder") }}</span>
         </button>
       </div>
 

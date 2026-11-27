@@ -527,7 +527,7 @@ function focusInput(): void {
 defineExpose({ fillDraft, focusInput, hasDraft });
 </script>
 <template>
-  <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+  <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:from-raised lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <!-- Disabled bot warning -->
     <div
       v-if="isBotDisabled"
@@ -562,7 +562,7 @@ defineExpose({ fillDraft, focusInput, hasDraft });
       </div>
       <button
         type="button"
-        class="flex items-center gap-1 rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
+        class="flex items-center gap-1 rounded-sm bg-raised text-fg hover:bg-fill-hover px-2 py-0.5 font-medium transition-colors"
         @click="handleRetry"
       >
         <RotateCcw :size="12" />

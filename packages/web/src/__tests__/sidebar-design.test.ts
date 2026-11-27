@@ -1,7 +1,7 @@
 // Sidebar visual treatment: the raised selected row, the segmented mode control,
 // and the sidebar brand / footer split with the global header.
 import { setActivePinia, createPinia } from "pinia";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
@@ -263,14 +263,27 @@ describe("sidebar brand and footer", () => {
     setActivePinia(createPinia());
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [] }), { status: 200 })));
   });
+  afterEach(() => { vi.unstubAllGlobals(); });
 
-  it("keeps the brand in the global bar and only the theme / settings entries in the sidebar", async () => {
+  /** A 1280px viewport: DashboardView reads `(min-width: 1024px)` for `isDesktop`. */
+  function stubDesktopViewport(): void {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("min-width"),
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+  }
+
+  it("keeps exactly one brand and only the theme / settings entries in the sidebar", async () => {
     const w = mount(DashboardView, { global: { stubs: { ChatPane: true, "router-link": true } } });
     await flushPromises();
 
-    const brand = w.find('[data-test="global-brand"]');
-    expect(brand.exists()).toBe(true);
-    expect(brand.find('[data-test="brand-x"]').exists()).toBe(true);
+    // Below lg there is no sidebar head, so the bar carries the one brand.
+    const brands = w.findAll('[data-test="global-brand"]');
+    expect(brands).toHaveLength(1);
+    expect(w.find('[data-test="global-bar"] [data-test="global-brand"]').exists()).toBe(true);
+    expect(brands[0]!.find('[data-test="brand-x"]').exists()).toBe(true);
     expect(w.find('[data-test="sidebar-brand"]').exists()).toBe(false);
 
     const footer = w.find('[data-test="sidebar-footer"]');
@@ -290,6 +303,26 @@ describe("sidebar brand and footer", () => {
 
     expect(w.find('[data-test="global-search"]').exists()).toBe(true);
     expect(w.find('[data-test="toggle-terminal"]').exists()).toBe(true);
+  });
+
+  it("moves the brand into the sidebar head on desktop and back into the bar when the sidebar collapses", async () => {
+    stubDesktopViewport();
+    const w = mount(DashboardView, { global: { stubs: { ChatPane: true, "router-link": true } } });
+    await flushPromises();
+
+    const sidebar = () => w.find('[data-test="column"][data-drawer="left"]');
+    // One brand in the whole document, and on desktop it lives in the sidebar.
+    expect(w.findAll('[data-test="global-brand"]')).toHaveLength(1);
+    expect(sidebar().find('[data-test="global-brand"]').exists()).toBe(true);
+    expect(w.find('[data-test="global-bar"] [data-test="global-brand"]').exists()).toBe(false);
+
+    // Collapsing the sidebar hands the brand back to the bar: the mark never
+    // disappears and never exists twice.
+    await w.find('[data-test="toggle-left"]').trigger("click");
+    await flushPromises();
+    expect(w.findAll('[data-test="global-brand"]')).toHaveLength(1);
+    expect(w.find('[data-test="global-bar"] [data-test="global-brand"]').exists()).toBe(true);
+    expect(sidebar().find('[data-test="global-brand"]').exists()).toBe(false);
   });
 
   it("keeps the global search trigger at 48px on mobile", async () => {

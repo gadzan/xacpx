@@ -22,7 +22,7 @@ const emit = defineEmits<{ jump: [] }>();
       type="button"
       :aria-label="$t('chat.jumpLatest')"
       :title="$t('chat.jumpLatest')"
-      class="absolute inset-x-0 bottom-3 z-10 mx-auto grid h-7 w-7 place-items-center rounded-sm bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-[transform,background-color,color,box-shadow] duration-150 ease-ui hover:bg-surface active:scale-95 motion-reduce:active:scale-100"
+      class="absolute inset-x-0 bottom-3 z-10 mx-auto grid h-7 w-7 place-items-center rounded-full border border-hairline bg-glass-strong text-fg shadow-glass backdrop-blur-md transition-[transform,background-color,color,box-shadow] duration-150 ease-ui hover:bg-glass active:scale-95 motion-reduce:active:scale-100"
       @click="emit('jump')"
     >
       <ArrowDown :size="13" :stroke-width="2.5" />
@@ -35,6 +35,11 @@ const emit = defineEmits<{ jump: [] }>();
    edge instead of ending at a hard band. */
 .jump-scrim {
   position: absolute;
+  /* The compositor tone follows the surface under the transcript: the pane paints
+     `bg-bg` on a phone and becomes transparent over the raised workbench card at
+     lg. Painting the page tone over that white card left a 72px grey band whose
+     bottom edge read as a seam right above the composer. */
+  --jump-tone: var(--c-bg);
   /* The composer wrapper (pt-1.5 + a top-transparent gradient) sits between the
      transcript bottom and the input card; without reaching over it the fade
      stops 6px short and content ghosts through right above the card. The
@@ -42,9 +47,18 @@ const emit = defineEmits<{ jump: [] }>();
   inset: auto 0 -0.375rem 0;
   height: 4.5rem;
   pointer-events: none;
-  background: linear-gradient(to top, rgb(var(--c-bg) / 1), rgb(var(--c-bg) / 0));
+  background: linear-gradient(
+    to top,
+    rgb(var(--jump-tone) / 1) 12%,
+    rgb(var(--jump-tone) / 0.82) 48%,
+    rgb(var(--jump-tone) / 0)
+  );
   -webkit-mask-image: linear-gradient(to top, #000 30%, transparent);
   mask-image: linear-gradient(to top, #000 30%, transparent);
   backdrop-filter: blur(3px);
+}
+
+@media (min-width: 1024px) {
+  .jump-scrim { --jump-tone: var(--c-raised); }
 }
 </style>

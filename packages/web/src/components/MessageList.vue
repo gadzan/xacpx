@@ -721,7 +721,7 @@ watch(
                 data-test="turn-peer-chip"
                 :data-direction="chip.direction"
                 :data-arrow="chip.direction === 'sent' ? 'right' : 'left'"
-                class="inline-flex max-w-full items-center gap-1 rounded-lg border border-hairline bg-surface/60 px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+                class="inline-flex max-w-full items-center gap-1 rounded-lg border border-hairline bg-bg/60 px-2 py-1 text-xs text-fg-muted shadow-press transition-colors hover:bg-fill-hover hover:text-fg dark:bg-white/[0.04]"
               >
                 <ArrowRight v-if="chip.direction === 'sent'" :size="12" class="shrink-0 text-accent" />
                 <ArrowLeft v-else :size="12" class="shrink-0 text-accent" />

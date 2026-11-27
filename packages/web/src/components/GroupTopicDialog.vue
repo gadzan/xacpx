@@ -82,7 +82,7 @@ async function handleCreate(): Promise<void> {
 
 <template>
   <DialogShell
-    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4 lg:w-full"
+    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-5 lg:w-full lg:max-w-md"
     labelledby="group-topic-title"
     @close="emit('close')"
   >
@@ -95,7 +95,7 @@ async function handleCreate(): Promise<void> {
           required
           maxlength="60"
           :placeholder="$t('bot.topic.titlePlaceholder')"
-          class="mb-3 w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none"
+          class="mb-3 w-full rounded-lg ui-well px-3 py-1.5 text-sm outline-none"
         />
         <template v-if="!perMember">
           <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("bot.fields.workspace") }}</label>
@@ -104,8 +104,9 @@ async function handleCreate(): Promise<void> {
             data-test="group-topic-workspace"
             :aria-label='$t("bot.fields.workspace")'
             :title='$t("bot.fields.workspace")'
-            :placeholder="workspacesLoad === 'loading' && !workspaces.length ? $t('common.loading') : $t('group.topic.workspacePlaceholder')"
+            :placeholder="$t('group.topic.workspacePlaceholder')"
             :groups="workspaceGroups"
+            :disabled="workspacesLoad === 'loading' && !workspaces.length"
           />
           <p v-if="workspacesLoad === 'failed'" data-test="group-topic-workspaces-failed" class="-mt-2 mb-3 flex items-center gap-2 text-xs text-danger-overlay">
             <span>{{ $t("group.topic.workspacesFailed") }}</span>
@@ -123,7 +124,7 @@ async function handleCreate(): Promise<void> {
           />
           <p class="mb-4 text-xs text-fg-muted">{{ $t(isolation === 'worktree-per-member' ? "group.worktree.boundary" : "group.topic.isolationHint") }}</p>
         </template>
-        <p v-else data-test="group-topic-per-member-hint" class="mb-4 rounded-lg bg-surface-2 px-3 py-2 text-xs leading-relaxed text-fg-muted">
+        <p v-else data-test="group-topic-per-member-hint" class="mb-4 rounded-lg ui-well px-3 py-2 text-xs leading-relaxed text-fg-muted">
           {{ $t("group.topic.perMemberHint") }}
         </p>
         <div class="flex gap-2 lg:items-center lg:justify-end">

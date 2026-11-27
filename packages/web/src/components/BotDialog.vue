@@ -475,13 +475,13 @@ function describeSubmitError(err: unknown): string {
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
   <DialogShell
-    :panel-class="`relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl ${view === 'appearance' ? 'max-w-3xl' : 'max-w-lg'}`"
+    :panel-class="`relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl ${view === 'appearance' ? 'max-w-3xl' : 'max-w-lg lg:max-w-2xl'}`"
     labelledby="bot-dialog-title"
     safe-area
     @close="emit('close')"
   >
       <!-- Header -->
-      <div class="flex shrink-0 items-center justify-between gap-2 px-5 py-3.5">
+      <div class="flex shrink-0 items-center justify-between gap-2 border-b border-hairline px-5 py-3.5">
         <div class="flex min-w-0 items-center gap-1.5">
           <button
             v-if="view === 'appearance'"
@@ -508,7 +508,7 @@ function describeSubmitError(err: unknown): string {
       </div>
 
       <!-- Form Content -->
-      <form class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-4 thin-scroll" @submit.prevent="submit">
+      <form class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3 space-y-3 thin-scroll" @submit.prevent="submit">
         <!-- Error Banner -->
         <div v-if="errorMessage" class="flex items-start gap-2.5 rounded-lg bg-danger/10 p-3 text-xs text-danger-overlay">
           <AlertCircle :size="15" class="mt-0.5 shrink-0" />
@@ -530,14 +530,16 @@ function describeSubmitError(err: unknown): string {
             <span>{{ $t("bot.prompt.retry") }}</span>
           </button>
         </div>
-        <div v-else-if="isEditing && props.bot && !detailHydrated && detailLoading"
-             class="p-3 text-xs text-fg-muted">
-          {{ $t("bot.validation.detailLoading") }}
+        <div v-else-if="isEditing && props.bot && !detailHydrated && detailLoading" role="status"
+           :aria-label="$t('bot.validation.detailLoading')" class="space-y-2 p-3">
+          <span class="sk-bar block h-2.5 w-24 rounded-sm bg-fg/[0.08]" />
+          <span class="sk-bar block h-2.5 w-full rounded-sm bg-fg/[0.05]" />
+          <span class="sk-bar block h-2.5 w-2/3 rounded-sm bg-fg/[0.05]" />
         </div>
 
         <section v-show="view === 'basic'" id="bot-panel-basic" class="space-y-4">
-        <div data-test="bot-group-identity" class="space-y-3">
-          <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.identity") }}</h3>
+        <div data-test="bot-group-identity" class="space-y-2.5 border-t border-hairline pt-3.5 first:border-t-0 first:pt-0 first:space-y-3">
+          <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("bot.groups.identity") }}</h3>
         <!-- Avatar: click to view enlarged; the corner badge opens the appearance
              editor. Narrow screens center the avatar above the fields; from sm up
              it sits beside them, the two fields stacked to its full height. -->
@@ -553,7 +555,7 @@ function describeSubmitError(err: unknown): string {
             </button>
             <button type="button" data-test="bot-avatar-edit"
                     :aria-label="$t('bot.avatar.editAppearance')"
-                    class="absolute bottom-0.5 right-0.5 grid h-6 w-6 place-items-center rounded-full bg-raised text-fg shadow-press transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-accent"
+                    class="absolute bottom-0.5 right-0.5 grid h-6 w-6 place-items-center rounded-full bg-raised text-fg shadow-press transition-colors hover:bg-fill-hover focus-visible:outline-2 focus-visible:outline-accent"
                     @click="view = 'appearance'">
               <Pencil :size="12" />
             </button>
@@ -574,7 +576,7 @@ function describeSubmitError(err: unknown): string {
                 :placeholder="$t('bot.fields.namePlaceholder')"
                 :aria-invalid="nameNeedsWorkspaceChars ? 'true' : undefined"
                 :aria-describedby="nameNeedsWorkspaceChars ? 'bot-name-error' : undefined"
-                class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
+                class="w-full rounded-lg ui-well px-3 py-1.5 text-sm outline-none transition-colors"
                 :class="nameNeedsWorkspaceChars ? 'ring-1 ring-danger focus-visible:ring-2 focus-visible:ring-danger' : ''"
               />
               <p v-if="nameNeedsWorkspaceChars" id="bot-name-error" data-test="bot-name-error" role="alert" class="mt-1 text-xs text-danger-overlay">
@@ -594,16 +596,16 @@ function describeSubmitError(err: unknown): string {
                 type="text"
                 maxlength="100"
                 :placeholder="$t('bot.fields.rolePlaceholder')"
-                class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
+                class="w-full rounded-lg ui-well px-3 py-1.5 text-sm outline-none transition-colors"
               />
             </div>
           </div>
         </div>
         </div>
 
-        <div data-test="bot-group-does" class="space-y-3">
-          <div class="space-y-1">
-            <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.does") }}</h3>
+        <div data-test="bot-group-does" class="space-y-2.5 border-t border-hairline pt-3.5 first:border-t-0 first:pt-0">
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("bot.groups.does") }}</h3>
             <p class="text-xs text-fg-muted">{{ $t("bot.groups.doesHint") }}</p>
           </div>
         <!-- Agent & Workspace row -->
@@ -648,43 +650,52 @@ function describeSubmitError(err: unknown): string {
             />
             <!-- A new Bot has no workspace to choose: the daemon allocates one,
                  named after the Bot, so two Bots can never share a tree. -->
-            <p v-else data-test="bot-dedicated-workspace-hint" class="rounded-lg bg-surface-2 px-3 py-1.5 text-sm text-fg-muted">
+            <p v-else data-test="bot-dedicated-workspace-hint" class="mt-1 text-xs leading-relaxed text-fg-muted">
               {{ $t("bot.fields.dedicatedWorkspaceHint") }}
             </p>
           </div>
         </div>
         </div>
 
-        <div data-test="bot-group-knows" class="space-y-3">
-          <div class="space-y-1">
-            <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.knows") }}</h3>
+        <div data-test="bot-group-knows" class="space-y-2.5 border-t border-hairline pt-3.5 first:border-t-0 first:pt-0">
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("bot.groups.knows") }}</h3>
             <p class="text-xs text-fg-muted">{{ $t("bot.groups.knowsHint") }}</p>
           </div>
         <!-- Instructions -->
         <div>
-          <label for="bot-instructions" class="block text-xs font-medium text-fg-muted mb-1.5">
-            {{ $t("bot.fields.instructions") }}
-          </label>
-          <textarea
-            id="bot-instructions"
-            v-model="instructions"
-            rows="4"
-            :disabled="!detailHydrated"
-            :placeholder="detailHydrated ? $t('bot.fields.instructionsPlaceholder') : $t('bot.fields.instructionsLoading')"
-            class="w-full rounded-lg bg-surface-2 px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
-            @input="instructionsDirty = true"
-          />
+          <label for="bot-instructions" class="sr-only">{{ $t("bot.fields.instructions") }}</label>
+          <div class="relative">
+            <textarea
+              id="bot-instructions"
+              v-model="instructions"
+              rows="3"
+              :disabled="!detailHydrated"
+              :placeholder="detailHydrated ? $t('bot.fields.instructionsPlaceholder') : $t('bot.fields.instructionsLoading')"
+              class="w-full rounded-lg ui-well px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
+              @input="instructionsDirty = true"
+            />
+            <!-- Hydrating reads as a skeleton over the field, not as a caption the user has
+                 to parse: the placeholder text stays in the DOM (the disabled field's own
+                 contract) but is covered until the real value arrives. -->
+            <div v-if="!detailHydrated && detailLoading" aria-hidden="true"
+                 class="pointer-events-none absolute inset-0 space-y-2 rounded-lg bg-raised/85 px-3 py-3 backdrop-blur-[2px] dark:bg-bg/70">
+              <span class="sk-bar block h-2.5 w-3/4 rounded-sm bg-fg/[0.08]" :style="{ '--sk-delay': '0ms' }" />
+              <span class="sk-bar block h-2.5 w-1/2 rounded-sm bg-fg/[0.06]" :style="{ '--sk-delay': '110ms' }" />
+              <span class="sk-bar block h-2.5 w-2/3 rounded-sm bg-fg/[0.05]" :style="{ '--sk-delay': '220ms' }" />
+            </div>
+          </div>
           <!-- A new Bot has no turns yet: the "applies to later turns" note
                only makes sense when editing, like ModelPicker's showAppliesLater. -->
-          <p v-if="isEditing" data-test="bot-instructions-hint" class="mt-1 text-xs text-fg-muted">
+          <p v-if="isEditing" data-test="bot-instructions-hint" class="mt-0.5 text-xs text-fg-muted">
             {{ $t("bot.fields.instructionsHint") }}
           </p>
         </div>
         </div>
 
-        <div data-test="bot-group-brain" class="space-y-3">
-          <div class="space-y-1">
-            <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.brain") }}</h3>
+        <div data-test="bot-group-brain" class="space-y-2.5 border-t border-hairline pt-3.5 first:border-t-0 first:pt-0">
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("bot.groups.brain") }}</h3>
             <p class="text-xs text-fg-muted">{{ $t("bot.groups.brainHint") }}</p>
           </div>
         <ModelPicker
@@ -703,9 +714,9 @@ function describeSubmitError(err: unknown): string {
           @fetch="loadCapabilities(true)"
         />
         </div>
-        <div data-test="bot-group-rules" class="space-y-3">
-          <div class="space-y-1">
-            <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("bot.groups.rules") }}</h3>
+        <div data-test="bot-group-rules" class="space-y-2.5 border-t border-hairline pt-3.5 first:border-t-0 first:pt-0">
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("bot.groups.rules") }}</h3>
             <p class="text-xs text-fg-muted">{{ $t("bot.groups.rulesHint") }}</p>
           </div>
         <div>
@@ -737,7 +748,7 @@ function describeSubmitError(err: unknown): string {
       </form>
 
       <!-- Footer -->
-      <div class="flex shrink-0 items-center justify-end gap-2.5 px-5 py-3">
+      <div class="flex shrink-0 items-center justify-end gap-2.5 border-t border-hairline bg-bg/30 px-5 py-3">
         <UiButton
           v-if="isEditing && props.bot && props.bot.retired !== true"
           variant="danger-ghost"

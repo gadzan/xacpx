@@ -179,7 +179,13 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
       <p v-if="recordingState === 'complete' && traceHasEarlier" class="break-words">
         {{ $t("group.detail.earlierWindow") }}
       </p>
-      <p v-if="traceLoading">{{ $t("group.detail.loading") }}</p>
+      <div v-if="traceLoading" role="status" :aria-label="$t('group.detail.loading')" class="space-y-1.5 py-0.5">
+          <div v-for="(w, i) in [70, 52, 62]" :key="i" class="flex items-center gap-2"
+               :style="{ '--sk-delay': `${i * 110}ms` }">
+            <span class="sk-bar h-1.5 w-1.5 shrink-0 rounded-full bg-fg/10" />
+            <span class="sk-bar h-3 rounded-sm bg-fg/[0.07]" :style="{ width: `${w}%` }" />
+          </div>
+        </div>
       <p v-if="traceError" role="alert" class="break-words text-danger-text">{{ traceError }}</p>
       <div class="flex flex-wrap gap-2">
         <button v-if="traceError" type="button" data-test="group-trace-retry"

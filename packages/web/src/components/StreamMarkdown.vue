@@ -264,12 +264,16 @@ onBeforeUnmount(() => {
 }
 /* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono. 13px is the `ui`
    token, the same size the code block uses, so prose and code line up.
-   Code ligatures are off for every mono surface (see style.css). */
+  code ligatures are off for every mono surface (see style.css). */
 .stream-md code {
-  background: rgb(var(--c-surface));
+  /* A 4.5% fg wash (≈#F7F7F8 on white) plus a ghost hairline: enough to read as
+     code, never a grey patch on the white workbench. A solid --c-surface here was
+     the single loudest piece of "grey vs white" contrast in the transcript. */
+  background: rgb(var(--c-fg) / 0.045);
   color: rgb(var(--c-fg));
-  border-radius: 6px;
-  padding: 0.1em 0.3em;
+  border: 1px solid rgb(var(--c-border) / 0.07);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   /* The bubble's width is the budget: an unbroken token wraps inside the pill
@@ -278,10 +282,10 @@ onBeforeUnmount(() => {
      sits on. */
   overflow-wrap: anywhere;
 }
-/* Code block: concave inset — fill-track trough with a hairline edge and the
+/* Code block: concave inset — page-tone trough with a hairline edge and the
    card radius, no shadow. Font stays 13px mono (type scale owns sizes). */
 .stream-md pre {
-  background: var(--fill-track);
+  background: rgb(var(--c-bg) / 0.65);
   color: rgb(var(--c-fg));
   border: 1px solid var(--hairline);
   border-radius: var(--r-card);
@@ -297,6 +301,11 @@ onBeforeUnmount(() => {
 .stream-md pre::-webkit-scrollbar { height: 8px; }
 .stream-md pre::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
 .stream-md pre::-webkit-scrollbar-track { background: transparent; }
+/* Dark: the page tone is nearly black, so the trough has to come UP from the
+   card instead of down into it. */
+.dark .stream-md pre,
+.dark .stream-md .mmd-source,
+.dark .stream-md .mmd-viewport { background: rgb(255 255 255 / 0.035); }
 .stream-md pre code {
   background: transparent;
   padding: 0;
@@ -388,7 +397,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   border: 1px solid var(--hairline);
   border-radius: var(--r-card);
-  background: var(--fill-track);
+  background: rgb(var(--c-bg) / 0.65);
   box-shadow: none;
   touch-action: pan-y; /* one finger scrolls the page; the enhancer handles pinch + mouse drag */
   cursor: grab;
@@ -407,7 +416,7 @@ onBeforeUnmount(() => {
    two is visible, and the view-only controls (zoom/reset/fullscreen) hide with the diagram. */
 .stream-md .mmd-source {
   display: none;
-  background: var(--fill-track);
+  background: rgb(var(--c-bg) / 0.65);
   color: rgb(var(--c-fg));
   border: 1px solid var(--hairline);
   border-radius: var(--r-card);

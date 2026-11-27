@@ -210,7 +210,7 @@ onBeforeUnmount(() => {
            44 never gets a background and never covers the neighbouring row. -->
       <section data-test="theme-setting" class="flex min-h-11 flex-wrap items-center justify-between gap-3 px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.appearance") }}</h2>
-        <div class="inline-flex h-8 items-center gap-0.5 rounded-btn bg-bg p-0.5">
+        <div class="inline-flex h-8 items-center gap-0.5 rounded-btn border border-hairline bg-fill-track p-0.5">
           <button
             data-test="theme-dark"
             class="group flex h-7 items-center justify-center rounded-sm text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:min-w-11"
@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
 
       <section data-test="language-setting" class="flex min-h-11 flex-wrap items-center justify-between gap-3 border-t border-hairline px-4 py-2">
         <h2 class="text-sm font-medium text-fg">{{ $t("settings.language") }}</h2>
-        <div class="inline-flex h-8 items-center gap-0.5 rounded-btn bg-bg p-0.5">
+        <div class="inline-flex h-8 items-center gap-0.5 rounded-btn border border-hairline bg-fill-track p-0.5">
           <button
             v-for="loc in SUPPORTED_LOCALES"
             :key="loc"

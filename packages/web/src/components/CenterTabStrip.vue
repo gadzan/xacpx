@@ -99,14 +99,16 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
   <div
     ref="scroller"
     :style="maskStyle"
-    class="no-scrollbar flex min-w-0 flex-1 select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none]"
+    class="no-scrollbar flex min-w-0 flex-1 select-none items-stretch gap-1 self-stretch overflow-x-auto px-1 [-webkit-touch-callout:none]"
   >
-    <!-- Pinned chat tab: never closable, never draggable, always first. -->
+    <!-- Pinned chat tab: never closable, never draggable, always first. Tessera-style
+         underline: the segment itself paints no fill, a 2px rule sits on the strip's
+         bottom edge and moves between tabs with the selection. -->
     <button
       type="button"
       data-test="tab-chat"
-      class="flex shrink-0 items-center gap-1.5 rounded-sm px-2.5 py-1.5 text-xs transition-colors cursor-pointer"
-      :class="store.activeFor(props.sessionKey) === 'chat' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+      class="flex shrink-0 items-center gap-1.5 border-b-2 px-2 text-xs transition-colors cursor-pointer"
+      :class="store.activeFor(props.sessionKey) === 'chat' ? 'border-accent text-fg font-semibold' : 'border-transparent text-fg-muted font-medium hover:text-fg'"
       @click="store.setActive(props.sessionKey, 'chat')"
     >
       <MessageSquare :size="13" />{{ $t("center.chat") }}
@@ -124,10 +126,10 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
       data-test="tab"
       :data-tab-id="tab.id"
       style="touch-action: pan-x"
-      class="flex shrink-0 items-center gap-1 rounded-sm px-2.5 py-1.5 text-xs transition cursor-pointer"
+      class="flex shrink-0 items-center gap-1 border-b-2 px-2 text-xs transition cursor-pointer"
       :class="[
-        tab.id === store.activeFor(props.sessionKey) ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
-        overId === tab.id ? 'ring-1 ring-inset ring-accent' : '',
+        tab.id === store.activeFor(props.sessionKey) ? 'border-accent text-fg font-semibold' : 'border-transparent text-fg-muted font-medium hover:text-fg',
+        overId === tab.id ? 'bg-fill-hover' : '',
         tab.id === draggingId ? 'scale-95 opacity-50' : '',
       ]"
       @click="store.setActive(props.sessionKey, tab.id)"
@@ -141,7 +143,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
         type="button"
         data-test="tab-close"
         :aria-label="$t('center.closeTab')"
-        class="ml-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-sm text-fg-muted opacity-60 hover:bg-surface hover:text-fg hover:opacity-100"
+        class="ml-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-sm text-fg-muted opacity-60 hover:bg-fill-hover hover:text-fg hover:opacity-100"
         @click.stop="requestClose(tab.id)"
       >
         <X :size="11" />
@@ -150,13 +152,12 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
 
     <!-- Trailing drop zone: not a tab (no label/close), just extends the drop target past
          the last tab so a drag released in the empty strip area moves it to the end.
-         `flex-1` fills remaining strip width; `min-w-3` keeps it hit-testable even when
-         tabs already fill/overflow the strip. -->
+         `flex-1` fills remaining strip width; `min-w-3` keeps it hit-testable. -->
     <div
       data-test="tab-drop-end"
       :data-tab-id="TAB_DROP_END"
       class="min-w-3 flex-1 self-stretch rounded-sm"
-      :class="overId === TAB_DROP_END ? 'ring-1 ring-inset ring-accent' : ''"
+      :class="overId === TAB_DROP_END ? 'bg-fill-hover' : ''"
     />
   </div>
 </template>

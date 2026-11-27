@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { X, Folder, Home, ArrowUp, Loader2 } from "lucide-vue-next";
+import { X, Folder, Home, ArrowUp } from "lucide-vue-next";
 import { isErrorPayload, type FsBrowseResult } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import DialogShell from "./DialogShell.vue";
@@ -121,13 +121,13 @@ function onListKeydown(e: KeyboardEvent): void {
 <template>
   <Teleport to="body">
   <DialogShell
-    panel-class="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl focus:outline-none"
+    panel-class="flex max-h-[85vh] w-full max-w-md lg:max-w-xl flex-col rounded-2xl focus:outline-none"
     labelledby="dp-title"
     test-id="dp-dialog"
     level="nested"
     @close="emit('close')"
   >
-        <header class="flex items-center justify-between px-5 py-3">
+        <header class="flex items-center justify-between border-b border-hairline px-5 py-3">
           <h2 id="dp-title" class="text-base font-semibold text-fg">{{ $t("dirPicker.title") }}</h2>
           <button type="button" class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label='$t("session.close")'
                   @click="navigateBack"><X :size="16" /></button>
@@ -135,7 +135,7 @@ function onListKeydown(e: KeyboardEvent): void {
 
         <div class="flex items-center gap-1.5 px-5 pt-3">
           <input v-model="pathInput" data-test="dp-path" :placeholder='$t("dirPicker.pathPlaceholder")'
-                 class="min-w-0 flex-1 rounded-lg bg-surface-2 px-3 py-1.5 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                 class="min-w-0 flex-1 rounded-lg ui-well px-3 py-1.5 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                  @keydown.enter.prevent="submitPath" />
           <button type="button" data-test="dp-home" :title='$t("dirPicker.home")' :aria-label='$t("dirPicker.home")'
                   class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-fg/5 hover:text-fg"
@@ -153,9 +153,14 @@ function onListKeydown(e: KeyboardEvent): void {
 
         <div class="mt-2 min-h-[12rem] flex-1 overflow-y-auto px-2 py-1"
              role="listbox" :aria-label='$t("dirPicker.title")' tabindex="0" @keydown="onListKeydown">
-          <div v-if="loading" class="flex items-center justify-center gap-2 py-8 text-sm text-fg-muted">
-            <Loader2 :size="16" class="animate-spin motion-reduce:animate-none" /> {{ $t("session.loadingOptions") }}
+          <!-- Five folder rows: the list keeps its row height, so the real entries land in place. -->
+        <div v-if="loading" role="status" :aria-label="$t('session.loadingOptions')" class="space-y-0.5 px-1 py-1">
+          <div v-for="(w, i) in [34, 52, 44, 60, 30]" :key="i" class="flex items-center gap-2 px-2 py-1.5"
+               :style="{ '--sk-delay': `${i * 90}ms` }">
+            <span class="sk-bar h-3.5 w-3.5 shrink-0 rounded-sm bg-fg/[0.08]" />
+            <span class="sk-bar h-3 rounded-sm bg-fg/[0.06]" :style="{ width: `${w}%` }" />
           </div>
+        </div>
           <template v-else>
             <button v-for="(d, i) in visibleDirs" :key="d.path" type="button" role="option"
                     :data-test="`dp-dir-${d.name}`" :aria-selected="i === highlight"
@@ -178,7 +183,7 @@ function onListKeydown(e: KeyboardEvent): void {
         </label>
         <p v-if="error" data-test="dp-error" class="mx-5 mt-2 rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger-overlay">{{ error }}</p>
 
-        <footer class="flex justify-end gap-2 px-5 py-3">
+        <footer class="flex justify-end gap-2 border-t border-hairline bg-bg/30 px-5 py-3">
           <UiButton variant="secondary" @click="navigateBack">{{ $t("common.cancel") }}</UiButton>
           <UiButton data-test="dp-confirm" :disabled="!result || loading" @click="choose">
             {{ $t("dirPicker.chooseCurrent") }}

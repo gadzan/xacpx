@@ -192,7 +192,7 @@ watch(rowEl, observeAnchor, { flush: "post" });
       data-test="group-detail-card"
       :aria-label="$t('conversation.runDetail.title')"
       :data-run-id="run.id" :data-member-turn-id="selectedMember?.id" :data-attempt="attempt"
-      class="flex h-full w-full max-w-md flex-col overflow-hidden bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
+      class="flex h-full w-full max-w-md flex-col overflow-hidden border-l border-hairline bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
     >
       <GroupRunDetailHeader
         variant="popover"

@@ -770,14 +770,14 @@ function handleRetry(): void {
 </script>
 
 <template>
-  <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+  <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:from-raised lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <div v-if="groupsStore.promptError" data-test="group-prompt-error" class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-danger/10 px-3 py-1.5 text-xs text-danger-text">
       <span class="truncate">{{ groupsStore.promptErrorDetail ?? $t(`bot.errors.${groupsStore.promptError}`) }}</span>
       <button
         v-if="groupsStore.uncertainPromptText"
         type="button"
         data-test="group-retry-prompt-button"
-        class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
+        class="rounded-btn border border-hairline bg-raised/75 px-2 py-0.5 font-medium text-fg shadow-btn-raised transition-colors hover:bg-raised dark:bg-white/[0.06] dark:hover:bg-white/[0.11]"
         @click="handleRetry"
       >
         {{ $t("bot.prompt.retry") }}
@@ -834,7 +834,7 @@ function handleRetry(): void {
           :title="$t('conversation.composer.mention')"
           :aria-label="$t('conversation.composer.mention')"
           :disabled="disabled || groupsStore.hasUncertainPrompt"
-          class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+          class="flex items-center gap-1 rounded-pill border border-hairline bg-raised/70 px-2 py-0.5 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg disabled:opacity-50 dark:bg-white/[0.04]"
           @click="startMention"
         >
           <AtSign :size="13" aria-hidden="true" />
@@ -847,8 +847,8 @@ function handleRetry(): void {
           :aria-label="$t('conversation.composer.discuss')"
           :aria-pressed="discussionMode"
           :disabled="discussionToggleBlocked"
-          class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-          :class="discussionMode ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+          class="flex items-center gap-1 rounded-pill border border-hairline bg-raised/70 px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.04]"
+          :class="discussionMode ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
           @click="toggleDiscussion"
         >
           <MessagesSquare :size="13" />
@@ -859,7 +859,7 @@ function handleRetry(): void {
           data-test="group-discuss-rounds"
           role="group"
           :aria-label="$t('conversation.composer.discussRoundsLabel')"
-          class="flex items-center gap-0.5 rounded-full px-1 py-0.5 text-xs font-medium"
+          class="flex items-center gap-0.5 rounded-pill border border-hairline bg-raised/70 px-1 py-0.5 text-xs font-medium dark:bg-white/[0.04]"
         >
           <button
             v-for="rounds in DISCUSSION_ROUNDS_CHOICES"
@@ -870,8 +870,8 @@ function handleRetry(): void {
             :aria-label="$t('conversation.composer.discussRoundsHint', { count: rounds })"
             :title="$t('conversation.composer.discussRoundsHint', { count: rounds })"
             :disabled="disabled || groupsStore.hasUncertainPrompt"
-            class="rounded-full px-1.5 py-0.5 transition-colors"
-            :class="discussionRounds === rounds ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            class="rounded-pill px-1.5 py-0.5 transition-colors"
+            :class="discussionRounds === rounds ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
             @click="setDiscussionRounds(rounds)"
           >{{ rounds }}</button>
         </div>

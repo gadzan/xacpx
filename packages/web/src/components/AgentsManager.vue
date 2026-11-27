@@ -79,7 +79,7 @@ const driverGroups = computed<SelectGroup[]>(() => [
   <section class="space-y-3">
     <p v-if="error" data-test="am-error" class="rounded-sm bg-danger/[0.08] px-3 py-2 text-sm text-danger-text">{{ error }}</p>
     <input v-if="showFilter" v-model="filter" data-test="am-filter" :placeholder="$t('common.filter')"
-           class="w-full rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+           class="w-full rounded-sm ui-well px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
     <p v-if="!all.length" data-test="am-empty" class="text-sm text-fg-muted">{{ $t("agents.empty") }}</p>
     <ul v-else class="max-h-64 overflow-y-auto rounded-sm">
       <li v-for="a in list" :key="a.name" class="px-3 py-2 text-sm">
@@ -98,13 +98,13 @@ const driverGroups = computed<SelectGroup[]>(() => [
     </ul>
 
     <button v-if="!formOpen" type="button" data-test="am-add-toggle" @click="formOpen = true"
-            class="flex items-center gap-1.5 rounded-sm bg-surface-2 px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-accent-soft hover:text-fg">
+            class="flex items-center gap-1.5 rounded-sm ui-well px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-accent-soft hover:text-fg">
       <Plus :size="14" /> {{ $t("agents.add") }}
     </button>
     <div v-else class="space-y-2 rounded-sm p-3">
       <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <SelectMenu v-model="driver" data-test="am-driver" :aria-label='$t("agents.chooseDriver")' :groups="driverGroups" :placeholder='$t("agents.chooseDriver")' />
-        <input v-model="customName" data-test="am-name" :placeholder="$t('agents.namePlaceholder')" class="rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+        <input v-model="customName" data-test="am-name" :placeholder="$t('agents.namePlaceholder')" class="rounded-sm ui-well px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
       </div>
       <div class="flex gap-2">
         <UiButton data-test="am-add" :disabled="busy || !driver" @click="add">

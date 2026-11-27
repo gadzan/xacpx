@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { X, Loader2, AlertTriangle, FolderOpen } from "lucide-vue-next";
+import { X, AlertTriangle, FolderOpen } from "lucide-vue-next";
 import { needsSetupCapability, type AgentCapabilityState, type NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import DialogShell from "./DialogShell.vue";
@@ -363,63 +363,71 @@ async function submit(): Promise<void> {
        off-canvas) instead of the viewport. -->
   <Teleport to="body">
   <DialogShell
-    panel-class="w-full max-w-md rounded-2xl focus:outline-none"
+    panel-class="w-full max-w-md lg:max-w-xl rounded-2xl focus:outline-none"
     labelledby="new-session-title"
     test-id="new-session-dialog"
     @close="emit('close')"
   >
-      <header class="flex items-center justify-between px-5 py-3">
+      <header class="flex items-center justify-between border-b border-hairline px-5 py-3">
         <h2 id="new-session-title" class="text-base font-semibold text-fg">{{ $t("session.newSession") }} <span class="font-normal text-fg-muted-overlay">· {{ instanceName }}</span></h2>
         <button class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label='$t("session.close")' @click="navigateBack"><X :size="16" /></button>
       </header>
 
       <div class="space-y-4 px-5 py-4">
-        <div v-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("session.loadingOptions") }}</div>
+        <!-- Field-shaped skeleton: three label/control pairs instead of a centred caption. -->
+        <div v-if="loading" role="status" :aria-label="$t('session.loadingOptions')" class="space-y-4 py-1">
+          <div v-for="i in 3" :key="i" class="space-y-1.5" :style="{ '--sk-delay': `${(i - 1) * 110}ms` }">
+            <span class="sk-bar block h-2.5 w-16 rounded-sm bg-fg/[0.07]" />
+            <span class="sk-bar block h-9 w-full rounded-lg bg-fg/[0.05]" />
+          </div>
+        </div>
         <template v-else>
           <div class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.source") }}</span>
-            <div class="flex gap-1">
+            <div class="flex gap-0.5 rounded-md border border-hairline bg-fill-track p-0.5">
               <button type="button" data-test="ns-source-new"
                       class="flex-1 rounded-sm px-2 py-1 text-xs"
-                      :class="sessionSource === 'new' ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
+                      :class="sessionSource === 'new' ? 'bg-raised text-fg font-semibold shadow-select' : 'text-fg-muted font-medium hover:text-fg'"
                       @click="sessionSource = 'new'">{{ $t("session.newSession") }}</button>
               <button type="button" data-test="ns-source-native"
                       class="flex-1 rounded-sm px-2 py-1 text-xs"
-                      :class="sessionSource === 'native' ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
+                      :class="sessionSource === 'native' ? 'bg-raised text-fg font-semibold shadow-select' : 'text-fg-muted font-medium hover:text-fg'"
                       @click="sessionSource = 'native'">{{ $t("session.nativeSession") }}</button>
             </div>
           </div>
 
-          <label class="block">
-            <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.sessionAlias") }} <span class="font-normal text-fg-muted">{{ $t("session.optional") }}</span></span>
-            <input v-model="alias" data-test="ns-alias" :placeholder="aliasPlaceholder"
-                   class="w-full rounded-lg bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                   @keydown.enter="submit" />
-          </label>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label class="block">
+              <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.sessionAlias") }} <span class="font-normal text-fg-muted">{{ $t("session.optional") }}</span></span>
+              <input v-model="alias" data-test="ns-alias" :placeholder="aliasPlaceholder"
+                     class="w-full rounded-lg ui-well px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                     @keydown.enter="submit" />
+            </label>
 
-          <div class="block">
-            <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.agent") }}</span>
-            <SelectMenu v-model="agentValue" :groups="agentGroups" data-test="ns-agent" :aria-label='$t("session.agent")' :placeholder='$t("session.selectAgent")' />
+            <div class="block">
+              <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.agent") }}</span>
+              <SelectMenu v-model="agentValue" :groups="agentGroups" data-test="ns-agent" :aria-label='$t("session.agent")' :placeholder='$t("session.selectAgent")' />
+            </div>
           </div>
 
           <div class="block">
             <div class="mb-1 flex items-center justify-between">
               <span class="text-xs font-medium text-fg-muted">{{ $t("session.workspace") }}</span>
-              <div v-if="sessionSource === 'new'" class="flex gap-1">
+              <div v-if="sessionSource === 'new'" class="flex gap-0.5 rounded-md border border-hairline bg-fill-track p-0.5">
                 <button type="button" data-test="ns-ws-mode-existing"
                         class="rounded-sm px-2 py-0.5 text-xs"
-                        :class="wsMode === 'existing' ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
+                        :class="wsMode === 'existing' ? 'bg-raised text-fg font-semibold shadow-select' : 'text-fg-muted font-medium hover:text-fg'"
                         @click="wsMode = 'existing'">{{ $t("session.existing") }}</button>
                 <button type="button" data-test="ns-ws-mode-path"
                         class="rounded-sm px-2 py-0.5 text-xs"
-                        :class="wsMode === 'path' ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
+                        :class="wsMode === 'path' ? 'bg-raised text-fg font-semibold shadow-select' : 'text-fg-muted font-medium hover:text-fg'"
                         @click="wsMode = 'path'">{{ $t("session.newPath") }}</button>
               </div>
             </div>
             <SelectMenu v-if="wsMode === 'existing'" v-model="workspaceSel" :groups="workspaceGroups" data-test="ns-workspace" :aria-label='$t("session.workspace")' :placeholder='$t("session.selectWorkspace")' />
             <div v-else class="flex gap-2">
               <input v-model="workspacePath" data-test="ns-ws-path" :placeholder='$t("session.pathPlaceholder")'
-                     class="min-w-0 flex-1 rounded-lg bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                     class="min-w-0 flex-1 rounded-lg ui-well px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
               <button type="button" data-test="ns-ws-browse" :title='$t("session.browsePath")' :aria-label='$t("session.browsePath")'
                       class="grid h-[38px] w-[38px] shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-fg/5 hover:text-fg"
                       @click="browsing = true"><FolderOpen :size="16" /></button>
@@ -450,12 +458,10 @@ async function submit(): Promise<void> {
           <div v-if="sessionSource === 'native'" class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.nativeSession") }}</span>
             <!-- Loading: animated spinner + shimmering skeleton rows (the list can take a while). -->
-            <div v-if="nativeLoading" data-test="ns-native-loading" class="space-y-1.5">
-              <div class="flex items-center gap-2 text-xs text-fg-muted">
-                <Loader2 :size="13" class="animate-spin motion-reduce:animate-none text-accent" />
-                {{ $t("session.listingNative") }}
-              </div>
-              <div v-for="n in 3" :key="n" class="h-7 animate-pulse rounded-lg bg-fg/5 motion-reduce:animate-none" :style="{ width: `${92 - n * 12}%` }" />
+            <div v-if="nativeLoading" data-test="ns-native-loading" role="status" :aria-label="$t('session.listingNative')"
+       class="space-y-1.5">
+          <div v-for="(w, n) in [92, 80, 68]" :key="n" class="sk-bar h-7 rounded-lg bg-fg/[0.06]"
+               :style="{ width: `${w}%`, '--sk-delay': `${n * 110}ms` }" />
             </div>
             <SelectMenu v-else-if="nativeSessions.length" v-model="nativeSel" :groups="nativeGroups"
                         data-test="ns-native" :aria-label='$t("session.nativeSession")' :placeholder='$t("session.selectNative")' />
@@ -478,7 +484,7 @@ async function submit(): Promise<void> {
         </template>
       </div>
 
-      <footer class="flex justify-end gap-2 px-5 py-3">
+      <footer class="flex justify-end gap-2 border-t border-hairline bg-bg/30 px-5 py-3">
         <UiButton variant="secondary" @click="navigateBack">{{ $t("common.cancel") }}</UiButton>
         <UiButton data-test="ns-create" :disabled="!canSubmit" @click="submit">
           {{ submitting ? $t("session.creatingButton") : $t("session.create") }}

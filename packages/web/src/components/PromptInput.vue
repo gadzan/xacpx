@@ -859,7 +859,7 @@ function onKeydown(e: KeyboardEvent) {
           <div
             v-for="p in composer.pending"
             :key="p.id"
-            class="flex items-center gap-1.5 rounded-sm bg-surface-2 px-2 py-1 text-ui"
+            class="flex items-center gap-1.5 rounded-sm ui-well px-2 py-1 text-ui"
           >
             <img
               v-if="p.previewUrl"
@@ -907,7 +907,7 @@ function onKeydown(e: KeyboardEvent) {
             role="option"
             :aria-selected="i === cmdActiveIdx"
             class="flex h-8 cursor-pointer items-center gap-2 rounded-sm px-2 text-sm"
-            :class="i === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
+            :class="i === cmdActiveIdx ? 'bg-fill-strong' : 'hover:bg-fill-hover'"
             @mousedown.prevent="pickCommand(c.name)"
             @mouseenter="cmdActiveIdx = i"
           >
@@ -931,7 +931,7 @@ function onKeydown(e: KeyboardEvent) {
             role="option"
             :aria-selected="i === mentionActiveIdx"
             class="flex min-h-8 cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1 text-sm"
-            :class="i === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
+            :class="i === mentionActiveIdx ? 'bg-fill-strong' : 'hover:bg-fill-hover'"
             @mousedown.prevent="pickMention(agentItem)"
             @mouseenter="mentionActiveIdx = i"
           >
@@ -976,8 +976,8 @@ function onKeydown(e: KeyboardEvent) {
             data-test="model-chip"
             :aria-haspopup="true"
             :aria-expanded="modelDd.open"
-            class="flex min-w-0 items-center gap-1.5 rounded-sm px-1 py-0.5 text-xs transition-colors disabled:opacity-60"
-            :class="modelDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            class="flex min-w-0 items-center gap-1.5 rounded-md border border-hairline bg-raised/70 px-1.5 py-0.5 text-xs transition-colors disabled:opacity-60 dark:bg-white/[0.04]"
+            :class="modelDd.open ? 'bg-fill-strong text-fg' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
             :disabled="!controls.modelAvailable.length || controls.modelLoading || modelApplying"
             @click="modelDd.toggle()"
           >
@@ -995,7 +995,7 @@ function onKeydown(e: KeyboardEvent) {
                          :title='$t("chat.model")' test-id="model-menu"
                          :groups="modelGroups" @select="pickModel" />
           <button v-if="modelUnavailable || modelRecovery" type="button" data-test="model-refresh"
-                  class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-60"
+                  class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted hover:bg-fill-hover hover:text-fg disabled:opacity-60"
                   :disabled="controls.modelLoading || modelApplying" :title="$t('chat.modelRefresh')" :aria-label="$t('chat.modelRefresh')" @click="refreshModels">
             <RefreshCw :size="14" :class="{ 'animate-spin motion-reduce:animate-none': controls.modelLoading }" />
           </button>
@@ -1006,8 +1006,8 @@ function onKeydown(e: KeyboardEvent) {
               data-test="effort-chip"
               :aria-haspopup="true"
               :aria-expanded="effortDd.open"
-              class="flex items-center gap-1.5 rounded-sm px-1 py-0.5 text-xs transition-colors"
-              :class="effortDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+              class="flex items-center gap-1.5 rounded-md border border-hairline bg-raised/70 px-1.5 py-0.5 text-xs transition-colors dark:bg-white/[0.04]"
+              :class="effortDd.open ? 'bg-fill-strong text-fg' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
               :title="$t('chat.effort')"
               @click="effortDd.toggle()"
             >

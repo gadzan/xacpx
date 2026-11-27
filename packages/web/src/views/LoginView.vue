@@ -92,7 +92,7 @@ async function copyCommand() {
         @submit.prevent="submit"
       >
         <!-- Setup hint: what to do on the host, with the command it names. -->
-        <div v-if="!localMode" class="mb-5 rounded-input bg-surface-2 p-3">
+        <div v-if="!localMode" class="mb-5 rounded-input ui-well p-3">
           <p class="mb-2 text-xs font-medium text-fg">{{ $t("login.setupHeading") }}</p>
           <div class="flex items-center gap-2">
             <code class="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">{{ ADD_TOKEN_CMD }}</code>

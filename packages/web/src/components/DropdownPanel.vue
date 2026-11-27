@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Check, Search } from "lucide-vue-next";
 import MobileSheet from "./MobileSheet.vue";
-import { focusSoon, useIsMobile } from "../lib/use-dropdown";
+import { focusSoon, measureDropdownPlacement, useIsMobile } from "../lib/use-dropdown";
 import { navigateBack } from "../lib/mobile-back";
 import type { DropdownController, DropdownGroup, DropdownRow } from "../lib/use-dropdown";
 
@@ -177,6 +177,48 @@ const placementClass = computed(() => {
     default: return "absolute left-0 top-full mt-1";
   }
 });
+
+// Inside a scrolling dialog form a bottom-anchored panel runs into the footer and
+// gets cut in half, so the panel measures the room it has on open (and on any
+// scroll or resize while open) and flips above the trigger when that is roomier.
+const openUpward = ref(props.placement === "top" || props.placement === "top-end");
+const maxHeight = ref<number | null>(null);
+
+function place(): void {
+  const fit = measureDropdownPlacement(props.dd.trigger, props.placement);
+  openUpward.value = fit.upward;
+  maxHeight.value = fit.maxHeight;
+}
+function placeNow(): void {
+  void nextTick(place);
+}
+watch(
+  () => props.dd.open,
+  (open) => {
+    window.removeEventListener("scroll", place, true);
+    window.removeEventListener("resize", place);
+    if (!open) return;
+    placeNow();
+    // Capture: the form's own scroll fires on the form, not on the window.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  window.removeEventListener("scroll", place, true);
+  window.removeEventListener("resize", place);
+});
+
+/** Side anchor kept, vertical anchor flipped. */
+const anchoredClass = computed(() => {
+  if (!openUpward.value) return placementClass.value;
+  const right = props.placement === "bottom-end" || props.placement === "top-end";
+  return right ? "absolute bottom-full right-0 mb-1" : "absolute bottom-full left-0 mb-1";
+});
+const fitStyle = computed(() =>
+  maxHeight.value === null ? undefined : { maxHeight: `${maxHeight.value}px` },
+);
 const listRole = computed(() => props.role ?? "listbox");
 </script>
 
@@ -187,7 +229,7 @@ const listRole = computed(() => props.role ?? "listbox");
     <!-- Search sits in the sheet's fixed band: the header and the field stay put
          while only the rows scroll. -->
     <template v-if="showSearch" #fixed>
-      <div class="flex h-11 items-center gap-2 rounded-lg bg-surface-2 px-3">
+      <div class="flex h-11 items-center gap-2 ui-well rounded-lg px-3">
         <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
         <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
                :placeholder="searchPlaceholder ?? t('common.filter')"
@@ -233,16 +275,17 @@ const listRole = computed(() => props.role ?? "listbox");
     <div v-if="!isMobile && dd.open" data-dd-panel
          :data-test="testId" :role="listRole" :aria-label="title"
          class="z-30 flex max-h-80 flex-col overflow-hidden rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
-         :class="[placementClass, width ?? 'min-w-40']">
+         :class="[anchoredClass, width ?? 'min-w-40']"
+         :style="fitStyle">
       <div v-if="showSearch" class="shrink-0 px-1 pb-1 pt-1">
-        <div class="flex h-8 items-center gap-2 rounded-sm bg-fill-track px-2">
+        <div class="flex h-8 items-center gap-2 rounded-sm border border-hairline bg-fill-track px-2">
           <Search :size="14" class="shrink-0 text-fg-muted-overlay" />
           <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
                  :placeholder="searchPlaceholder ?? t('common.filter')"
                  class="min-w-0 flex-1 bg-transparent text-ui text-fg outline-none placeholder:text-fg-muted-overlay" />
         </div>
       </div>
-      <div class="min-h-0 flex-1 overflow-y-auto">
+      <div class="thin-scroll min-h-0 flex-1 overflow-y-auto">
         <template v-for="(g, gi) in filtered" :key="gi">
           <p v-if="g.label" class="px-2 pb-1 pt-2 text-xs text-fg-muted-overlay">{{ g.label }}</p>
           <template v-for="row in g.rows" :key="row.value">

@@ -200,6 +200,18 @@ export default {
   palette: { placeholder: "跳转到会话…", noMatches: "无匹配项" },
   chat: {
     emptyStateTitle: "继续上次的工作",
+    bento: {
+      subtitle: "这个账号下能直接进入的一切：实例、最近的会话，以及背后的 Agent。",
+      onlineInstances: "在线实例",
+      noneOnline: "暂无已连接实例",
+      recentSessions: "最近会话",
+      sessions: "会话",
+      agents: "在用 Agent",
+      agentMix: "Agent 分布",
+      emptyRecent: "还没有最近会话",
+      resumeHint: "点击直接进入",
+      resume: "进入",
+    },
     clearContext: {
       title: "清空上下文",
       body: "为这个会话开一段新的上下文。会话本身保留，当前历史不能恢复。",
@@ -434,6 +446,8 @@ export default {
       exclude: "要排除的文件",
       byName: "按文件名",
       byContent: "按内容",
+      showFilters: "展开路径过滤",
+      hideFilters: "收起路径过滤",
       noContentMatches: "文件中无匹配",
     },
     menu: {

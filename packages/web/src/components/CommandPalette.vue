@@ -107,7 +107,7 @@ onBeforeUnmount(() => {
            flex container. -->
       <div ref="panel" :style="pinnedHeight ? { minHeight: `min(${pinnedHeight}px, calc(100dvh - 7rem))` } : undefined"
            class="ui-panel w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
-        <div class="flex min-h-12 items-center gap-2 px-4">
+        <div class="flex min-h-12 items-center gap-2 border-b border-hairline px-4">
           <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
           <input ref="input" v-model="query" data-test="palette-input" data-ring="container"
                  class="w-full bg-transparent text-base text-fg placeholder:text-fg-muted-overlay outline-none"

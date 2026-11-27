@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { Loader2 } from "lucide-vue-next";
 import type { ConversationRunDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import DialogShell from "./DialogShell.vue";
 import UiButton from "./UiButton.vue";
@@ -126,7 +127,7 @@ async function handleFork(): Promise<void> {
 
 <template>
   <DialogShell
-    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4 lg:w-full"
+    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-5 lg:w-full lg:max-w-[440px]"
     labelledby="fork-topic-title"
     test-id="fork-topic-dialog"
     level="top"
@@ -142,9 +143,9 @@ async function handleFork(): Promise<void> {
           maxlength="60"
           :placeholder="$t('bot.topic.titlePlaceholder')"
           data-test="fork-topic-title"
-          class="mb-3 w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none"
+          class="mb-3 w-full rounded-lg ui-well px-3 py-1.5 text-sm outline-none"
         />
-        <p data-test="fork-topic-point" class="mb-4 rounded-lg bg-surface-2 px-3 py-2 text-xs leading-relaxed text-fg-muted">
+        <p data-test="fork-topic-point" class="mb-4 rounded-lg ui-well px-3 py-2 text-xs leading-relaxed text-fg-muted">
           {{ forkPointLabel }}
         </p>
         <p v-if="errorCode" data-test="fork-topic-error" class="mb-3 text-xs text-danger-overlay">
@@ -160,7 +161,8 @@ async function handleFork(): Promise<void> {
             mobile-block
             :disabled="creating || !title.trim()"
           >
-            {{ creating ? $t("common.loading") : $t("group.topic.forkAction") }}
+            <Loader2 v-if="creating" :size="13" class="animate-spin motion-reduce:animate-none" />
+        {{ $t("group.topic.forkAction") }}
           </UiButton>
         </div>
       </form>

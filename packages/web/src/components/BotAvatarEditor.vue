@@ -52,8 +52,8 @@ const presets = [
   { id: "gentle", avatar: character({ shape: "goutte", color: "creme", expression: "timide" }) },
 ];
 const choiceClass = (selected: boolean) => selected
-  ? "bg-accent-soft text-accent-text ring-1 ring-accent"
-  : "bg-surface-2 text-fg-muted hover:bg-raised hover:text-fg";
+  ? "border border-accent bg-accent-soft text-accent-text"
+  : "border border-hairline bg-bg/40 text-fg-muted hover:bg-fill-hover hover:text-fg";
 const hasCharacter = computed(() => props.modelValue?.kind === "character");
 function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
   emit("update:modelValue", { ...selectedCharacter.value, ...change });
@@ -62,12 +62,12 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
 
 <template>
   <div class="grid min-w-0 grid-cols-1 gap-5 md:grid-cols-[220px_minmax(0,1fr)]">
-    <section :aria-label="t('bot.avatar.preview.title')" class="min-w-0 self-start rounded-2xl bg-bg p-4 md:sticky md:top-0">
+    <section :aria-label="t('bot.avatar.preview.title')" class="min-w-0 self-start rounded-xl border border-hairline bg-bg/40 p-4 md:sticky md:top-0">
       <div class="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
         <Sparkles :size="14" /> {{ t('bot.avatar.preview.title') }}
       </div>
       <div class="flex flex-col items-center gap-3 py-5">
-        <div class="grid h-36 w-36 place-items-center rounded-2xl bg-surface">
+        <div class="grid h-36 w-36 place-items-center rounded-xl border border-hairline bg-bg/40">
           <BotAvatar :avatar="modelValue" :driver="driver" :name="name" :size="120" :state="previewState"
                      :activity-key="`avatar-editor-preview:${previewRevision}`" follow preview />
         </div>
@@ -99,7 +99,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
       <section v-if="modelValue?.kind === 'text'" class="rounded-2xl bg-raised p-3" :aria-label="t('bot.avatar.text.title')">
         <h3 class="text-xs font-semibold">{{ t('bot.avatar.text.title') }}</h3>
         <p class="mt-1 text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.text.notice') }}</p>
-        <p data-test="avatar-retained-text" class="mt-3 whitespace-pre-wrap break-all rounded-lg bg-bg p-2 text-xs text-fg">{{ modelValue.value }}</p>
+        <p data-test="avatar-retained-text" class="mt-3 whitespace-pre-wrap break-all rounded-lg ui-well p-2 text-xs text-fg">{{ modelValue.value }}</p>
         <button type="button" data-test="avatar-replace-text" class="mt-3 rounded-lg px-3 py-1.5 text-xs font-medium text-accent-text hover:bg-accent-soft"
                 @click="emit('update:modelValue', character())">{{ t('bot.avatar.text.replace') }}</button>
       </section>
