@@ -527,7 +527,7 @@ function focusInput(): void {
 defineExpose({ fillDraft, focusInput, hasDraft });
 </script>
 <template>
-  <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+  <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:from-raised lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <!-- Disabled bot warning -->
     <div
       v-if="isBotDisabled"
