@@ -210,7 +210,7 @@ const noticeToneClass = computed(() => {
       :key="handoff.key"
       type="button"
       data-test="timeline-handoff"
-      class="flex max-w-full items-center gap-1.5 rounded-lg p-0.5 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:px-1"
+      class="flex max-w-full items-center gap-1.5 rounded-lg p-0.5 transition-colors hover:bg-fill-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:px-1"
       :title="handoff.label"
       :aria-label="handoff.label"
       @click="emit('openDetail', handoff.detail)"
@@ -434,7 +434,7 @@ const noticeToneClass = computed(() => {
       </button>
       <span
         v-if="stoppedOverflow > 0"
-        class="grid h-5 min-w-5 place-items-center rounded-full bg-surface-2 px-1 text-xs font-medium tabular-nums text-fg-muted"
+        class="grid h-5 min-w-5 place-items-center rounded-full ui-well px-1 text-xs font-medium tabular-nums text-fg-muted"
         style="box-shadow: 0 0 0 2px rgb(var(--c-bg))"
       >+{{ stoppedOverflow }}</span>
     </div>

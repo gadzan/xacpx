@@ -579,7 +579,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           :data-test="`interaction-input-${field.key}`"
           type="number"
           inputmode="decimal"
-          class="w-full rounded-sm bg-surface-2 px-2 py-1.5 text-xs text-fg"
+          class="w-full rounded-sm ui-well px-2 py-1.5 text-xs text-fg"
           :placeholder="field.title"
           :value="String(hasAnswer(answers, field.key) ? answers[field.key] : field.defaultValue ?? '')"
           @input="onNumberInput(field, $event)"
@@ -592,7 +592,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           :id="controlName(index, field)"
           :data-test="`interaction-input-${field.key}`"
           type="text"
-          class="w-full rounded-sm bg-surface-2 px-2 py-1.5 text-xs text-fg"
+          class="w-full rounded-sm ui-well px-2 py-1.5 text-xs text-fg"
           :placeholder="field.title"
           :value="String(hasAnswer(answers, field.key) ? answers[field.key] : field.defaultValue ?? '')"
           @input="onTextInput(field, $event)"
@@ -625,7 +625,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
         <button
           type="button"
           data-test="interaction-submit"
-          class="flex items-center gap-1 rounded-sm bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition-opacity disabled:opacity-50"
+          class="flex items-center gap-1 rounded-btn bg-accent bg-[linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0))] px-3 py-1.5 text-xs font-semibold text-on-accent shadow-btn transition-opacity disabled:opacity-50"
           :disabled="submitting || requiredMissing.length > 0 || !canSubmit"
           @click="emit('submit')"
         >
@@ -636,7 +636,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
         <button
           type="button"
           data-test="interaction-decline"
-          class="rounded-sm bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/20 disabled:opacity-50"
+          class="rounded-btn border border-hairline bg-raised/75 px-3 py-1.5 text-xs font-medium text-fg shadow-btn-raised transition-colors hover:bg-raised disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.11]"
           :disabled="submitting"
           @click="emit('decline')"
         >
@@ -645,7 +645,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
         <button
           type="button"
           data-test="interaction-cancel"
-          class="rounded-sm px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface disabled:opacity-50"
+          class="rounded-btn px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover disabled:opacity-50"
           :disabled="submitting"
           @click="emit('cancel')"
         >

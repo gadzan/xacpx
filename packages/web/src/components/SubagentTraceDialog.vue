@@ -37,7 +37,7 @@ useModalA11y(dialog, () => emit("close"));
       <section ref="dialog" role="dialog" aria-modal="true" tabindex="-1"
                aria-labelledby="subagent-trace-title"
                class="relative flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
-        <header class="relative shrink-0 overflow-hidden px-5 py-4 sm:px-6">
+        <header class="relative shrink-0 overflow-hidden border-b border-hairline px-5 py-4 sm:px-6">
           <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-accent/10 via-transparent to-run/5" />
           <div class="relative flex items-start gap-3">
             <div class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-accent-soft text-accent">
@@ -85,7 +85,7 @@ useModalA11y(dialog, () => emit("close"));
               <ToolStepCard :step="row.step" />
             </div>
           </div>
-          <div v-else-if="!step.detail && !outputText" class="grid min-h-36 place-items-center rounded-2xl bg-surface-2 text-center">
+          <div v-else-if="!step.detail && !outputText" class="grid min-h-36 place-items-center rounded-2xl ui-well text-center">
             <div>
               <Loader2 v-if="status === 'running'" :size="18" class="mx-auto animate-spin motion-reduce:animate-none text-accent" />
               <Check v-else :size="18" class="mx-auto text-run-overlay" />

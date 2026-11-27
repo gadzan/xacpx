@@ -162,8 +162,8 @@ async function abandonRowUnknown(): Promise<void> {
       :data-topic-status="active?.status ?? 'active'"
       :aria-haspopup="true"
       :aria-expanded="dd.open"
-      class="flex min-w-0 items-center gap-1 rounded-sm px-1 text-left text-xs transition-colors [@media(pointer:coarse)]:min-h-11"
-      :class="dd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+      class="flex min-w-0 items-center gap-1 rounded-md border border-hairline bg-bg/50 px-2 py-0.5 text-left text-xs font-medium transition-colors dark:bg-white/[0.04] [@media(pointer:coarse)]:min-h-11"
+      :class="dd.open ? 'bg-fill-strong text-fg' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
       @click="dd.toggle()"
     >
       <span class="truncate">{{ active?.title || $t("bot.topic.default") }}</span>
@@ -190,7 +190,7 @@ async function abandonRowUnknown(): Promise<void> {
                           ? mobile ? 'bg-accent-soft font-medium text-fg' : 'font-medium text-fg'
                           : 'text-fg',
                         topic.status === 'archived' ? 'text-fg-muted-overlay' : '',
-                        !mobile && i === dd.highlight ? 'bg-surface-2' : '']">
+                        !mobile && i === dd.highlight ? 'bg-fill-strong' : '']">
             <button type="button" class="min-w-0 flex-1 truncate text-left" @click="selectTopic(topic)">
               {{ topic.title || $t("bot.topic.default") }}
             </button>
@@ -206,7 +206,7 @@ async function abandonRowUnknown(): Promise<void> {
                     @click.stop="openRowMenu(topic, $event)"><MoreHorizontal :size="14" /></button>
           </div>
           <form v-if="editingId === topic.id" class="mt-1 flex gap-1 px-2" @submit.prevent="saveRename(topic)">
-            <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded-sm bg-surface-2 px-1 py-0.5 text-xs" />
+            <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded-sm ui-well px-1 py-0.5 text-xs" />
             <button type="submit" data-test="topic-rename-save" class="rounded-sm bg-accent px-2 py-0.5 text-xs text-on-accent">{{ $t("bot.topic.save") }}</button>
           </form>
         </div>
@@ -271,7 +271,7 @@ async function abandonRowUnknown(): Promise<void> {
             role="radio"
             :aria-checked="isolationTopic.executionTarget?.isolation === option.value"
             :data-test="`topic-isolation-${option.value}`"
-            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition-colors hover:bg-surface-2 disabled:opacity-50"
+            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition-colors hover:bg-fill-hover disabled:opacity-50"
             :disabled="isolationSaving"
             @click="chooseIsolation(option.value)"
           >

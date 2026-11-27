@@ -180,7 +180,7 @@ function onEffort(value: string): void {
             :aria-haspopup="'listbox'"
             :aria-expanded="dd.open"
             :placeholder="t('capability.defaultModel')"
-            class="w-full rounded-lg bg-surface-2 py-1.5 pl-3 pr-9 text-sm outline-none transition-colors"
+            class="w-full rounded-lg border border-hairline bg-bg/60 py-1.5 pl-3 pr-9 text-sm outline-none transition-colors hover:border-hairline-strong dark:bg-white/[0.04]"
             @focus="onFocus"
             @click="dd.openMenu()"
             @input="onCustom"
@@ -258,7 +258,7 @@ function onEffort(value: string): void {
           id="model-picker-effort"
           data-test="model-picker-effort"
           :value="effort"
-          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
+          class="w-full rounded-lg border border-hairline bg-bg/60 px-3 py-1.5 text-sm outline-none transition-colors hover:border-hairline-strong dark:bg-white/[0.04]"
           :placeholder="t('capability.effortDefault')"
           @input="onEffort(($event.target as HTMLInputElement).value)"
         />

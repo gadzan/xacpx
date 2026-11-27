@@ -50,7 +50,7 @@ async function handleCreateTopic(): Promise<void> {
           required
           maxlength="60"
           :placeholder="$t('bot.topic.titlePlaceholder')"
-          class="mb-4 h-8 w-full rounded-lg bg-surface-2 px-3 text-sm outline-none"
+          class="mb-4 h-8 w-full rounded-lg ui-well px-3 text-sm outline-none"
         />
         <div class="flex gap-2 lg:items-center lg:justify-end">
           <UiButton variant="secondary" mobile-block @click="navigateBack">

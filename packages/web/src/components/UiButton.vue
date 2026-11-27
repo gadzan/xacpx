@@ -29,12 +29,16 @@ const props = withDefaults(defineProps<{
 const VARIANTS: Record<NonNullable<typeof props.variant>, string> = {
   // A filled primary is the only control with a hue-tinted shadow: it sits on
   // the page rather than floating above it, so it gets the button shadow, never
-  // the overlay one.
-  primary: "bg-accent text-on-accent shadow-btn hover:bg-accent-hover disabled:opacity-40 disabled:shadow-none",
-  secondary: "border border-hairline bg-raised text-fg shadow-btn-raised hover:bg-fill-hover disabled:opacity-40",
+  // the overlay one. The sheen is a background-image over the fill, so the
+  // control catches light at the top the way a piece of glass does — a flat
+  // fill with one soft shadow is what made the old buttons read as plastic.
+  primary: "bg-accent bg-[linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0))] text-on-accent shadow-btn hover:bg-accent-hover disabled:opacity-40 disabled:shadow-none",
+  // Secondary is a frosted wafer: translucent, hairline-edged, with a
+  // specular top edge. On the raised workbench a solid white pill vanishes.
+  secondary: "border border-hairline bg-raised/75 text-fg shadow-btn-raised backdrop-blur-sm hover:bg-raised disabled:opacity-40 dark:bg-white/[0.06] dark:hover:bg-white/[0.11]",
   ghost: "text-fg-muted hover:bg-fill-hover hover:text-fg active:bg-fill-strong disabled:opacity-40",
-  danger: "bg-danger text-on-danger shadow-btn-raised hover:bg-danger/90 disabled:opacity-40 disabled:shadow-none",
-  "danger-ghost": "text-danger-text hover:bg-danger/10 disabled:opacity-40",
+  danger: "bg-danger bg-[linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0))] text-on-danger shadow-btn-raised hover:bg-danger/90 disabled:opacity-40 disabled:shadow-none",
+  "danger-ghost": "border border-transparent text-danger-text hover:border-danger/20 hover:bg-danger/10 disabled:opacity-40",
 };
 const SIZES: Record<NonNullable<typeof props.size>, string> = {
   sm: "h-7 px-2.5 text-xs",

@@ -603,7 +603,7 @@ const timelineFeed = useConversationTimelineFeed({
 </script>
 
 <template>
-  <div class="relative flex h-full flex-col bg-bg text-fg">
+  <div class="relative flex h-full flex-col bg-bg text-fg lg:bg-transparent">
     <!-- Mobile floating identity (<lg), modeled on the reference mock: the
          timeline runs full-height and the identity floats OVER it — back and ⋯ as
          glass discs at the edges, a centered glass pill (name only) with a large
@@ -661,7 +661,7 @@ const timelineFeed = useConversationTimelineFeed({
          purpose (same as GroupPane): a backdrop-filtered ancestor becomes the containing
          block for fixed/absolute descendants and would trap TopicSwitcher's popover,
          confirm dialog and row menu inside this header. -->
-    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
+    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 border-b border-hairline bg-transparent px-4 py-1.5">
       <div class="flex items-center gap-3 min-w-0">
         <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
                    :blink-key="blinkKey"
@@ -726,8 +726,8 @@ const timelineFeed = useConversationTimelineFeed({
             data-test="direct-nav-button"
             :aria-haspopup="true"
             :aria-expanded="navDd.open"
-            class="flex items-center gap-1 rounded-sm px-1 text-xs transition-colors"
-            :class="navDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            class="flex items-center gap-1 rounded-md border border-hairline bg-bg/50 px-2 py-0.5 text-xs font-medium transition-colors dark:bg-white/[0.04]"
+            :class="navDd.open ? 'bg-fill-strong text-fg' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
             @click="navDd.toggle()"
           >
             {{ $t("bot.nav.talkWith") }}
@@ -762,7 +762,7 @@ const timelineFeed = useConversationTimelineFeed({
       <slot name="actions" />
     </header>
 
-    <div v-if="bot?.retired" data-test="removed-bot-banner" class="bg-surface/60 px-3 lg:px-5 py-1.5 text-xs text-fg-muted">
+    <div v-if="bot?.retired" data-test="removed-bot-banner" class="border-b border-hairline bg-fg/[0.03] px-4 py-1.5 text-xs text-fg-muted">
       {{ $t("bot.removal.removedBanner") }}
     </div>
 
@@ -822,7 +822,7 @@ const timelineFeed = useConversationTimelineFeed({
               :key="command.name"
               type="button"
               :data-test="`direct-starter-${command.name}`"
-              class="rounded-pill bg-fill-track px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-fill-hover [@media(pointer:coarse)]:min-h-11"
+              class="rounded-pill border border-hairline bg-bg/50 px-3 py-1.5 text-xs font-medium text-fg shadow-press transition-colors hover:bg-fill-hover dark:bg-white/[0.04] [@media(pointer:coarse)]:min-h-11"
               :title="command.description"
               @click="fillStarter(command.name)"
             >/{{ command.name }}</button>
@@ -894,10 +894,10 @@ const timelineFeed = useConversationTimelineFeed({
       :deliver="directBotsStore.sendPrompt"
     />
     <div v-if="unavailable" data-test="run-detail-unavailable"
-         class="flex items-center justify-between bg-warn/10 px-3 lg:px-5 py-2 text-xs text-fg">
+         class="flex items-center justify-between border-b border-hairline bg-warn/[0.08] px-4 py-1.5 text-xs text-fg">
       <span>{{ $t("conversation.runDetail.unavailable") }}</span>
       <button type="button" data-test="run-detail-retry"
-              class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
+              class="rounded-btn border border-hairline bg-raised/75 px-2 py-0.5 font-medium text-fg shadow-btn-raised transition-colors hover:bg-raised dark:bg-white/[0.06] dark:hover:bg-white/[0.11]"
               @click="retryTimelineDetail">
         {{ $t("bot.prompt.retry") }}
       </button>
@@ -906,10 +906,10 @@ const timelineFeed = useConversationTimelineFeed({
       discovery). Shown whenever the timeline failed to converge — the
       composer may still be enabled, but the newest window is stale/holed. -->
     <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId"
-         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
+         class="flex items-center justify-between border-b border-hairline bg-danger/[0.07] px-4 py-1.5 text-xs text-danger-text">
       <span>{{ $t(`bot.errors.${directBotsStore.historyError}`) }}</span>
       <button type="button"
-              class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
+              class="rounded-btn border border-hairline bg-raised/75 px-2 py-0.5 font-medium text-fg shadow-btn-raised transition-colors hover:bg-raised dark:bg-white/[0.06] dark:hover:bg-white/[0.11]"
               @click="directBotsStore.instanceId && directBotsStore.activeConversationId && directBotsStore.loadHistory(directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId)">
         {{ $t("bot.prompt.retry") }}
       </button>
@@ -956,7 +956,7 @@ const timelineFeed = useConversationTimelineFeed({
       <!-- Topics live here on mobile (the floating header has no subtitle row). The
            row hands off to the parked trigger, so the topic sheet outlives this one. -->
       <button v-if="timelineSupported" type="button" data-test="sheet-bot-topic"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openMobileTopics">
         <Hash :size="18" class="shrink-0 text-fg-muted" />
         <span class="min-w-0 flex-1 truncate">{{ $t("mobileBar.switchTopic") }}</span>
@@ -964,13 +964,13 @@ const timelineFeed = useConversationTimelineFeed({
         <ChevronDown :size="14" class="shrink-0 text-fg-muted" />
       </button>
       <button type="button" data-test="sheet-bot-nav"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openSheet('nav')">
         <MessagesSquare :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("bot.nav.talkWith") }}</span>
       </button>
       <button type="button" data-test="sheet-bot-edit"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="editDialogOpen = true; closeSheet()">
         <Pencil :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("bot.actions.edit") }}</span>
@@ -989,14 +989,14 @@ const timelineFeed = useConversationTimelineFeed({
     <MobileSheet v-if="activeSheet === 'nav'" :title='$t("bot.nav.talkWith")' test-id="bot-nav-sheet" @close="closeSheet">
       <p class="px-3 pb-1 pt-2 text-xs font-medium text-fg-muted">{{ $t("bot.nav.talkWith") }}</p>
       <button v-for="other in otherBots" :key="other.id" type="button" data-test="sheet-bot-option"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openOtherBot(other.id)">
         <span class="truncate">{{ other.name }}</span>
       </button>
       <p v-if="otherBots.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noOtherBot") }}</p>
       <p class="px-3 pb-1 pt-2 text-xs font-medium text-fg-muted">{{ $t("bot.nav.collaborate") }}</p>
       <button v-for="group in memberGroups" :key="group.id" type="button" data-test="sheet-group-option"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openGroup(group.id)">
         <span class="truncate">{{ group.title }}</span>
       </button>

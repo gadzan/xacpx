@@ -187,7 +187,7 @@ const listRole = computed(() => props.role ?? "listbox");
     <!-- Search sits in the sheet's fixed band: the header and the field stay put
          while only the rows scroll. -->
     <template v-if="showSearch" #fixed>
-      <div class="flex h-11 items-center gap-2 rounded-lg bg-surface-2 px-3">
+      <div class="flex h-11 items-center gap-2 ui-well rounded-lg px-3">
         <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
         <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
                :placeholder="searchPlaceholder ?? t('common.filter')"
@@ -235,7 +235,7 @@ const listRole = computed(() => props.role ?? "listbox");
          class="z-30 flex max-h-80 flex-col overflow-hidden rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
          :class="[placementClass, width ?? 'min-w-40']">
       <div v-if="showSearch" class="shrink-0 px-1 pb-1 pt-1">
-        <div class="flex h-8 items-center gap-2 rounded-sm bg-fill-track px-2">
+        <div class="flex h-8 items-center gap-2 rounded-sm border border-hairline bg-fill-track px-2">
           <Search :size="14" class="shrink-0 text-fg-muted-overlay" />
           <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
                  :placeholder="searchPlaceholder ?? t('common.filter')"

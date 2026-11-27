@@ -194,7 +194,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
     level="nested"
     @close="emit('close')"
   >
-      <header class="px-5 py-3.5">
+      <header class="border-b border-hairline px-5 py-3.5">
         <h2 id="removal-title" class="text-base font-semibold">{{ t("bot.removal.title", { name: botName }) }}</h2>
       </header>
       <div class="flex-1 space-y-3 overflow-y-auto px-5 py-4 text-sm text-fg-muted-overlay">
@@ -251,7 +251,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           {{ t("bot.removal.workspaceInUse") }}
         </p>
       </div>
-      <footer class="flex justify-end gap-2 px-5 py-3">
+      <footer class="flex justify-end gap-2 border-t border-hairline bg-bg/30 px-5 py-3">
         <button type="button"
                 class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover"
                 @click="emit('close')">{{ t("bot.removal.close") }}</button>

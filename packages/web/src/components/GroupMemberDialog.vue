@@ -33,7 +33,7 @@ const emit = defineEmits<{
     test-id="group-member-dialog"
     @close="emit('close')"
   >
-        <div class="flex shrink-0 items-center justify-between gap-2 px-5 py-3.5">
+        <div class="flex shrink-0 items-center justify-between gap-2 border-b border-hairline px-5 py-3.5">
           <h2 class="min-w-0 truncate text-base font-semibold">{{ props.label }}</h2>
           <button
             type="button"

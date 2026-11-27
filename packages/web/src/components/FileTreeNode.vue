@@ -144,32 +144,32 @@ async function onMenuSelect(key: string) {
     <!-- Row = clickable label button + status dot. The "more actions" menu opens via
          right-click on desktop and a long-press on touch (no per-row ⋯ button). select-none
          + no iOS callout so the long-press doesn't highlight the name or pop the callout. -->
-    <div class="flex w-full select-none items-center rounded-sm pr-1 hover:bg-raised [-webkit-touch-callout:none]">
+    <div class="flex w-full select-none items-center rounded-sm pr-1 transition-colors hover:bg-fill-hover [-webkit-touch-callout:none]">
       <button data-test="tree-row"
-              class="flex min-w-0 flex-1 items-center gap-1 py-0.5 pl-1 text-left"
+              class="flex min-w-0 flex-1 items-center gap-1 py-1 pl-1 text-left"
               :style="{ paddingLeft: depth * 12 + 4 + 'px' }"
               @click="onRowClick" @contextmenu.prevent="openMenu" @pointerdown="onRowPointerDown">
         <ChevronRight v-if="isDir" :size="12" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="isOpen ? 'rotate-90' : ''" />
         <span v-else class="w-3 shrink-0" />
         <component :is="isDir ? (isOpen ? FolderOpen : Folder) : iconForFile(entry.name)" :size="13"
-                   class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />
+                   class="shrink-0" :class="isDir ? (isOpen ? 'text-accent' : 'text-accent/80') : 'text-fg-muted'" />
         <span v-if="inlineMode?.kind !== 'rename'" class="flex-1 truncate text-ui" :class="[dim ? 'opacity-45 italic' : '', isDir ? 'text-fg font-medium' : 'text-fg-muted']">{{ entry.name }}</span>
         <!-- rename: replace the label with an input in-place. select-text re-enables caret
              placement/selection that the row's select-none would otherwise inherit-block. -->
         <input v-else v-focus data-test="inline-name" v-model="inlineName" @click.stop
                @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
-               class="flex-1 select-text rounded-sm bg-surface-2 px-1 text-ui" />
+               class="flex-1 select-text rounded-sm border border-accent bg-raised px-1.5 py-0.5 text-ui shadow-press outline-none" />
       </button>
       <span v-if="gitDot" data-test="fs-status" class="mx-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
             :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
     </div>
 
-    <div v-if="isDir && isOpen">
+    <div v-if="isDir && isOpen" class="ml-2 border-l border-hairline pl-0.5">
       <!-- create: new-name input at top of the expanded children -->
       <input v-if="inlineMode && inlineMode.kind !== 'rename'" v-focus data-test="inline-name" v-model="inlineName" @click.stop
              @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
              :style="{ marginLeft: (depth + 1) * 12 + 16 + 'px' }"
-             class="my-0.5 rounded-sm bg-surface-2 px-1 text-ui" />
+             class="my-0.5 rounded-sm border border-accent bg-raised px-1.5 py-0.5 text-ui shadow-press outline-none" />
       <FileTreeNode v-for="c in visibleChildren" :key="c.name" :entry="c" :dir="rel" :depth="depth + 1"
                     :show-dotfiles="showDotfiles" :show-gitignored="showGitignored" @open-file="emit('openFile', $event)" />
       <div v-if="!visibleChildren.length && files.tree[rel]" class="py-0.5 text-xs text-fg-muted" :style="{ paddingLeft: (depth + 1) * 12 + 16 + 'px' }">{{ $t("files.tree.emptyFolder") }}</div>

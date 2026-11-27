@@ -6,6 +6,10 @@ import { api } from "../api/client";
 import { randomUuid } from "../lib/random-id";
 const props = defineProps<{ instanceId: string; runId: string }>();
 const { t } = useI18n();
+/** One class string for every action in this panel: a glass wafer, not a bare
+ *  word. Tailwind scans this file as text, so the literal is picked up. */
+const BTN =
+  "rounded-btn border border-hairline bg-raised/75 px-2 py-0.5 font-medium text-fg shadow-btn-raised transition-colors hover:bg-raised disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.11]";
 const status = ref<ConversationWorktreeStatusDto>();
 const error = ref(""); const busy = ref(false); const authorized = ref(false);
 let epoch = 0;
@@ -74,33 +78,39 @@ const timer = setInterval(() => { if (!busy.value) void load(); }, 5000);
 onUnmounted(() => { epoch++; clearInterval(timer); });
 </script>
 <template>
-  <div data-test="worktree-panel">
+  <div data-test="worktree-panel" class="px-3 py-2">
     <!-- Rendered outside the status gate: a failed first load has no status yet,
          so without this the user sees nothing at all and cannot retry manually. -->
-    <p v-if="error && !status" role="alert" class="px-4 py-2 text-xs text-danger-text">
-      {{ error }}
-      <button class="ml-2" :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
+    <p v-if="error && !status" role="alert"
+       class="my-2 flex flex-wrap items-center gap-2 rounded-xl border border-hairline bg-danger/[0.07] px-3 py-2 text-xs text-danger-text">
+      <span class="min-w-0 flex-1">{{ error }}</span>
+      <button :class="BTN" :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
     </p>
-    <details v-if="status" class="px-4 py-2 text-xs">
-      <summary>{{ t("group.worktree.title") }} · {{ status.integration?.state ?? status.disposition }}</summary>
+    <!-- A managed-worktree run is an inspector, not prose: one hairline card with a
+         glass body, and every action a small glass button. -->
+    <details v-if="status" class="my-2 rounded-xl border border-hairline bg-bg/50 p-3 text-xs dark:bg-white/[0.03]">
+      <summary class="cursor-pointer select-none font-semibold tracking-wide text-fg">
+        {{ t("group.worktree.title") }} · {{ status.integration?.state ?? status.disposition }}
+      </summary>
       <p class="my-2 text-fg-muted">{{ t("group.worktree.boundary") }}</p>
-      <p>{{ t("group.worktree.base") }}: <code>{{ status.baseCommitSha }}</code></p>
-      <div v-for="r in status.resources" :key="r.id" class="my-1 break-all">{{ r.botId }} · {{ r.state }} · {{ r.worktreePath }}</div>
+      <p>{{ t("group.worktree.base") }}: <code class="break-all font-mono text-fg-muted">{{ status.baseCommitSha }}</code></p>
+      <div v-for="r in status.resources" :key="r.id" class="my-1 break-all text-fg-muted">{{ r.botId }} · {{ r.state }} · <span class="font-mono">{{ r.worktreePath }}</span></div>
       <p v-if="error" role="alert" class="my-2 text-danger-text">{{ error }}</p>
-    <div class="my-2 flex flex-wrap gap-3">
-      <button :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
-      <button v-if="!status.integration && status.disposition === 'pending'" :disabled="busy" @click="operate('preview')">{{ t("group.worktree.preview") }}</button>
-      <button v-if="status.integration?.state === 'conflicted'" :disabled="busy" @click="operate('continue')">{{ t("group.worktree.continue") }}</button>
-      <button v-if="status.integration && ['preparing', 'integrating', 'failed', 'recovery-required'].includes(status.integration.state)" :disabled="busy" @click="operate('recover')">{{ t("group.worktree.recover") }}</button>
-      <button v-if="status.disposition === 'pending'" :disabled="busy" @click="operate('abandon')">{{ t("group.worktree.abandon") }}</button>
-      <button v-if="status.disposition === 'integrated'" :disabled="busy" @click="operate('cleanup')">{{ t("group.worktree.cleanup") }}</button>
+    <div class="my-2 flex flex-wrap gap-1.5">
+      <button :class="BTN" :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
+      <button v-if="!status.integration && status.disposition === 'pending'" :class="BTN" :disabled="busy" @click="operate('preview')">{{ t("group.worktree.preview") }}</button>
+      <button v-if="status.integration?.state === 'conflicted'" :class="BTN" :disabled="busy" @click="operate('continue')">{{ t("group.worktree.continue") }}</button>
+      <button v-if="status.integration && ['preparing', 'integrating', 'failed', 'recovery-required'].includes(status.integration.state)" :class="BTN" :disabled="busy" @click="operate('recover')">{{ t("group.worktree.recover") }}</button>
+      <button v-if="status.disposition === 'pending'" :class="BTN" :disabled="busy" @click="operate('abandon')">{{ t("group.worktree.abandon") }}</button>
+      <button v-if="status.disposition === 'integrated'" :class="BTN" :disabled="busy" @click="operate('cleanup')">{{ t("group.worktree.cleanup") }}</button>
     </div>
     <template v-if="status.preview && !status.integration">
-      <pre v-for="m in status.preview.members" :key="m.worktreeId" class="my-2 max-h-32 overflow-auto whitespace-pre-wrap">{{ m.botId + '\n' + m.diff }}</pre>
-      <label class="flex items-center gap-2"><input v-model="authorized" type="checkbox">{{ t("group.worktree.authorize") }}</label>
-      <button class="my-2" :disabled="busy || !authorized" @click="operate('integrate')">{{ t("group.worktree.integrate") }}</button>
+      <pre v-for="m in status.preview.members" :key="m.worktreeId"
+           class="my-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg border border-hairline bg-raised p-2.5 font-mono text-fg-muted">{{ m.botId + '\n' + m.diff }}</pre>
+      <label class="flex items-center gap-2 text-fg-muted"><input v-model="authorized" type="checkbox">{{ t("group.worktree.authorize") }}</label>
+      <button class="my-2" :class="BTN" :disabled="busy || !authorized" @click="operate('integrate')">{{ t("group.worktree.integrate") }}</button>
     </template>
-    <p v-if="candidate" class="break-all">{{ t("group.worktree.candidate") }}: {{ candidate.branchRef }} · {{ status.integration?.candidateCommitSha }}</p>
+    <p v-if="candidate" class="break-all text-fg-muted">{{ t("group.worktree.candidate") }}: <span class="font-mono">{{ candidate.branchRef }}</span> · {{ status.integration?.candidateCommitSha }}</p>
       <p v-if="status.integration?.state === 'conflicted'" role="alert" class="text-danger-text">{{ t("group.worktree.conflict") }}: {{ status.integration.conflictFiles.join(', ') }}</p>
     </details>
   </div>

@@ -46,7 +46,7 @@ watch(() => props.active, (a) => { if (a !== undefined) expanded.value = a; });
 
 <template>
   <div v-if="entries.length" data-test="plan-panel"
-       :class="['rounded-sm bg-surface text-sm', variant === 'stack' ? 'max-h-[min(40vh,20rem)] overflow-hidden rounded-2xl bg-surface-2 px-2 pt-2' : 'p-2']">
+       :class="['rounded-sm text-sm', variant === 'stack' ? 'max-h-[min(40vh,20rem)] overflow-hidden rounded-2xl border border-hairline bg-bg/75 px-2 pt-2 backdrop-blur-md dark:bg-white/[0.04]' : 'p-2']">
     <button
       type="button"
       data-test="plan-toggle"

@@ -389,7 +389,7 @@ async function confirmDelete(): Promise<void> {
     safe-area
     @close="emit('close')"
   >
-      <div class="flex shrink-0 items-center justify-between px-5 py-3.5">
+      <div class="flex shrink-0 items-center justify-between border-b border-hairline px-5 py-3.5">
         <h2 id="group-dialog-title" class="text-base font-semibold text-fg">
           {{ isEditing ? $t("group.manage.editTitle") : $t("group.manage.createTitle") }}
         </h2>
@@ -482,7 +482,7 @@ async function confirmDelete(): Promise<void> {
               required
               :maxlength="TITLE_MAX"
               :placeholder="$t('group.manage.namePlaceholder')"
-              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
+              class="w-full rounded-lg ui-well px-3 py-1.5 text-sm outline-none transition-colors"
             />
           </div>
 
@@ -497,7 +497,7 @@ async function confirmDelete(): Promise<void> {
               rows="2"
               :maxlength="DESCRIPTION_MAX"
               :placeholder="$t('group.manage.descriptionPlaceholder')"
-              class="w-full resize-y rounded-lg bg-surface-2 px-3 py-2 text-sm outline-none transition-colors"
+              class="w-full resize-y rounded-lg ui-well px-3 py-2 text-sm outline-none transition-colors"
             />
           </div>
 
@@ -505,7 +505,7 @@ async function confirmDelete(): Promise<void> {
             <span class="mb-1.5 block text-xs font-medium text-fg-muted">
               {{ $t("group.manage.workspaceMode") }}
             </span>
-            <div v-if="isEditing" class="rounded-lg bg-surface-2 px-3 py-2 text-xs">
+            <div v-if="isEditing" class="rounded-lg ui-well px-3 py-2 text-xs">
               <p class="font-medium text-fg">
                 {{ workspaceMode === "per-member" ? $t("group.manage.workspaceModePerMember") : $t("group.manage.workspaceModeShared") }}
               </p>
@@ -513,7 +513,7 @@ async function confirmDelete(): Promise<void> {
             </div>
             <div v-else class="grid gap-1.5">
               <label data-test="group-dialog-workspace-mode-shared"
-                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                     class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="workspaceMode" type="radio" value="shared" class="mt-0.5" />
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.workspaceModeShared") }}</span>
@@ -521,7 +521,7 @@ async function confirmDelete(): Promise<void> {
                 </span>
               </label>
               <label data-test="group-dialog-workspace-mode-per-member"
-                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                     class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="workspaceMode" type="radio" value="per-member" class="mt-0.5" />
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.workspaceModePerMember") }}</span>
@@ -537,7 +537,7 @@ async function confirmDelete(): Promise<void> {
             </span>
             <div class="grid gap-1.5">
               <label data-test="group-dialog-public-memory-on"
-                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                     class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="publicMemoryProjection" type="radio" value="on" class="mt-0.5" />
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.publicMemoryOn") }}</span>
@@ -545,7 +545,7 @@ async function confirmDelete(): Promise<void> {
                 </span>
               </label>
               <label data-test="group-dialog-public-memory-off"
-                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                     class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="publicMemoryProjection" type="radio" value="off" class="mt-0.5" />
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.publicMemoryOff") }}</span>
@@ -647,7 +647,7 @@ async function confirmDelete(): Promise<void> {
             </span>
             <div class="grid gap-1.5">
               <label data-test="group-dialog-handoff-memory-off"
-                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                     class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="handoffMemory" type="radio" value="off" class="mt-0.5" />
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.handoffMemoryOff") }}</span>
@@ -655,7 +655,7 @@ async function confirmDelete(): Promise<void> {
                 </span>
               </label>
               <label data-test="group-dialog-handoff-memory-summary"
-                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                     class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="handoffMemory" type="radio" value="summary" class="mt-0.5" />
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.handoffMemorySummary") }}</span>
@@ -672,7 +672,7 @@ async function confirmDelete(): Promise<void> {
             </span>
             <div class="grid gap-1.5">
               <label data-test="group-dialog-default-routing-lead"
-                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                     class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="defaultRouting" type="radio" value="lead" class="mt-0.5" />
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.defaultRoutingLead") }}</span>
@@ -680,7 +680,7 @@ async function confirmDelete(): Promise<void> {
                 </span>
               </label>
               <label data-test="group-dialog-default-routing-automatic"
-                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                     class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="defaultRouting" type="radio" value="automatic" class="mt-0.5" />
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.defaultRoutingAutomatic") }}</span>
@@ -727,7 +727,7 @@ async function confirmDelete(): Promise<void> {
         </div>
       </form>
 
-      <div class="flex shrink-0 items-center justify-between gap-2.5 px-5 py-3">
+      <div class="flex shrink-0 items-center justify-between gap-2.5 border-t border-hairline bg-bg/30 px-5 py-3">
         <UiButton v-if="isEditing && !isDeleting"
                   variant="danger-ghost"
                   size="sm"

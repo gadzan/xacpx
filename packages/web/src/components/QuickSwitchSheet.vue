@@ -153,7 +153,7 @@ function pickGroup(groupId: string): void {
       <button v-for="s in filteredSessions" :key="s.alias" type="button"
               data-test="quick-switch-session-row" :data-alias="s.alias"
               :aria-current="isSessionSelected(s.alias) ? 'true' : undefined"
-              class="flex min-h-[52px] w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-surface-2"
+              class="flex min-h-[52px] w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-fill-hover"
               :class="isSessionSelected(s.alias) ? 'bg-accent-soft text-fg' : 'text-fg'"
               @click="pickSession(s.alias)">
         <AgentIcon :driver="driverForSession(s)" :title="s.agent" :size="14" class="shrink-0" />
@@ -187,7 +187,7 @@ function pickGroup(groupId: string): void {
       <button v-for="b in filteredBots" :key="b.id" type="button"
               data-test="quick-switch-bot-row" :data-bot-id="b.id"
               :aria-current="isBotSelected(b.id) ? 'true' : undefined"
-              class="flex min-h-[46px] w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-surface-2"
+              class="flex min-h-[46px] w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-fill-hover"
               :class="isBotSelected(b.id) ? 'bg-accent-soft text-fg' : 'text-fg'"
               @click="pickBot(b.id)">
         <BotAvatar :avatar="b.avatar" :driver="driverForAgent(b.agent)" :name="b.name" :size="24"
@@ -222,7 +222,7 @@ function pickGroup(groupId: string): void {
       <button v-for="g in filteredGroups" :key="g.id" type="button"
               data-test="quick-switch-group-row" :data-group-id="g.id"
               :aria-current="isGroupSelected(g.id) ? 'true' : undefined"
-              class="flex min-h-[46px] w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-surface-2"
+              class="flex min-h-[46px] w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-fill-hover"
               :class="isGroupSelected(g.id) ? 'bg-accent-soft text-fg' : 'text-fg'"
               @click="pickGroup(g.id)">
         <span class="grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent" aria-hidden="true">

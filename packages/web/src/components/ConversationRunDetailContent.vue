@@ -83,7 +83,7 @@ function toneClass(tone: StateTone): string {
     case "done": return "bg-run/[0.14] text-run";
     case "failed": return "bg-danger/[0.14] text-danger-text";
     case "waiting": return "bg-warn/[0.16] text-warn";
-    case "idle": return "bg-surface-2 text-fg-muted";
+    case "idle": return "ui-well text-fg-muted";
   }
 }
 
@@ -220,7 +220,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
       <p v-if="members.length === 0" data-test="run-detail-no-members" class="text-xs text-fg-muted">
         {{ $t("conversation.runDetail.noMembers") }}
       </p>
-      <ul v-else class="flex flex-col divide-y divide-hairline" data-test="run-member-list">
+      <ul v-else class="flex flex-col divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-bg/35 dark:bg-white/[0.02]" data-test="run-member-list">
         <li v-for="member in members" :key="member.id">
           <button
             type="button"

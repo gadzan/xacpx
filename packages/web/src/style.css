@@ -14,10 +14,10 @@
    Glass is reserved for L3: anything that floats above content. */
 :root {
   /* L0 — canvas. */
-  --c-bg: 245 246 248;          /* #F5F6F8 — cold grey canvas */
+  --c-bg: 247 248 250;          /* #F7F8FA — cool, airy canvas */
   /* L1 — chrome. */
-  --c-surface: 236 238 242;     /* #ECEEF2 — sidebar, one step deeper than the canvas */
-  --c-surface-2: 229 231 235;   /* #E5E7EB — solid hover / track */
+  --c-surface: 241 243 246;     /* #F1F3F6 — sidebar, one hair deeper than the canvas */
+  --c-surface-2: 235 237 241;   /* #EBEDF1 — solid hover / track */
   /* L2 — raised. */
   --c-raised: 255 255 255;      /* #FFFFFF — raised cards, selected rows, code blocks */
 
@@ -57,30 +57,32 @@
   --c-fg-muted-overlay: 98 98 104; /* #626268 — muted text under a scrim */
   --c-accent-text-overlay: 0 95 194; /* #005FC2 — light blue text under a scrim */
 
-  /* Translucent greys for hover, selection, tracks, chips. */
-  --fill-hover: rgba(118, 118, 128, .10);
-  --fill-strong: rgba(118, 118, 128, .14);
-  --fill-track: rgba(118, 118, 128, .12);
+  /* Translucent greys for hover, selection, tracks, chips. Kept gentle on
+     purpose: every one of these lands on a white or near-white surface, so a
+     12-14% wash read as a dirty patch next to the raised card. */
+  --fill-hover: rgba(118, 118, 128, .065);
+  --fill-strong: rgba(118, 118, 128, .11);
+  --fill-track: rgba(118, 118, 128, .075);
   --accent-soft: rgba(0, 113, 227, .11);
 
   /* Hairlines. */
-  --hairline: rgba(60, 60, 67, .11);
-  --hairline-strong: rgba(60, 60, 67, .18);
+  --hairline: rgba(60, 60, 67, .085);
+  --hairline-strong: rgba(60, 60, 67, .16);
 
   /* Shadows. Two families.
      L2 surfaces (card/select/press) stay under 6% black: they carry weight, not
      distance. L3 overlays step up but keep a tight contact shadow under the
      wide one, so the edge stays crisp instead of smearing into the page. */
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .04), 0 10px 30px rgba(28, 32, 40, .06);
-  --shadow-select: 0 1px 3px rgba(0, 0, 0, .05);
+  --shadow-select: inset 0 0 0 1px rgba(0, 0, 0, .035), 0 1px 2px rgba(0, 0, 0, .045);
   --shadow-press: 0 1px 2px rgba(0, 0, 0, .04);
   --shadow-pop: 0 16px 40px -12px rgba(0, 0, 0, .18), 0 2px 6px -1px rgba(0, 0, 0, .08);
   --shadow-dialog: 0 28px 70px -16px rgba(0, 0, 0, .26), 0 4px 12px -2px rgba(0, 0, 0, .10);
-  /* Buttons own their shadow. A primary control gets one specular top edge and
-     one low, hue-tinted shadow — a button wearing the overlay shadow reads as
-     detached from the page. */
-  --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .18), 0 1px 2px rgba(0, 84, 168, .30);
-  --shadow-btn-raised: 0 1px 2px rgba(0, 0, 0, .05);
+  /* Buttons own their shadow. A primary control gets one specular top edge, one
+     inset refraction ring and one low, hue-tinted shadow — a button wearing the
+     overlay shadow reads as detached from the page. */
+  --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .28), inset 0 0 0 1px rgba(255, 255, 255, .12), 0 1px 2px rgba(0, 84, 168, .22), 0 4px 10px -2px rgba(0, 113, 227, .18);
+  --shadow-btn-raised: inset 0 1px 0 rgba(255, 255, 255, .75), 0 1px 2px rgba(0, 0, 0, .05);
   /* The old name for the overlay shadow, kept so the components that still
      reference it pick up the new value. */
   --shadow-float: var(--shadow-pop);
@@ -165,11 +167,11 @@
      thickness from a 1px specular top edge instead: the card catches light at
      the top and reads as a slab rather than a colour patch. */
   --shadow-card: inset 0 1px 0 rgb(255 255 255 / .06), 0 1px 2px rgba(0, 0, 0, .25), 0 18px 50px rgba(0, 0, 0, .20);
-  --shadow-select: inset 0 1px 0 rgb(255 255 255 / .06), 0 1px 3px rgba(0, 0, 0, .30);
+  --shadow-select: inset 0 0 0 1px rgba(255, 255, 255, .055), 0 1px 2px rgba(0, 0, 0, .28);
   --shadow-press: 0 1px 2px rgba(0, 0, 0, .25);
   --shadow-pop: 0 16px 40px -12px rgba(0, 0, 0, .55), 0 2px 6px -1px rgba(0, 0, 0, .35);
   --shadow-dialog: 0 28px 70px -16px rgba(0, 0, 0, .62), 0 4px 12px -2px rgba(0, 0, 0, .40);
-  --shadow-btn: inset 0 1px 0 rgb(255 255 255 / .22), 0 1px 2px rgba(0, 0, 0, .40);
+  --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, .30), inset 0 0 0 1px rgba(255, 255, 255, .10), 0 1px 2px rgba(0, 0, 0, .45), 0 4px 10px -2px rgba(0, 0, 0, .35);
   --shadow-btn-raised: inset 0 1px 0 rgb(255 255 255 / .07), 0 1px 2px rgba(0, 0, 0, .35);
   --shadow-float: var(--shadow-pop);
 
@@ -225,6 +227,11 @@ body { @apply bg-bg text-fg font-sans antialiased; }
   --glass-bg: rgba(255, 255, 255, .72);          /* chrome-bar utilities */
   --glass-bg-strong: rgba(255, 255, 255, .84);   /* floating-surface utilities */
   --glass-control-bg: rgba(255, 255, 255, .88);  /* glass-control: small controls */
+  /* Secondary buttons and segmented thumbs: a frosted wafer, not a solid slab.
+     Over the raised workbench a solid white pill disappears; this one keeps its
+     edge from the hairline and its depth from the control shadow. */
+  --btn-glass-bg: rgba(255, 255, 255, .72);
+  --btn-glass-hover: rgba(255, 255, 255, .92);
   --glass-control-border: rgb(var(--c-fg) / .08);
   --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .55), rgb(255 255 255 / 0) 62%);
   --glass-control-shadow: 0 1px 2px rgb(0 0 0 / .04), 0 10px 24px -12px rgb(0 0 0 / .20);
@@ -241,6 +248,8 @@ body { @apply bg-bg text-fg font-sans antialiased; }
   --glass-bg: rgba(22, 23, 27, .72);        /* L1 chrome, floating */
   --glass-bg-strong: rgba(31, 33, 38, .84); /* L2 raised, floating */
   --glass-control-bg: rgba(31, 33, 38, .88);
+  --btn-glass-bg: rgba(255, 255, 255, .07);
+  --btn-glass-hover: rgba(255, 255, 255, .11);
   --glass-control-border: rgb(255 255 255 / .06);
   --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .07), rgb(255 255 255 / 0) 62%);
   --glass-control-shadow: 0 1px 2px rgb(0 0 0 / .32), 0 10px 24px -12px rgb(0 0 0 / .55);
@@ -468,6 +477,33 @@ select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
 }
 .dark .agent-bubble {
   box-shadow: 0 2px 7px rgb(0 0 0 / 0.22);
+}
+
+/* Glass field / inset well. The one recipe for anything that used to be a solid
+   `bg-surface-2` block inside a translucent panel: dialog inputs, list
+   containers, radio cards, code blocks and chips. A solid grey rectangle on top
+   of a blurred backdrop kills the glass; a hairline over the page tone reads as
+   a recess in it.
+   The edge is an INSET RING, not a border: a border would add 2px to every
+   field and shift the geometry of layouts that match an input column against a
+   fixed-height avatar (see e2e/bot-dialog-header). */
+.ui-well {
+  background-color: rgb(var(--c-bg) / .5);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  transition: background-color var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease);
+}
+.dark .ui-well { background-color: rgb(255 255 255 / .04); }
+.ui-well:focus, .ui-well:focus-within {
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+  background-color: rgb(var(--c-raised));
+}
+.dark .ui-well:focus, .dark .ui-well:focus-within { background-color: rgb(255 255 255 / .07); }
+
+/* Without backdrop-filter the page tone under a well is opaque anyway; keep the
+   fill countable rather than compositing alpha over a solid panel. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ui-well { background-color: rgb(var(--c-bg)); }
+  .dark .ui-well { background-color: rgb(var(--c-surface)); }
 }
 
 /* Thin themed scrollbars. */

@@ -31,7 +31,7 @@ useModalA11y(dialogEl, () => emit("close"));
            aria-modal="true"
            tabindex="-1"
            :aria-label="$t('bot.avatar.quickView')"
-           class="flex flex-col items-center gap-3 rounded-2xl bg-surface p-6 text-fg shadow-float">
+           class="flex flex-col items-center gap-3 rounded-2xl bg-glass-strong p-6 text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
         <BotAvatar :avatar="props.avatar" :driver="props.driver" :name="props.name" :size="144" static />
         <p class="max-w-[12rem] truncate text-sm font-semibold">{{ props.name || $t('bot.avatar.preview.unnamed') }}</p>
         <button type="button"

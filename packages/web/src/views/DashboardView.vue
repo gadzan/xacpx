@@ -592,9 +592,20 @@ watch(
 // Cmd/Ctrl+K command palette.
 const paletteOpen = ref(false);
 function onGlobalKey(e: KeyboardEvent) {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+  if (!(e.metaKey || e.ctrlKey)) return;
+  const key = e.key.toLowerCase();
+  if (key === "k") {
     e.preventDefault();
     paletteOpen.value = !paletteOpen.value;
+    return;
+  }
+  // The desktop convention for the sidebar: Cmd/Ctrl+B (and the Cmd+\ shape
+  // some editors use). Toggling is a desktop affordance only — below lg the
+  // sidebar IS the home screen, so collapsing it would hide the page.
+  if (key === "b" || key === "\\") {
+    if (!isDesktop.value) return;
+    e.preventDefault();
+    leftCollapsed.value = !leftCollapsed.value;
   }
 }
 
@@ -825,6 +836,13 @@ onUnmounted(() => {
          on desktop, so this is a no-op there. -->
     <header data-test="global-bar" class="sticky top-0 z-30 h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between gap-2 bg-surface px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl lg:h-11 lg:border-b lg:border-hairline lg:bg-transparent lg:px-2.5 lg:pt-0 lg:backdrop-blur-none"
            :class="mobileSingleBar ? 'hidden lg:flex' : 'flex'">
+      <!-- Collapsed sidebar: the same top-left corner that hid it brings it back —
+           pressing here and pressing there are the same gesture (原位切换). The old
+           full-height 20px grey strip inside the card pushed the whole workbench 20px
+           to the right and broke the left edge shared by this bar and the content bar. -->
+      <button v-if="leftCollapsed" data-test="expand-left" :aria-label='$t("nav.showSidebar")' :title='$t("nav.showSidebar")'
+              class="hidden h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:grid"
+              @click="leftCollapsed = false"><PanelLeftOpen :size="15" /></button>
       <!-- The brand lives in the sidebar head on desktop. This copy exists only while
            that head is gone (collapsed sidebar) or below lg (no sidebar head at all), so
            exactly one [data-test="global-brand"] is in the DOM at any time. -->
@@ -840,19 +858,29 @@ onUnmounted(() => {
         <button
           data-test="global-search"
           :aria-label='$t("nav.search")'
-          class="group flex h-12 lg:h-8 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-surface-2 active:bg-surface-2 lg:bg-bg lg:hover:bg-surface-2 lg:active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64 lg:w-32 xl:w-64"
+          class="group flex h-12 lg:h-8 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-fill-hover active:bg-surface-2 lg:border lg:border-hairline lg:bg-bg/50 lg:hover:border-hairline-strong lg:hover:bg-fill-hover dark:lg:bg-white/[0.04] lg:active:bg-fill-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64 lg:w-32 xl:w-64"
           @click="paletteOpen = true"
         >
           <Search :size="14" class="shrink-0 text-fg-muted" />
           <span class="hidden flex-1 text-ui text-fg-muted sm:inline lg:hidden xl:inline">{{ $t("nav.searchPlaceholder") }}</span>
-          <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-xs text-fg-muted sm:inline">⌘K</kbd>
+          <kbd class="hidden rounded-sm border border-hairline bg-raised/60 px-1 py-0.5 font-mono text-xs text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <!-- UX1 inbox: every open interaction under the account, with a count
              badge. Hidden count when empty — no button affordance without work. -->
         <button
+          v-if="isDesktop && currentKey && rightCollapsed"
+          data-test="expand-right"
+          :aria-label='$t("nav.showPanel")'
+          :title='$t("nav.showPanel")'
+          class="hidden h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:grid"
+          @click="rightCollapsed = false"
+        >
+          <PanelRightOpen :size="15" />
+        </button>
+        <button
           data-test="needs-you-button"
           :aria-label="$t('needsYou.title')"
-          class="relative grid h-12 w-12 lg:h-8 lg:w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="relative grid h-12 w-12 lg:h-8 lg:w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           @click="inboxOpen = !inboxOpen"
         >
           <Bell :size="15" class="shrink-0" />
@@ -906,7 +934,7 @@ onUnmounted(() => {
       <button type="button" data-test="mobile-session-title" :aria-label='$t("quickSwitch.title")'
               class="glass-control flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-full py-1 pl-1 pr-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openQuickSwitch">
-        <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-2">
+        <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full ui-well">
           <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
         </span>
         <span class="flex min-w-0 flex-1 flex-col">
@@ -926,11 +954,6 @@ onUnmounted(() => {
       <!-- Backdrop closes any open drawer (mobile only). -->
       <div v-if="rightOpen" data-test="drawer-backdrop"
            class="fixed inset-0 z-30 bg-black/30 lg:hidden" @click="navigateBack" />
-
-      <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
-      <button v-if="leftCollapsed" data-test="expand-left" :aria-label='$t("nav.showSidebar")' :title='$t("nav.showSidebar")'
-              class="hidden w-5 shrink-0 items-center justify-center bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
-              @click="leftCollapsed = false"><PanelLeftOpen :size="15" /></button>
 
       <!-- Center: the open pane. -->
       <!-- min-w-0: let this flex child shrink to its share instead of growing to its
@@ -1011,12 +1034,6 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Slim edge handle to bring the right column back once collapsed (desktop only). -->
-      <button v-if="isDesktop && currentKey && rightCollapsed" data-test="expand-right"
-              :aria-label='$t("nav.showPanel")' :title='$t("nav.showPanel")'
-              class="hidden w-5 shrink-0 items-center justify-center bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
-              @click="rightCollapsed = false"><PanelRightOpen :size="15" /></button>
-
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. On desktop its
            width is the user-dragged `rightWidth` (inline style overrides lg:w-[296px],
            which stays as a no-JS fallback); on mobile no inline width is set so the
@@ -1036,22 +1053,24 @@ onUnmounted(() => {
              :class="rightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
              @pointerdown.prevent="rightResize.onPointerDown" />
         <!-- Desktop matches the content bar's 44px so both layers share one bottom edge;
-             the mobile drawer keeps its own 36px row. -->
-        <div class="flex h-9 lg:h-11 shrink-0 items-center gap-1 px-2.5">
+             the mobile drawer keeps its own 36px row. The tabs use the same 2px
+             underline as CenterTabStrip, so the left and right halves of the workbench
+             speak one language. -->
+        <div class="flex h-9 lg:h-11 shrink-0 items-center gap-0.5 border-b border-hairline px-2.5">
           <button data-test="right-tab-files"
-                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
-                  :class="rightTab === 'files' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  class="flex h-9 lg:h-full items-center gap-1.5 border-b-2 px-2.5 text-xs transition-colors cursor-pointer"
+                  :class="rightTab === 'files' ? 'border-accent text-fg font-semibold' : 'border-transparent text-fg-muted font-medium hover:text-fg'"
                   @click="rightTab = 'files'">
             <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
-                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
-                  :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  class="flex h-9 lg:h-full items-center gap-1.5 border-b-2 px-2.5 text-xs transition-colors cursor-pointer"
+                  :class="rightTab === 'tasks' ? 'border-accent text-fg font-semibold' : 'border-transparent text-fg-muted font-medium hover:text-fg'"
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}
           </button>
           <button data-test="close-tasks" :aria-label='$t("nav.hidePanel")' :title='$t("nav.hidePanel")'
-                  class="ml-auto grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2" @click="closeRightColumn"><X :size="18" /></button>
+                  class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg [@media(pointer:coarse)]:h-10 [@media(pointer:coarse)]:w-10" @click="closeRightColumn"><X :size="16" /></button>
         </div>
         <div class="min-h-0 flex-1 overflow-hidden">
           <TaskPanel v-if="rightTab === 'tasks'" />
@@ -1070,14 +1089,14 @@ onUnmounted(() => {
          in the top bar comes back here. One InstanceTree instance, no second copy with
          diverging local state. -->
     <div data-test="column" data-drawer="left"
-         class="flex min-h-0 shrink-0 flex-col bg-surface transition-[width] motion-reduce:transition-none max-lg:relative max-lg:w-full max-lg:flex-1 lg:static lg:order-first lg:bg-bg"
+         class="flex min-h-0 shrink-0 flex-col overflow-hidden bg-surface transition-[width] duration-200 ease-ui motion-reduce:transition-none max-lg:relative max-lg:w-full max-lg:flex-1 lg:static lg:order-first lg:bg-bg [--avatar-ring-default:rgb(var(--c-surface))] lg:[--avatar-ring-default:rgb(var(--c-bg))]"
          :class="[
            leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[232px]',
            nothingSelected ? '' : 'max-lg:hidden',
          ]">
       <!-- Desktop sidebar head: the wordmark and the connection dot, then the collapse
            control. Its height matches the global bar so the two rows share one baseline. -->
-      <div v-if="!leftCollapsed" class="hidden h-11 shrink-0 items-center gap-1 pl-3 pr-2 lg:flex">
+      <div v-if="!leftCollapsed" class="hidden h-11 shrink-0 items-center gap-1 pl-3 pr-2 lg:flex lg:min-w-[232px]">
         <!-- Desktop only: below lg this head is `hidden`, so the id stays parked on the
              bar's copy and the DOM never carries two of them. -->
         <div :data-test="isDesktop ? 'global-brand' : undefined" class="flex min-w-0 flex-1 items-center gap-1.5">
@@ -1091,11 +1110,11 @@ onUnmounted(() => {
       <InstanceTree ref="instanceTree" @select="onSelect" @select-bot="onSelectBot" @select-group="onSelectGroup" @open-desktop="openDesktop" />
       <!-- Sidebar footer (desktop): the theme toggle and the settings link, which
            the global header no longer renders there. -->
-      <div data-test="sidebar-footer" class="mt-auto hidden shrink-0 items-center gap-1 border-t border-hairline px-2 py-2 lg:flex">
+      <div data-test="sidebar-footer" class="mt-auto hidden shrink-0 items-center gap-0.5 border-t border-hairline px-2 py-2 lg:flex lg:min-w-[232px]">
         <button
           data-test="sidebar-theme-toggle"
           :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
-          class="grid h-8 w-8 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-7 w-7 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           @click="theme.toggle()"
         >
           <Moon v-if="theme.mode === 'dark'" :size="15" />
@@ -1105,7 +1124,7 @@ onUnmounted(() => {
           to="/settings"
           data-test="sidebar-settings-link"
           :aria-label='$t("nav.settings")'
-          class="grid h-8 w-8 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-7 w-7 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           <Settings :size="15" />
         </router-link>
@@ -1128,13 +1147,13 @@ onUnmounted(() => {
          model stays on the composer chip. -->
     <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="mobile-more-sheet" @close="closeSheet">
       <button type="button" data-test="sheet-open-tabs"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openSheet('tabs')">
         <LayoutList :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("mobileBar.openTabs", { n: openTabCount }) }}</span>
       </button>
       <button type="button" data-test="sheet-needs-you"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openInboxFromSheet">
         <Bell :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("needsYou.title") }}</span>
@@ -1144,13 +1163,13 @@ onUnmounted(() => {
         </span>
       </button>
       <button type="button" data-test="sheet-files"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openSheetRight('files')">
         <FileText :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("nav.files") }}</span>
       </button>
       <button type="button" data-test="sheet-tasks"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openSheetRight('tasks')">
         <List :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("nav.tasks") }}</span>
@@ -1158,13 +1177,13 @@ onUnmounted(() => {
       <button type="button" data-test="sheet-terminal"
               :disabled="!terminalCapable"
               :title="terminalCapable ? $t('terminal.title') : $t('terminal.unavailable')"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover disabled:cursor-not-allowed disabled:opacity-40"
               @click="openSheetTerminal">
         <SquareTerminal :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("terminal.title") }}</span>
       </button>
       <button v-if="desktopCapableForSelection" type="button" data-test="sheet-desktop"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="openSheetDesktop">
         <Monitor :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("desktop.title") }}</span>
@@ -1184,7 +1203,7 @@ onUnmounted(() => {
         </button>
         <button v-if="item.id !== 'chat'" type="button" data-test="open-tab-close"
                 :aria-label='$t("center.closeTab")'
-                class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2"
+                class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-fill-hover"
                 @click.stop="closeTabFromSheet(item.id)"><X :size="16" /></button>
       </div>
     </MobileSheet>
@@ -1192,7 +1211,7 @@ onUnmounted(() => {
     <!-- FAB instance picker (multiple online instances). -->
     <MobileSheet v-if="activeSheet === 'fabInstance'" :title='$t("mobileBar.selectInstance")' test-id="fab-instance-sheet" @close="closeSheet">
       <button v-for="inst in fabInstances" :key="inst.id" type="button" data-test="fab-instance-option"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="createSessionIn(inst.id)">
         <span class="h-2 w-2 shrink-0 rounded-full bg-run" aria-hidden="true" />
         <span class="truncate">{{ inst.name }}</span>

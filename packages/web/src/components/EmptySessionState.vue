@@ -88,7 +88,7 @@ function onPick(instanceId: string): void {
           <button type="button" data-test="empty-new-session"
                   :ref="(el) => (pickerDd.trigger = el as HTMLElement | null)"
                   :aria-haspopup="true" :aria-expanded="pickerDd.open"
-                  class="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-on-accent shadow-btn transition-[transform,opacity] duration-150 ease-ui hover:opacity-90 active:scale-[0.98] motion-reduce:transition-none motion-reduce:active:scale-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  class="flex h-8 items-center gap-1.5 rounded-btn bg-accent bg-[linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0))] px-3 text-ui font-medium text-on-accent shadow-btn transition-[transform,background-color,opacity] duration-150 ease-ui hover:bg-accent-hover active:scale-[0.98] motion-reduce:transition-none motion-reduce:active:scale-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
                   :disabled="instances.length === 0"
                   @click="onCreate">
             <Plus :size="15" />{{ $t("instance.newSession") }}
@@ -99,7 +99,7 @@ function onPick(instanceId: string): void {
       <!-- Metric cards: one hairline each, no fill — the raised sheet behind them is
            already the card tone. -->
       <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-        <div data-test="empty-stat" class="rounded-xl border border-hairline p-3">
+        <div data-test="empty-stat" class="rounded-xl border border-hairline bg-bg/35 p-3 dark:bg-white/[0.02]">
           <div class="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
             <span class="h-1.5 w-1.5 rounded-full" :class="instances.length ? 'bg-run' : 'bg-fg-muted'" aria-hidden="true" />
             {{ $t("chat.bento.onlineInstances") }}
@@ -110,13 +110,13 @@ function onPick(instanceId: string): void {
           <div class="mt-1 truncate text-xs text-fg-muted">{{ instances.map((i) => i.name).join(" · ") || $t("chat.bento.noneOnline") }}</div>
         </div>
 
-        <div data-test="empty-stat" class="rounded-xl border border-hairline p-3">
+        <div data-test="empty-stat" class="rounded-xl border border-hairline bg-bg/35 p-3 dark:bg-white/[0.02]">
           <div class="flex items-center gap-1.5 text-xs font-medium text-fg-muted">{{ $t("chat.bento.sessions") }}</div>
           <div data-test="empty-stat-value" class="mt-1.5 font-mono text-2xl font-semibold tabular-nums tracking-tight text-fg">{{ sessions.length }}</div>
           <div class="mt-1 truncate text-xs text-fg-muted">{{ sessions[0] ? (sessions[0].displayName || sessions[0].alias) : $t("chat.bento.emptyRecent") }}</div>
         </div>
 
-        <div data-test="empty-stat" class="rounded-xl border border-hairline p-3">
+        <div data-test="empty-stat" class="rounded-xl border border-hairline bg-bg/35 p-3 dark:bg-white/[0.02]">
           <div class="flex items-center gap-1.5 text-xs font-medium text-fg-muted">{{ $t("chat.bento.agents") }}</div>
           <div data-test="empty-stat-value" class="mt-1.5 font-mono text-2xl font-semibold tabular-nums tracking-tight text-fg">{{ agentMix.length }}</div>
           <div class="mt-1 truncate text-xs text-fg-muted">{{ agentMix.map((a) => a.agent).join(" · ") || "—" }}</div>
@@ -125,7 +125,7 @@ function onPick(instanceId: string): void {
 
       <div class="grid grid-cols-1 gap-2.5 lg:grid-cols-[1.35fr_1fr]">
         <!-- Recent sessions: the same rows the old centred list had, now a panel. -->
-        <section class="min-w-0 rounded-xl border border-hairline">
+        <section class="min-w-0 rounded-xl border border-hairline bg-bg/35 dark:bg-white/[0.02]">
           <header class="flex items-center justify-between gap-2 px-3 pb-1 pt-2.5">
             <h3 class="text-xs font-semibold tracking-wide text-fg-muted">{{ $t("chat.bento.recentSessions") }}</h3>
             <span class="text-xs text-fg-muted">{{ $t("chat.bento.resumeHint") }}</span>
@@ -146,7 +146,7 @@ function onPick(instanceId: string): void {
         </section>
 
         <!-- Agent mix: a bar per agent in use, scaled to the busiest one. -->
-        <section class="min-w-0 rounded-xl border border-hairline">
+        <section class="min-w-0 rounded-xl border border-hairline bg-bg/35 dark:bg-white/[0.02]">
           <header class="flex items-center justify-between gap-2 px-3 pb-1 pt-2.5">
             <h3 class="text-xs font-semibold tracking-wide text-fg-muted">{{ $t("chat.bento.agentMix") }}</h3>
           </header>

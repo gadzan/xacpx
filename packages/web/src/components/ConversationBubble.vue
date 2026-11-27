@@ -24,7 +24,7 @@ defineProps<{
 <template>
   <div
     class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
-    :class="own ? 'own rounded-2xl rounded-br-[4px] border border-hairline bg-accent-soft px-3.5 py-2' : 'w-full space-y-2.5'"
+    :class="own ? 'own rounded-2xl rounded-br-[4px] border border-accent/20 bg-accent-soft px-3.5 py-2 shadow-press' : 'w-full space-y-2.5'"
   >
     <slot>
       <TurnParts

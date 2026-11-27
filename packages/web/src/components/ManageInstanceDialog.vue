@@ -311,7 +311,7 @@ onMounted(async () => {
     test-id="manage-instance-dialog"
     @close="emit('close')"
   >
-      <header class="flex shrink-0 items-center justify-between px-5 py-3">
+      <header class="flex shrink-0 items-center justify-between border-b border-hairline px-5 py-3">
         <h2 id="manage-instance-title" class="truncate text-base font-semibold text-fg">{{ $t("instance.manageTitle", { name }) }}</h2>
         <button class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label="$t('instance.close')" @click="navigateBack"><X :size="16" /></button>
       </header>
@@ -331,11 +331,11 @@ onMounted(async () => {
         <div class="flex-1 overflow-y-auto p-5">
           <div v-if="tab === 'general'" id="tabpanel-general" role="tabpanel" aria-labelledby="tab-general" class="space-y-6">
             <section class="space-y-3">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.nameLabel") }}</h3>
+              <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("instance.nameLabel") }}</h3>
               <p v-if="renameError" data-test="rename-error" class="rounded-sm bg-danger/[0.08] px-3 py-2 text-sm text-danger-overlay">{{ renameError }}</p>
               <div class="flex gap-2">
                 <input v-model="name" data-test="rename-name" :placeholder="$t('instance.renamePlaceholder')"
-                       class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                       class="min-w-0 flex-1 rounded-sm ui-well px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                        @keyup.enter="saveName" />
                 <UiButton data-test="rename-save"
                           :disabled="renaming || !name.trim()" @click="saveName">
@@ -344,12 +344,12 @@ onMounted(async () => {
               </div>
             </section>
             <section class="space-y-2">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.groupModeLabel") }}</h3>
-              <div class="flex gap-1" role="radiogroup" :aria-label="$t('instance.groupModeLabel')">
+              <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("instance.groupModeLabel") }}</h3>
+              <div class="flex gap-0.5 rounded-md border border-hairline bg-fill-track p-0.5" role="radiogroup" :aria-label="$t('instance.groupModeLabel')">
                 <button v-for="m in GROUP_MODES" :key="m" type="button" role="radio"
                         :aria-checked="groupMode === m" :data-test="`group-mode-${m}`"
                         class="flex-1 rounded-sm px-2 py-1.5 text-xs"
-                        :class="groupMode === m ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
+                        :class="groupMode === m ? 'bg-raised text-fg font-semibold shadow-select' : 'text-fg-muted font-medium hover:text-fg'"
                         @click="pickGroupMode(m)">
                   {{ m === 'instance' ? $t('instance.groupModeInstance') : m === 'workspace' ? $t('instance.groupModeWorkspace') : $t('instance.groupModeAgent') }}
                 </button>
@@ -357,7 +357,7 @@ onMounted(async () => {
               <p class="text-xs text-fg-muted">{{ $t("instance.groupModeHint") }}</p>
             </section>
             <section data-test="auto-collab-settings" class="space-y-2">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.autoCollabTitle") }}</h3>
+              <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("instance.autoCollabTitle") }}</h3>
               <div class="flex items-center gap-3">
                 <UiSwitch v-if="panel.phase !== 'read-only'" test-id="router-toggle"
                           :checked="routerEnabled"
@@ -380,14 +380,14 @@ onMounted(async () => {
                 <label class="block text-xs font-medium text-fg-muted" for="jev-endpoint">{{ $t("instance.jevEndpoint") }}</label>
                 <input id="jev-endpoint" v-model="jevEndpoint" data-test="jev-endpoint" type="url" inputmode="url"
                        placeholder="https://api.typesafe.ai/v1/systemone"
-                       class="w-full rounded-sm bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                       class="w-full rounded-sm ui-well px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
               </div>
               <div class="space-y-1">
                 <label class="block text-xs font-medium text-fg-muted" for="jev-key">{{ $t("instance.jevApiKey") }}</label>
                 <div class="flex gap-2">
                   <input id="jev-key" v-model="jevKeyDraft" data-test="jev-api-key" type="password" autocomplete="new-password"
                          :placeholder="jevSettings?.keyMasked ?? $t('instance.jevApiKeyEmpty')"
-                         class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                         class="min-w-0 flex-1 rounded-sm ui-well px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
                   <button v-if="jevSettings?.keyConfigured" data-test="jev-api-key-clear" type="button"
                           class="shrink-0 rounded-sm px-2 py-1 text-xs text-fg-muted hover:bg-fg/5 hover:text-fg"
                           @click="clearJevKey">{{ $t("instance.jevApiKeyClear") }}</button>
@@ -403,7 +403,7 @@ onMounted(async () => {
                 <label class="block text-xs font-medium text-fg-muted" for="jev-proxy">{{ $t("instance.jevProxy") }}</label>
                 <input id="jev-proxy" v-model="jevProxy" data-test="jev-proxy" type="url" inputmode="url"
                        placeholder="http://127.0.0.1:8080"
-                       class="w-full rounded-sm bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                       class="w-full rounded-sm ui-well px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
                 <p class="text-xs text-fg-muted">{{ $t("instance.jevProxyHint") }}</p>
               </div>
               <div class="space-y-1">
@@ -429,7 +429,7 @@ onMounted(async () => {
             </details>
             </section>
             <section data-test="terminal-settings" class="space-y-2">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.terminalSettingsTitle") }}</h3>
+              <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("instance.terminalSettingsTitle") }}</h3>
               <div class="flex items-center gap-3">
                 <UiSwitch v-if="terminalPanel.phase !== 'read-only'" test-id="terminal-settings-toggle"
                           :checked="terminalSettings?.enabled ?? false"
@@ -444,7 +444,7 @@ onMounted(async () => {
               <p v-if="terminalError" data-test="terminal-settings-error" class="text-xs text-danger-overlay">{{ terminalError }}</p>
             </section>
             <section data-test="files-settings" class="space-y-2">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.filesSettingsTitle") }}</h3>
+              <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("instance.filesSettingsTitle") }}</h3>
               <div class="flex items-center gap-3">
                 <UiSwitch v-if="filesPanel.phase !== 'read-only'" test-id="files-settings-toggle"
                           :checked="filesSettings?.enabled ?? false"
@@ -457,7 +457,7 @@ onMounted(async () => {
               <p v-if="filesError" data-test="files-settings-error" class="text-xs text-danger-overlay">{{ filesError }}</p>
             </section>
             <section class="space-y-1">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.versionLabel") }}</h3>
+              <h3 class="text-xs font-semibold tracking-wide text-fg">{{ $t("instance.versionLabel") }}</h3>
               <p class="text-sm text-fg-muted" data-test="instance-version">
                 {{ coreVersion ? $t("instance.coreVersion", { version: coreVersion }) : $t("instance.coreVersionUnknown") }}
               </p>

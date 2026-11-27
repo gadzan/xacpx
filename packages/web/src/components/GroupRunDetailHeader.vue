@@ -47,7 +47,7 @@ const toneClass = computed(() => {
     case "done": return "bg-run/[0.14] text-run";
     case "failed": return "bg-danger/[0.14] text-danger-text";
     case "waiting": return "bg-warn/[0.16] text-warn";
-    case "idle": return "bg-surface-2 text-fg-muted";
+    case "idle": return "ui-well text-fg-muted";
   }
 });
 
@@ -99,6 +99,7 @@ const ariaLabel = computed(() =>
     data-test="group-detail-header"
     :data-variant="variant"
     :class="dense ? 'px-4 pb-2.5 pt-3' : 'px-5 pb-3.5 pt-4'"
+    class="border-b border-hairline"
   >
     <div class="flex items-start gap-3">
       <span
@@ -116,7 +117,7 @@ const ariaLabel = computed(() =>
           type="button"
           data-test="group-pause-run-button"
           :data-paused="paused ? 'true' : 'false'"
-          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-surface-2 font-medium text-fg transition-colors hover:bg-fg/10 disabled:opacity-60"
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-full ui-well font-medium text-fg transition-colors hover:bg-fg/10 disabled:opacity-60"
           :class="dense ? 'h-7 px-2 text-xs' : 'min-h-11 px-3 text-sm'"
           :disabled="pausePending === true"
           @click.stop="emit('pause')"
@@ -142,7 +143,7 @@ const ariaLabel = computed(() =>
           v-if="forkAvailable"
           type="button"
           data-test="group-fork-run-button"
-          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-surface-2 font-medium text-fg transition-colors hover:bg-fg/10"
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-full ui-well font-medium text-fg transition-colors hover:bg-fg/10"
           :class="dense ? 'h-7 px-2 text-xs' : 'min-h-11 px-3 text-sm'"
           :title="$t('group.topic.forkFromRun')"
           @click.stop="emit('fork')"

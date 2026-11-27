@@ -119,7 +119,7 @@ const statusText = computed<string>(() => props.activeSpeakerName ?? "");
       type="button"
       data-test="conversation-stop-all"
       :disabled="stopping"
-      class="ml-auto flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs font-medium text-danger-text transition-colors hover:bg-danger/10 disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:px-2.5"
+      class="ml-auto flex shrink-0 items-center gap-1 rounded-btn border border-danger/20 bg-danger/10 px-1.5 py-0.5 text-xs font-medium text-danger-text transition-colors hover:bg-danger/15 disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:px-2.5"
       @click="emit('stopAll')"
     >
       <Loader2 v-if="stopping" :size="11" class="animate-spin motion-reduce:animate-none" />

@@ -141,7 +141,7 @@ function close(): void {
           type="text"
           data-test="add-instance-name"
           :placeholder="$t('settings.instanceNamePlaceholder')"
-          class="mt-3 w-full rounded-2xl bg-surface-2 px-3 py-2 text-base text-fg outline-none placeholder:text-fg-muted focus-visible:ring-2 focus-visible:ring-accent"
+          class="mt-3 w-full rounded-2xl ui-well px-3 py-2 text-base text-fg outline-none placeholder:text-fg-muted focus-visible:ring-2 focus-visible:ring-accent"
           @keydown.enter.prevent="generateToken"
         />
         <p v-if="error" data-test="add-instance-error" class="mt-2 text-xs text-danger-text">{{ error }}</p>
@@ -163,7 +163,7 @@ function close(): void {
           {{ $t("settings.addInstanceWaiting") }}
         </p>
         <div class="mt-3 flex items-start gap-2">
-          <code class="min-w-0 flex-1 break-all rounded-2xl bg-surface-2 p-3 text-xs text-fg" data-test="add-instance-command">
+          <code class="min-w-0 flex-1 break-all rounded-2xl ui-well p-3 text-xs text-fg" data-test="add-instance-command">
             {{ command }}
           </code>
           <button
@@ -171,7 +171,7 @@ function close(): void {
             data-test="add-instance-copy"
             :aria-label="$t('settings.copyCommand')"
             :title="$t('settings.copyCommand')"
-            class="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-surface-2 text-fg transition-colors hover:bg-raised"
+            class="grid h-11 w-11 shrink-0 place-items-center rounded-2xl ui-well text-fg transition-colors hover:bg-raised"
             @click="copyCommand"
           >
             <Check v-if="copied" :size="16" class="text-run" />

@@ -53,7 +53,7 @@ function stateLabel(state: (typeof props.rows)[number]["state"]): string {
       class="flex min-h-12 items-center gap-3 px-3 py-2"
     >
       <span
-        class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2"
+        class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full ui-well"
         aria-hidden="true"
       >
         <BotAvatar

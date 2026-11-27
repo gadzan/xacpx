@@ -127,7 +127,7 @@ function onListKeydown(e: KeyboardEvent): void {
     level="nested"
     @close="emit('close')"
   >
-        <header class="flex items-center justify-between px-5 py-3">
+        <header class="flex items-center justify-between border-b border-hairline px-5 py-3">
           <h2 id="dp-title" class="text-base font-semibold text-fg">{{ $t("dirPicker.title") }}</h2>
           <button type="button" class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label='$t("session.close")'
                   @click="navigateBack"><X :size="16" /></button>
@@ -135,7 +135,7 @@ function onListKeydown(e: KeyboardEvent): void {
 
         <div class="flex items-center gap-1.5 px-5 pt-3">
           <input v-model="pathInput" data-test="dp-path" :placeholder='$t("dirPicker.pathPlaceholder")'
-                 class="min-w-0 flex-1 rounded-lg bg-surface-2 px-3 py-1.5 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                 class="min-w-0 flex-1 rounded-lg ui-well px-3 py-1.5 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                  @keydown.enter.prevent="submitPath" />
           <button type="button" data-test="dp-home" :title='$t("dirPicker.home")' :aria-label='$t("dirPicker.home")'
                   class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-fg/5 hover:text-fg"
@@ -178,7 +178,7 @@ function onListKeydown(e: KeyboardEvent): void {
         </label>
         <p v-if="error" data-test="dp-error" class="mx-5 mt-2 rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger-overlay">{{ error }}</p>
 
-        <footer class="flex justify-end gap-2 px-5 py-3">
+        <footer class="flex justify-end gap-2 border-t border-hairline bg-bg/30 px-5 py-3">
           <UiButton variant="secondary" @click="navigateBack">{{ $t("common.cancel") }}</UiButton>
           <UiButton data-test="dp-confirm" :disabled="!result || loading" @click="choose">
             {{ $t("dirPicker.chooseCurrent") }}

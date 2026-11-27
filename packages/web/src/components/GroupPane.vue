@@ -652,7 +652,7 @@ const worktreeRunId = computed(() => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-bg text-fg">
+  <div class="flex h-full flex-col bg-bg text-fg lg:bg-transparent">
     <!-- Mobile single top bar (<lg): the same floating language as the Direct pane —
          ← disc, one glass name capsule (the collage opens the member panel), the topic
          pill (opens the topic sheet) and ⋯. One text line per control: a 44px pill
@@ -708,7 +708,7 @@ const worktreeRunId = computed(() => {
     <!-- Opaque on purpose: a backdrop-filtered ancestor becomes the containing block for
          fixed/absolute descendants, which would trap TopicSwitcher's popover, confirm
          dialog and row menu inside this header. -->
-    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
+    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 border-b border-hairline bg-transparent px-4 py-1.5">
       <!-- One collage layout serves both bars: only the container size changes, so
            a four-member Group draws four cells here and in the sidebar. 32px keeps
            this header close to one content-bar height; the mobile bar uses the same
@@ -718,7 +718,7 @@ const worktreeRunId = computed(() => {
               @click="memberPanelOpen = true">
         <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
-                          style="--avatar-ring: rgb(var(--c-surface))" />
+                          style="--avatar-ring: rgb(var(--c-raised))" />
       </button>
       <div class="flex min-w-0 flex-col">
         <div class="flex min-w-0 items-center gap-2"><h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2></div>
@@ -773,7 +773,7 @@ const worktreeRunId = computed(() => {
     </div>
 
     <div v-if="memberStatus" data-test="group-member-status"
-         class="space-y-0.5 bg-warn/10 px-3 lg:px-5 py-1.5 text-xs text-fg">
+         class="space-y-0.5 border-b border-hairline bg-warn/[0.08] px-4 py-1.5 text-xs text-fg">
       <p v-if="memberStatus.kind === 'none-enabled'">{{ $t("group.members.noneEnabled") }}</p>
       <template v-else>
         <p data-test="group-disabled-members">{{ $t("group.members.disabled", { names: memberStatus.names }) }}</p>
@@ -795,7 +795,7 @@ const worktreeRunId = computed(() => {
     </div>
     <div v-else-if="needsFirstTopic"
          data-test="group-first-topic"
-         class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+         class="m-auto flex w-full max-w-md flex-col items-center justify-center gap-2 rounded-2xl border border-hairline bg-bg/40 px-6 py-8 text-center dark:bg-white/[0.02]">
       <MessageSquare :size="22" class="text-fg-muted" />
       <p class="text-sm font-semibold">{{ $t("group.firstTopic.title") }}</p>
       <p class="max-w-sm text-xs text-fg-muted">{{ $t(perMemberGroup ? "group.firstTopic.hintPerMember" : "group.firstTopic.hint") }}</p>
@@ -846,19 +846,19 @@ const worktreeRunId = computed(() => {
       @send="handleSend"
     />
     <div v-if="unavailable" data-test="run-detail-unavailable"
-         class="flex items-center justify-between bg-warn/10 px-3 lg:px-5 py-2 text-xs text-fg">
+         class="flex items-center justify-between border-b border-hairline bg-warn/[0.08] px-4 py-1.5 text-xs text-fg">
       <span>{{ $t("conversation.runDetail.unavailable") }}</span>
       <button type="button" data-test="run-detail-retry"
-              class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
+              class="rounded-btn border border-hairline bg-raised/75 px-2 py-0.5 font-medium text-fg shadow-btn-raised transition-colors hover:bg-raised dark:bg-white/[0.06] dark:hover:bg-white/[0.11]"
               @click="retryTimelineDetail">
         {{ $t("bot.prompt.retry") }}
       </button>
     </div>
     <div v-if="groupsStore.historyError && groupsStore.activeTopicId"
-         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
+         class="flex items-center justify-between border-b border-hairline bg-danger/[0.07] px-4 py-1.5 text-xs text-danger-text">
       <span>{{ groupsStore.historyErrorDetail ?? groupsStore.historyError }}</span>
       <button type="button"
-              class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
+              class="rounded-btn border border-hairline bg-raised/75 px-2 py-0.5 font-medium text-fg shadow-btn-raised transition-colors hover:bg-raised dark:bg-white/[0.06] dark:hover:bg-white/[0.11]"
               @click="groupsStore.instanceId && groupsStore.activeConversationId && groupsStore.loadHistory(groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId)">
         {{ $t("bot.prompt.retry") }}
       </button>
@@ -889,13 +889,13 @@ const worktreeRunId = computed(() => {
     <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="group-more-sheet" @close="closeSheet">
       <!-- The member panel: the second entry point (the top bar's ⋯ menu). -->
       <button type="button" data-test="sheet-group-members"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="memberPanelOpen = true; closeSheet()">
         <Users :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("group.panel.title") }}</span>
       </button>
       <button type="button" data-test="sheet-group-edit"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="groupDialogOpen = true; closeSheet()">
         <Pencil :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("group.manage.editTitle") }}</span>
