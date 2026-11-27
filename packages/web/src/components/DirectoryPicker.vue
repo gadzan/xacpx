@@ -121,7 +121,7 @@ function onListKeydown(e: KeyboardEvent): void {
 <template>
   <Teleport to="body">
   <DialogShell
-    panel-class="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl focus:outline-none"
+    panel-class="flex max-h-[85vh] w-full max-w-md lg:max-w-xl flex-col rounded-2xl focus:outline-none"
     labelledby="dp-title"
     test-id="dp-dialog"
     level="nested"

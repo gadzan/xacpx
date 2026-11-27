@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import { RELAY_CAPABILITIES, unsupportedCapability } from "@ganglion/xacpx-relay-protocol";
+import { RELAY_CAPABILITIES, readyCapability, unsupportedCapability } from "@ganglion/xacpx-relay-protocol";
 import { test, expect, loginAndShowInstances } from "./fixtures";
 
 const bots = Array.from({ length: 20 }, (_, i) => ({
@@ -206,3 +206,45 @@ for (const kind of ["bot", "group"] as const) {
     await expect(dialog).toHaveCount(0);
   });
 }
+
+test("the model list stays inside the form instead of running under the footer", async ({ page }) => {
+  // A long model list used to open downward unconditionally, so a field near
+  // the form's bottom edge pushed the panel under the fixed footer and the
+  // form's own overflow cut it in half. Clicks still worked (Playwright ignores
+  // overflow clipping), so only geometry catches it.
+  const models = Array.from({ length: 12 }, (_, i) => ({ modelId: `openai-codex/gpt-6-${i}`, name: `GPT-6 ${i}` }));
+  await page.route("**/api/instances/i1/rpc", async (route) => {
+    const { type } = route.request().postDataJSON() as { type: string };
+    if (type !== "control.agents.capabilities.get") return route.fallback();
+    await route.fulfill({ json: { result: readyCapability("runtime", models, { fetchedAt: "2026-10-10T00:00:00.000Z" }) } });
+  });
+
+  const dialog = await openDialog(page, "bot");
+  const field = dialog.getByTestId("bot-model").first();
+  await field.scrollIntoViewIfNeeded();
+  await field.click();
+  const list = dialog.getByTestId("bot-model-list");
+  await expect(list).toBeVisible();
+
+  const m = await list.evaluate((el) => {
+    const form = el.closest("form")!;
+    const lr = el.getBoundingClientRect();
+    const fr = form.getBoundingClientRect();
+    return {
+      listTop: lr.top,
+      listBottom: lr.bottom,
+      formTop: fr.top,
+      formBottom: fr.bottom,
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      flipped: el.classList.contains("bottom-full"),
+      maxHeight: getComputedStyle(el).maxHeight,
+    };
+  });
+  expect(m.listTop).toBeGreaterThanOrEqual(m.formTop - 1);
+  expect(m.listBottom).toBeLessThanOrEqual(m.formBottom + 1);
+  // It fits by flipping above the field and scrolling inside the panel, not by
+  // being clipped by the form.
+  expect(m.flipped).toBe(true);
+  expect(m.scrollHeight).toBeGreaterThan(m.clientHeight);
+});

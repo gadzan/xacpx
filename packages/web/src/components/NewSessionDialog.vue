@@ -363,7 +363,7 @@ async function submit(): Promise<void> {
        off-canvas) instead of the viewport. -->
   <Teleport to="body">
   <DialogShell
-    panel-class="w-full max-w-md rounded-2xl focus:outline-none"
+    panel-class="w-full max-w-md lg:max-w-xl rounded-2xl focus:outline-none"
     labelledby="new-session-title"
     test-id="new-session-dialog"
     @close="emit('close')"
@@ -396,16 +396,18 @@ async function submit(): Promise<void> {
             </div>
           </div>
 
-          <label class="block">
-            <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.sessionAlias") }} <span class="font-normal text-fg-muted">{{ $t("session.optional") }}</span></span>
-            <input v-model="alias" data-test="ns-alias" :placeholder="aliasPlaceholder"
-                   class="w-full rounded-lg ui-well px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                   @keydown.enter="submit" />
-          </label>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label class="block">
+              <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.sessionAlias") }} <span class="font-normal text-fg-muted">{{ $t("session.optional") }}</span></span>
+              <input v-model="alias" data-test="ns-alias" :placeholder="aliasPlaceholder"
+                     class="w-full rounded-lg ui-well px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                     @keydown.enter="submit" />
+            </label>
 
-          <div class="block">
-            <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.agent") }}</span>
-            <SelectMenu v-model="agentValue" :groups="agentGroups" data-test="ns-agent" :aria-label='$t("session.agent")' :placeholder='$t("session.selectAgent")' />
+            <div class="block">
+              <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.agent") }}</span>
+              <SelectMenu v-model="agentValue" :groups="agentGroups" data-test="ns-agent" :aria-label='$t("session.agent")' :placeholder='$t("session.selectAgent")' />
+            </div>
           </div>
 
           <div class="block">

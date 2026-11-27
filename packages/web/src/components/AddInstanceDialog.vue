@@ -126,7 +126,7 @@ function close(): void {
 
 <template>
   <DialogShell
-    panel-class="w-full max-w-md rounded-2xl p-5"
+    panel-class="w-full max-w-md lg:max-w-lg rounded-2xl p-5"
     labelledby="add-instance-title"
     test-id="add-instance-dialog"
     @close="emit('close')"

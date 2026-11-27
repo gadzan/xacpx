@@ -306,7 +306,7 @@ onMounted(async () => {
   <Teleport to="body">
   <DialogShell
     ref="shell"
-    panel-class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl focus:outline-none"
+    panel-class="flex max-h-[85vh] w-full max-w-xl lg:max-w-2xl flex-col rounded-2xl focus:outline-none"
     labelledby="manage-instance-title"
     test-id="manage-instance-dialog"
     @close="emit('close')"

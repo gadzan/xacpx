@@ -383,7 +383,7 @@ async function confirmDelete(): Promise<void> {
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
   <DialogShell
-    panel-class="flex max-h-full w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-2xl"
+    panel-class="flex max-h-full w-full min-w-0 max-w-lg lg:max-w-2xl flex-col overflow-hidden rounded-2xl"
     labelledby="group-dialog-title"
     test-id="group-dialog"
     safe-area
@@ -511,7 +511,7 @@ async function confirmDelete(): Promise<void> {
               </p>
               <p class="mt-0.5 text-fg-muted">{{ $t("group.manage.workspaceModeLocked") }}</p>
             </div>
-            <div v-else class="grid gap-1.5">
+            <div v-else class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <label data-test="group-dialog-workspace-mode-shared"
                      class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="workspaceMode" type="radio" value="shared" class="mt-0.5" />
@@ -535,7 +535,7 @@ async function confirmDelete(): Promise<void> {
             <span class="mb-1.5 block text-xs font-medium text-fg-muted">
               {{ $t("group.manage.publicMemory") }}
             </span>
-            <div class="grid gap-1.5">
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <label data-test="group-dialog-public-memory-on"
                      class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="publicMemoryProjection" type="radio" value="on" class="mt-0.5" />
@@ -596,7 +596,7 @@ async function confirmDelete(): Promise<void> {
                   <span>{{ $t("bot.actions.newBot") }}</span>
                 </UiButton>
               </div>
-              <div class="max-h-56 space-y-px overflow-y-auto rounded-lg bg-bg p-1 thin-scroll">
+              <div class="thin-scroll grid max-h-56 grid-cols-1 gap-0.5 overflow-y-auto rounded-lg bg-bg p-1 sm:grid-cols-2 sm:gap-x-2">
                 <label v-for="bot in memberCandidates"
                        :key="bot.id"
                        :data-test="`group-dialog-member-${bot.id}`"
@@ -653,7 +653,7 @@ async function confirmDelete(): Promise<void> {
             <span class="mb-1.5 block text-xs font-medium text-fg-muted">
               {{ $t("group.manage.handoffMemory") }}
             </span>
-            <div class="grid gap-1.5">
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <label data-test="group-dialog-handoff-memory-off"
                      class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="handoffMemory" type="radio" value="off" class="mt-0.5" />
@@ -678,7 +678,7 @@ async function confirmDelete(): Promise<void> {
             <span class="mb-1.5 block text-xs font-medium text-fg-muted">
               {{ $t("group.manage.defaultRouting") }}
             </span>
-            <div class="grid gap-1.5">
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <label data-test="group-dialog-default-routing-lead"
                      class="flex cursor-pointer items-start gap-2 rounded-lg ui-well px-3 py-2 text-xs">
                 <input v-model="defaultRouting" type="radio" value="lead" class="mt-0.5" />

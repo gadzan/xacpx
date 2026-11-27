@@ -475,7 +475,7 @@ function describeSubmitError(err: unknown): string {
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
   <DialogShell
-    :panel-class="`relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl ${view === 'appearance' ? 'max-w-3xl' : 'max-w-lg'}`"
+    :panel-class="`relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl ${view === 'appearance' ? 'max-w-3xl' : 'max-w-lg lg:max-w-2xl'}`"
     labelledby="bot-dialog-title"
     safe-area
     @close="emit('close')"
@@ -671,7 +671,7 @@ function describeSubmitError(err: unknown): string {
             <textarea
               id="bot-instructions"
               v-model="instructions"
-              rows="4"
+              rows="5"
               :disabled="!detailHydrated"
               :placeholder="detailHydrated ? $t('bot.fields.instructionsPlaceholder') : $t('bot.fields.instructionsLoading')"
               class="w-full rounded-lg ui-well px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"

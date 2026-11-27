@@ -127,7 +127,7 @@ async function handleFork(): Promise<void> {
 
 <template>
   <DialogShell
-    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4 lg:w-full"
+    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-5 lg:w-full lg:max-w-[440px]"
     labelledby="fork-topic-title"
     test-id="fork-topic-dialog"
     level="top"

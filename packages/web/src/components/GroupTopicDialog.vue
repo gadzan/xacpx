@@ -82,7 +82,7 @@ async function handleCreate(): Promise<void> {
 
 <template>
   <DialogShell
-    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4 lg:w-full"
+    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-5 lg:w-full lg:max-w-md"
     labelledby="group-topic-title"
     @close="emit('close')"
   >

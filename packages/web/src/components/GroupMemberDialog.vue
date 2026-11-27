@@ -28,7 +28,7 @@ const emit = defineEmits<{
 <template>
   <Teleport to="body">
   <DialogShell
-    panel-class="flex max-h-full w-full min-w-0 max-w-md flex-col overflow-hidden rounded-2xl"
+    panel-class="flex max-h-full w-full min-w-0 max-w-md lg:max-w-lg flex-col overflow-hidden rounded-2xl"
     :label="props.label"
     test-id="group-member-dialog"
     @close="emit('close')"

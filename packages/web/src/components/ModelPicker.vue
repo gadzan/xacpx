@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Check, RefreshCw } from "lucide-vue-next";
 import type { AgentCapabilityState, CapabilityModel, SelectionEffect } from "@ganglion/xacpx-relay-protocol";
 import { classifySelection } from "@ganglion/xacpx-relay-protocol";
-import { useDropdown } from "../lib/use-dropdown";
+import { measureDropdownPlacement, useDropdown } from "../lib/use-dropdown";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 import { effortsForModel } from "../lib/capability-view";
 
@@ -153,7 +153,32 @@ const refreshTitle = computed(() => {
 function pickModel(modelId: string): void {
   emit("update:model", modelId);
   dd.closeMenu();
+}// The list opens inside a scrolling dialog form, so the same fitting rule the
+// shared panel uses applies here: measure, then flip above the field when below
+// is short (a BotDialog's footer used to cut the list in half).
+const openUpward = ref(false);
+const listMaxHeight = ref<number | null>(null);
+function placeList(): void {
+  const fit = measureDropdownPlacement(dd.trigger);
+  openUpward.value = fit.upward;
+  listMaxHeight.value = fit.maxHeight;
 }
+watch(
+  () => dd.open,
+  (open) => {
+    window.removeEventListener("scroll", placeList, true);
+    window.removeEventListener("resize", placeList);
+    if (!open) return;
+    void nextTick(placeList);
+    window.addEventListener("scroll", placeList, true);
+    window.addEventListener("resize", placeList);
+  },
+);
+onBeforeUnmount(() => {
+  window.removeEventListener("scroll", placeList, true);
+  window.removeEventListener("resize", placeList);
+});
+
 function onCustom(event: Event): void {
   emit("update:model", (event.target as HTMLInputElement).value);
   dd.openMenu();
@@ -180,7 +205,7 @@ function onEffort(value: string): void {
             :aria-haspopup="'listbox'"
             :aria-expanded="dd.open"
             :placeholder="t('capability.defaultModel')"
-            class="w-full rounded-lg border border-hairline bg-bg/60 py-1.5 pl-3 pr-9 text-sm outline-none transition-colors hover:border-hairline-strong dark:bg-white/[0.04]"
+            class="w-full rounded-lg ui-well py-1.5 pl-3 pr-9 text-sm outline-none transition-colors"
             @focus="onFocus"
             @click="dd.openMenu()"
             @input="onCustom"
@@ -201,7 +226,9 @@ function onEffort(value: string): void {
           </button>
         </div>
         <ul v-if="dd.open" :data-test="listTestId" data-dd-panel
-            class="absolute z-30 mt-1 max-h-80 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+            class="thin-scroll absolute z-30 max-h-80 w-full overflow-y-auto rounded-lg border border-hairline bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
+            :class="openUpward ? 'bottom-full mb-1' : 'mt-1'"
+            :style="listMaxHeight === null ? undefined : { maxHeight: `${listMaxHeight}px` }">
           <li>
             <button type="button" data-test="model-picker-default"
                     class="flex h-[30px] w-full items-center rounded-item px-2 text-left text-ui"

@@ -189,7 +189,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
 
 <template>
   <DialogShell
-    panel-class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl"
+    panel-class="flex max-h-[90vh] w-full max-w-lg lg:max-w-xl flex-col rounded-2xl"
     labelledby="removal-title"
     level="nested"
     @close="emit('close')"
