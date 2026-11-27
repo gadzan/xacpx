@@ -217,6 +217,36 @@ describe("ConversationRunDetailContent.vue", () => {
     wrapper.unmount();
   });
 
+  it("keeps the Group budget and member-completion language out of a single Run", () => {
+    const wrapper = mountContent({
+      run: run({ shape: "single", state: "completed", completionReason: "members-completed", consumedMemberTurns: 1, maxMemberTurns: 1, budgetEpoch: 0, activeBatch: 1 }),
+      memberTurns: [member("turn_a", "bot_a")],
+      selectedMemberTurnId: "turn_a",
+      budget: { consumed: 1, max: 1, epoch: 0, activeBatch: 1 },
+    });
+    // All four are Group chrome: the member-count sentence, the budget, its
+    // epoch and its batch. A Direct Bot run has one turn and none of them mean
+    // anything, so the drawer stays silent instead of inventing a group.
+    expect(wrapper.find('[data-test="run-detail-completion"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="run-detail-budget"]').exists()).toBe(false);
+    // The member list was already the Group case's alone; a single Run keeps it.
+    expect(wrapper.find('[data-test="run-member-section"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("still reports a single Run's failure, which is not Group language", () => {
+    const wrapper = mountContent({
+      run: run({ shape: "single", state: "failed", completionReason: "execution-failed" }),
+      memberTurns: [member("turn_a", "bot_a", { state: "failed", failureReason: "driver crashed" })],
+      selectedMemberTurnId: "turn_a",
+    });
+    expect(wrapper.find('[data-test="run-detail-failure"]').text()).toContain("A member failed");
+    // Its own outcome keeps the summary block alive: the failure reason is not
+    // Group language, it is the one sentence a failed Direct Bot must say.
+    expect(wrapper.find('[data-test="run-detail-summary"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("hides the budget when the wire carried none", () => {
     const wrapper = mountContent({
       run: run({ consumedMemberTurns: undefined, maxMemberTurns: undefined, budgetEpoch: undefined, activeBatch: undefined }),
