@@ -141,6 +141,7 @@ test("probeAgentCapabilities delegates to the inspector without spawning acpx se
     cwd: "/tmp/backend",
     driver: "codex",
     acpxAgent: "codex",
+    // npx argv: the probe pays a cold start, so it gets the longer budget.
     agentArgv: ["npx", "codex@1"],
     agentProcessEnv: { KEEP: "yes" },
   });
@@ -149,6 +150,27 @@ test("probeAgentCapabilities delegates to the inspector without spawning acpx se
   expect(seen[0]?.["agentCommand"]).toEqual(["npx", "codex@1"]);
   expect(seen[0]?.["cwd"]).toBe("/tmp/backend");
   expect(seen[0]?.["agentProcessEnv"]).toEqual({ KEEP: "yes" });
+  expect(seen[0]?.["timeoutMs"]).toBe(120_000);
+});
+
+test("probeAgentCapabilities keeps the ceiling for a preinstalled node launch", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const run = mock(async () => { throw new Error("probe must not spawn acpx"); });
+  const transport = new AcpxCliTransport({
+    command: "acpx",
+    inspectAgentModels: async (options) => {
+      seen.push({ ...options });
+      return { availableModelIds: ["gpt-x"] };
+    },
+  }, run, okRunner());
+  await transport.probeAgentCapabilities({
+    agent: "codex",
+    cwd: "/tmp/backend",
+    driver: "codex",
+    acpxAgent: "codex",
+    agentArgv: ["/usr/local/bin/node", "/runtime/adapters/codex/releases/abc/entry.js"],
+  });
+  expect(seen).toHaveLength(1);
   expect(seen[0]?.["timeoutMs"]).toBe(75_000);
 });
 
