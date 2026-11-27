@@ -213,7 +213,7 @@ defineExpose({ scrollToBottom });
           @click="handleLoadOlder"
         >
           <Loader2 v-if="loadingOlder" :size="12" class="animate-spin motion-reduce:animate-none" />
-          <span>{{ loadingOlder ? $t("common.loading") : $t("chat.loadOlder") }}</span>
+          <span>{{ $t("chat.loadOlder") }}</span>
         </button>
       </div>
 

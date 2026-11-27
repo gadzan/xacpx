@@ -104,8 +104,9 @@ async function handleCreate(): Promise<void> {
             data-test="group-topic-workspace"
             :aria-label='$t("bot.fields.workspace")'
             :title='$t("bot.fields.workspace")'
-            :placeholder="workspacesLoad === 'loading' && !workspaces.length ? $t('common.loading') : $t('group.topic.workspacePlaceholder')"
+            :placeholder="$t('group.topic.workspacePlaceholder')"
             :groups="workspaceGroups"
+            :disabled="workspacesLoad === 'loading' && !workspaces.length"
           />
           <p v-if="workspacesLoad === 'failed'" data-test="group-topic-workspaces-failed" class="-mt-2 mb-3 flex items-center gap-2 text-xs text-danger-overlay">
             <span>{{ $t("group.topic.workspacesFailed") }}</span>

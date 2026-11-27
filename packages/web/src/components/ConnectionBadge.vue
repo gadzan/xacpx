@@ -64,12 +64,23 @@ const appearance = computed(() => {
   <div
     data-test="conn-badge"
     role="img"
-    class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs"
-    :class="appearance.text"
+    class="inline-flex items-center gap-1.5 rounded-full px-1.5 py-0.5 text-xs"
+    :class="[
+      appearance.text,
+      appearance.status === 'online'
+        ? ''
+        : 'border border-current/25 bg-fg/[0.04] pl-2 dark:bg-white/[0.05]',
+    ]"
     :title="$t(appearance.key)"
     :aria-label="$t(appearance.key)"
   >
-    <span class="h-2 w-2 rounded-full" :class="appearance.dot" aria-hidden="true" />
+    <!-- A status light, not a gumball: a 6px core with a translucent halo reads as
+         "steady" at a glance, and offline states grow a hairline capsule instead. -->
+    <span
+      class="h-1.5 w-1.5 rounded-full"
+      :class="[appearance.dot, appearance.status === 'online' ? 'ring-[3px] ring-run/20' : '']"
+      aria-hidden="true"
+    />
     <span :class="appearance.status === 'online' ? 'lg:hidden' : ''">{{ $t(appearance.key) }}</span>
   </div>
 </template>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { X, Loader2, AlertTriangle, FolderOpen } from "lucide-vue-next";
+import { X, AlertTriangle, FolderOpen } from "lucide-vue-next";
 import { needsSetupCapability, type AgentCapabilityState, type NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import DialogShell from "./DialogShell.vue";
@@ -374,7 +374,13 @@ async function submit(): Promise<void> {
       </header>
 
       <div class="space-y-4 px-5 py-4">
-        <div v-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("session.loadingOptions") }}</div>
+        <!-- Field-shaped skeleton: three label/control pairs instead of a centred caption. -->
+        <div v-if="loading" role="status" :aria-label="$t('session.loadingOptions')" class="space-y-4 py-1">
+          <div v-for="i in 3" :key="i" class="space-y-1.5" :style="{ '--sk-delay': `${(i - 1) * 110}ms` }">
+            <span class="sk-bar block h-2.5 w-16 rounded-sm bg-fg/[0.07]" />
+            <span class="sk-bar block h-9 w-full rounded-lg bg-fg/[0.05]" />
+          </div>
+        </div>
         <template v-else>
           <div class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.source") }}</span>
@@ -450,12 +456,10 @@ async function submit(): Promise<void> {
           <div v-if="sessionSource === 'native'" class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.nativeSession") }}</span>
             <!-- Loading: animated spinner + shimmering skeleton rows (the list can take a while). -->
-            <div v-if="nativeLoading" data-test="ns-native-loading" class="space-y-1.5">
-              <div class="flex items-center gap-2 text-xs text-fg-muted">
-                <Loader2 :size="13" class="animate-spin motion-reduce:animate-none text-accent" />
-                {{ $t("session.listingNative") }}
-              </div>
-              <div v-for="n in 3" :key="n" class="h-7 animate-pulse rounded-lg bg-fg/5 motion-reduce:animate-none" :style="{ width: `${92 - n * 12}%` }" />
+            <div v-if="nativeLoading" data-test="ns-native-loading" role="status" :aria-label="$t('session.listingNative')"
+       class="space-y-1.5">
+          <div v-for="(w, n) in [92, 80, 68]" :key="n" class="sk-bar h-7 rounded-lg bg-fg/[0.06]"
+               :style="{ width: `${w}%`, '--sk-delay': `${n * 110}ms` }" />
             </div>
             <SelectMenu v-else-if="nativeSessions.length" v-model="nativeSel" :groups="nativeGroups"
                         data-test="ns-native" :aria-label='$t("session.nativeSession")' :placeholder='$t("session.selectNative")' />

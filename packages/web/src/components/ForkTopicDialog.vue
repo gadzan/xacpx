@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { Loader2 } from "lucide-vue-next";
 import type { ConversationRunDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import DialogShell from "./DialogShell.vue";
 import UiButton from "./UiButton.vue";
@@ -160,7 +161,8 @@ async function handleFork(): Promise<void> {
             mobile-block
             :disabled="creating || !title.trim()"
           >
-            {{ creating ? $t("common.loading") : $t("group.topic.forkAction") }}
+            <Loader2 v-if="creating" :size="13" class="animate-spin motion-reduce:animate-none" />
+        {{ $t("group.topic.forkAction") }}
           </UiButton>
         </div>
       </form>

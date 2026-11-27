@@ -315,7 +315,18 @@ onMounted(async () => {
         <h2 id="manage-instance-title" class="truncate text-base font-semibold text-fg">{{ $t("instance.manageTitle", { name }) }}</h2>
         <button class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label="$t('instance.close')" @click="navigateBack"><X :size="16" /></button>
       </header>
-      <div v-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("instance.dialogLoading") }}</div>
+      <div v-if="loading" role="status" :aria-label="$t('instance.dialogLoading')" class="space-y-3 px-3 py-2">
+        <!-- Tab strip, then two settings cards — the shape the dialog settles into. -->
+        <div class="flex gap-1" :style="{ '--sk-delay': '0ms' }">
+          <span v-for="w in [52, 64, 48]" :key="w" class="sk-bar h-7 rounded-md bg-fg/[0.07]" :style="{ width: `${w}px` }" />
+        </div>
+        <div v-for="i in 2" :key="i" class="space-y-2 rounded-lg border border-hairline p-3"
+             :style="{ '--sk-delay': `${i * 120}ms` }">
+          <span class="sk-bar block h-2.5 w-20 rounded-sm bg-fg/[0.08]" />
+          <span class="sk-bar block h-9 w-full rounded-lg bg-fg/[0.05]" />
+          <span class="sk-bar block h-2.5 w-2/3 rounded-sm bg-fg/[0.05]" />
+        </div>
+      </div>
       <template v-else>
         <!-- Tab strip: General / Workspaces / Agents — Agents is always one click away. -->
         <nav class="flex shrink-0 gap-1 px-3 pt-2" role="tablist" @keydown="onTabKeydown">

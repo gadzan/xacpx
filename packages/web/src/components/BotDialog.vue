@@ -530,9 +530,11 @@ function describeSubmitError(err: unknown): string {
             <span>{{ $t("bot.prompt.retry") }}</span>
           </button>
         </div>
-        <div v-else-if="isEditing && props.bot && !detailHydrated && detailLoading"
-             class="p-3 text-xs text-fg-muted">
-          {{ $t("bot.validation.detailLoading") }}
+        <div v-else-if="isEditing && props.bot && !detailHydrated && detailLoading" role="status"
+           :aria-label="$t('bot.validation.detailLoading')" class="space-y-2 p-3">
+          <span class="sk-bar block h-2.5 w-24 rounded-sm bg-fg/[0.08]" />
+          <span class="sk-bar block h-2.5 w-full rounded-sm bg-fg/[0.05]" />
+          <span class="sk-bar block h-2.5 w-2/3 rounded-sm bg-fg/[0.05]" />
         </div>
 
         <section v-show="view === 'basic'" id="bot-panel-basic" class="space-y-4">
@@ -665,15 +667,26 @@ function describeSubmitError(err: unknown): string {
           <label for="bot-instructions" class="block text-xs font-medium text-fg-muted mb-1.5">
             {{ $t("bot.fields.instructions") }}
           </label>
-          <textarea
-            id="bot-instructions"
-            v-model="instructions"
-            rows="4"
-            :disabled="!detailHydrated"
-            :placeholder="detailHydrated ? $t('bot.fields.instructionsPlaceholder') : $t('bot.fields.instructionsLoading')"
-            class="w-full rounded-lg ui-well px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
-            @input="instructionsDirty = true"
-          />
+          <div class="relative">
+            <textarea
+              id="bot-instructions"
+              v-model="instructions"
+              rows="4"
+              :disabled="!detailHydrated"
+              :placeholder="detailHydrated ? $t('bot.fields.instructionsPlaceholder') : $t('bot.fields.instructionsLoading')"
+              class="w-full rounded-lg ui-well px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
+              @input="instructionsDirty = true"
+            />
+            <!-- Hydrating reads as a skeleton over the field, not as a caption the user has
+                 to parse: the placeholder text stays in the DOM (the disabled field's own
+                 contract) but is covered until the real value arrives. -->
+            <div v-if="!detailHydrated && detailLoading" aria-hidden="true"
+                 class="pointer-events-none absolute inset-0 space-y-2 rounded-lg bg-raised/85 px-3 py-3 backdrop-blur-[2px] dark:bg-bg/70">
+              <span class="sk-bar block h-2.5 w-3/4 rounded-sm bg-fg/[0.08]" :style="{ '--sk-delay': '0ms' }" />
+              <span class="sk-bar block h-2.5 w-1/2 rounded-sm bg-fg/[0.06]" :style="{ '--sk-delay': '110ms' }" />
+              <span class="sk-bar block h-2.5 w-2/3 rounded-sm bg-fg/[0.05]" :style="{ '--sk-delay': '220ms' }" />
+            </div>
+          </div>
           <!-- A new Bot has no turns yet: the "applies to later turns" note
                only makes sense when editing, like ModelPicker's showAppliesLater. -->
           <p v-if="isEditing" data-test="bot-instructions-hint" class="mt-1 text-xs text-fg-muted">

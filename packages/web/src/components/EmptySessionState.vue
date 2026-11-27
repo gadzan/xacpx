@@ -80,7 +80,7 @@ function onPick(instanceId: string): void {
                       class="flex w-full items-center gap-2 rounded-item px-2 text-left text-ui text-fg"
                       :class="[mobile ? 'h-11' : 'h-[30px]', !mobile && i === pickerDd.highlight ? 'bg-fill-strong' : 'hover:bg-fill-hover']"
                       @click="onPick(inst.id)">
-                <span class="h-2 w-2 shrink-0 rounded-full bg-run" aria-hidden="true" />
+                <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-run ring-2 ring-run/20" aria-hidden="true" />
                 <span class="min-w-0 truncate">{{ inst.name }}</span>
               </button>
             </template>
@@ -101,7 +101,7 @@ function onPick(instanceId: string): void {
       <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
         <div data-test="empty-stat" class="rounded-xl border border-hairline bg-bg/35 p-3 dark:bg-white/[0.02]">
           <div class="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
-            <span class="h-1.5 w-1.5 rounded-full" :class="instances.length ? 'bg-run' : 'bg-fg-muted'" aria-hidden="true" />
+            <span class="h-1.5 w-1.5 rounded-full" :class="instances.length ? 'bg-run ring-2 ring-run/20' : 'bg-fg-muted opacity-45'" aria-hidden="true" />
             {{ $t("chat.bento.onlineInstances") }}
           </div>
           <div data-test="empty-stat-value" class="mt-1.5 flex items-baseline gap-1 font-mono text-2xl font-semibold tabular-nums tracking-tight text-fg">

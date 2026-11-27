@@ -199,7 +199,14 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
       </header>
       <div class="flex-1 space-y-3 overflow-y-auto px-5 py-4 text-sm text-fg-muted-overlay">
         <p>{{ t("bot.removal.body") }}</p>
-        <p v-if="loading" data-test="removal-loading">{{ t("bot.removal.loading") }}</p>
+        <div v-if="loading" data-test="removal-loading" role="status" :aria-label="t('bot.removal.loading')"
+           class="space-y-1.5">
+        <div v-for="(w, i) in [72, 56, 44]" :key="i" class="flex items-center gap-2"
+             :style="{ '--sk-delay': `${i * 110}ms` }">
+          <span class="sk-bar h-1.5 w-1.5 shrink-0 rounded-full bg-fg/10" />
+          <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.07]" :style="{ width: `${w}%` }" />
+        </div>
+      </div>
         <p v-if="errorText" data-test="removal-error" class="text-danger-overlay">{{ errorText }}</p>
         <p v-if="finished" data-test="removal-finished">{{ t("bot.removal.removedBanner") }}</p>
         <ul v-if="impact" class="space-y-2 text-xs leading-relaxed">

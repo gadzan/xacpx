@@ -1213,7 +1213,7 @@ onUnmounted(() => {
       <button v-for="inst in fabInstances" :key="inst.id" type="button" data-test="fab-instance-option"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-fill-hover"
               @click="createSessionIn(inst.id)">
-        <span class="h-2 w-2 shrink-0 rounded-full bg-run" aria-hidden="true" />
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-run ring-2 ring-run/20" aria-hidden="true" />
         <span class="truncate">{{ inst.name }}</span>
       </button>
     </MobileSheet>

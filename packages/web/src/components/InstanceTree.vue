@@ -1113,7 +1113,11 @@ const rowSwipes = computed(() => {
                 data-test="instance-header-toggle"
                 @click="toggle(inst.id)">
           <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="isExpanded(inst.id) ? 'rotate-90' : ''" />
-          <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
+          <!-- A 6px jewel with a soft halo, not an 8px gumdrop: online is the default
+               state and should read at a glance, not shout. -->
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full"
+                :class="inst.online ? 'bg-run ring-2 ring-run/20' : 'bg-fg-muted opacity-45'"
+                data-test="online-dot" />
           <span class="truncate text-ui font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
                 :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
           <span v-if="inst.online" class="shrink-0 font-mono text-xs tabular-nums text-fg-muted">{{ activeSessions(inst).length }}</span>
@@ -1180,8 +1184,21 @@ const rowSwipes = computed(() => {
           </div>
           <div v-if="((directBotsStore.loadingBotsByInstance[inst.id] ?? 0) > 0 && !directBotsStore.botsLoaded[inst.id]) || ((groupsStore.loadingGroupsByInstance[inst.id] ?? 0) > 0 && !groupsStore.groupsLoaded[inst.id])"
                data-test="bots-loading"
-               class="py-1 pl-2.5 text-xs text-fg-muted">
-            {{ $t("instance.loading") }}
+               role="status"
+               :aria-label="$t('instance.loading')"
+               class="space-y-px py-0.5">
+            <!-- Bot-shaped placeholders instead of the word "loading": the list keeps its
+                 final rhythm, so nothing jumps when the real rows arrive. -->
+            <div v-for="(w, i) in [{ title: 62, role: 40 }, { title: 48, role: 66 }, { title: 56, role: 34 }]"
+                 :key="i"
+                 class="flex h-10 items-center gap-2 rounded-sm px-2.5"
+                 :style="{ '--sk-delay': `${i * 110}ms` }">
+              <span class="sk-bar h-7 w-7 shrink-0 rounded-full bg-fg/[0.08]" />
+              <span class="flex min-w-0 flex-1 flex-col gap-1.5">
+                <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.08]" :style="{ width: `${w.title}%` }" />
+                <span class="sk-bar h-2 rounded-sm bg-fg/[0.05]" :style="{ width: `${w.role}%` }" />
+              </span>
+            </div>
           </div>
           <div v-else-if="directBotsStore.botsLoaded[inst.id] && groupsStore.groupsLoaded[inst.id] && mixedEmpty(inst.id)"
                data-test="no-bots"
@@ -1364,7 +1381,14 @@ const rowSwipes = computed(() => {
                 class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs leading-4 font-medium text-accent-text hover:bg-accent-soft disabled:text-fg-muted disabled:hover:bg-transparent"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
           <ChevronRight v-if="!inst.sessionsLoading" :size="11" />
-          <span v-if="inst.sessionsLoading" data-test="sessions-loading">{{ $t("instance.loading") }}</span>
+          <span v-if="inst.sessionsLoading" data-test="sessions-loading" role="status" :aria-label="$t('instance.loading')"
+                  class="flex w-full flex-col gap-1.5 py-0.5">
+            <span v-for="(w, i) in [76, 54, 66]" :key="i" class="flex items-center gap-1.5"
+                  :style="{ '--sk-delay': `${i * 110}ms` }">
+              <span class="sk-bar h-1.5 w-1.5 shrink-0 rounded-full bg-fg/10" />
+              <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.08]" :style="{ width: `${w}%` }" />
+            </span>
+          </span>
           <template v-else>{{ $t("instance.loadSessions") }}</template>
         </button>
         <div v-for="grp in sectionsFor(inst)" :key="grp.key ?? '~flat'"
@@ -1421,13 +1445,13 @@ const rowSwipes = computed(() => {
                        inside that session's pane, so a dot here is the only thing an
                        operator looking elsewhere gets before the window closes. -->
                   <span v-else-if="!s.archived && directBotsStore.sessionQuestionPendingFor(inst.id, s.alias)" data-test="attention-dot" data-attention="question"
-                        class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-warn"
+                        class="pulse-dot h-1.5 w-1.5 shrink-0 rounded-full bg-warn ring-2 ring-warn/25"
                         :title="t('bot.interaction.waiting')" :aria-label="t('bot.interaction.waiting')" />
                   <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
-                        class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-run-bright" />
+                        class="pulse-dot h-1.5 w-1.5 shrink-0 rounded-full bg-run-bright ring-2 ring-run/25" />
                   <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
-                        class="h-2 w-2 shrink-0 rounded-full bg-info" />
-                  <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
+                        class="h-1.5 w-1.5 shrink-0 rounded-full bg-info ring-2 ring-info/20" />
+                  <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-1.5 w-1.5 shrink-0 rounded-full bg-run ring-2 ring-run/20" />
                   <!-- Agent brand glyph (driver icon) BEFORE the name, in place of a text badge —
                        saves horizontal space; the agent name stays available on hover. Redundant
                        inside an agent-mode group (the group header already carries it) → dropped.
@@ -1518,8 +1542,14 @@ const rowSwipes = computed(() => {
             <!-- Grouped modes page sleeping rows per group (5 at a time) while the
                  instance-level sleeping filter is on: one load-more at the group bottom. -->
             <template v-if="grp.key !== null && inst.online && archivedIsExpanded(inst.id)">
-              <div v-if="grp.archivedState?.loading" data-test="group-archived-loading"
-                   class="py-0.5 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
+              <div v-if="grp.archivedState?.loading" data-test="group-archived-loading" role="status"
+                 :aria-label="$t('instance.loading')" class="space-y-1 py-0.5 pl-2.5">
+              <span v-for="(w, i) in [58, 42]" :key="i" class="flex items-center gap-1.5"
+                    :style="{ '--sk-delay': `${i * 110}ms` }">
+                <span class="sk-bar h-1.5 w-1.5 shrink-0 rounded-full bg-fg/10" />
+                <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.07]" :style="{ width: `${w}%` }" />
+              </span>
+            </div>
               <button v-else-if="grp.archivedState?.hasMore" data-test="group-load-more"
                       class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent-text transition-colors hover:bg-fill-hover"
                       @click.stop="loadMoreGroupArchived(inst, grp.key)">

@@ -661,60 +661,54 @@ const timelineFeed = useConversationTimelineFeed({
          purpose (same as GroupPane): a backdrop-filtered ancestor becomes the containing
          block for fixed/absolute descendants and would trap TopicSwitcher's popover,
          confirm dialog and row menu inside this header. -->
-    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 border-b border-hairline bg-transparent px-4 py-1.5">
-      <div class="flex items-center gap-3 min-w-0">
-        <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
-                   :blink-key="blinkKey"
-                   :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
-                   :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
+    <!-- One horizontal flow, like ChatPane: avatar, name, then the metadata chips on the
+         same 44px baseline. The old two-row stack (name row + chip row) needed ~42px of a
+         44px bar, so it sat flush against both hairlines. -->
+    <header data-conversation-header class="hidden lg:flex shrink-0 h-11 items-center gap-2.5 border-b border-hairline bg-transparent px-4">
+      <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="26" class="shrink-0"
+                 :blink-key="blinkKey"
+                 :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
+                 :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
 
-        <!-- Name, Role & Chips -->
-        <div class="flex min-w-0 flex-col">
-          <div class="flex items-center gap-2">
-            <h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</h2>
-            <span
-              class="h-2 w-2 rounded-full shrink-0"
-              :class="bot?.enabled ? 'bg-run' : 'bg-fg-muted'"
-              :title="bot?.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')"
-            />
-            <span v-if="bot && !bot.enabled" class="text-xs text-fg-muted font-medium">
-              ({{ $t("bot.status.disabled") }})
-            </span>
-          </div>
+      <h2 class="shrink-0 truncate text-sm font-semibold tracking-tight text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</h2>
+      <!-- Enabled is the normal state, so it gets no badge at all; only the exception
+           (a disabled Bot) earns a quiet label. Three green dots in 200px were the
+           loudest thing in the chrome. -->
+      <span v-if="bot && !bot.enabled" class="shrink-0 rounded-md border border-hairline bg-bg/60 px-1.5 py-0.5 text-xs font-medium text-fg-muted">
+        {{ $t("bot.status.disabled") }}
+      </span>
 
-          <div v-if="timelineSupported" data-test="bot-header-meta" class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
-            <TopicSwitcher
-              v-if="!isMobile"
-              variant="direct"
-              :topics="directBotsStore.currentTopics"
-              :active-topic-id="directBotsStore.activeTopicId"
-              :preview-topic="previewTopic"
-              :rename-topic="renameTopic"
-              :archive-topic="archiveTopic"
-              :restore-topic="restoreTopic"
-              :teardown-topic="teardownTopic"
-              :clear-topic="clearTopic"
-              :fork-topic="forkSupported ? openForkFromTopic : undefined"
-              :abandon-unknown-runs="abandonUnknownRuns"
-              @select="directBotsStore.switchTopic"
-              @create="newTopicDialogOpen = true"
-            />
-            <span aria-hidden="true">·</span>
-            <!-- Role segment and its separator render together, and only for a
-                 non-blank role, so a role-less Bot reads "Default · repo · agent". -->
-            <template v-if="bot?.role?.trim()">
-              <span class="truncate font-medium text-fg/80">{{ bot.role }}</span>
-              <span aria-hidden="true">·</span>
-            </template>
-            <span class="flex items-center gap-1">
-              <Folder :size="10" />
-              <span>{{ bot?.workspace }}</span>
-            </span>
-            <span>·</span>
-            <span>{{ bot?.agent }}</span>
-            <span v-if="bot?.model">· {{ bot.model }}</span>
-          </div>
-        </div>
+      <div v-if="timelineSupported" data-test="bot-header-meta" class="flex min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar text-xs text-fg-muted">
+        <TopicSwitcher
+          v-if="!isMobile"
+          variant="direct"
+          :topics="directBotsStore.currentTopics"
+          :active-topic-id="directBotsStore.activeTopicId"
+          :preview-topic="previewTopic"
+          :rename-topic="renameTopic"
+          :archive-topic="archiveTopic"
+          :restore-topic="restoreTopic"
+          :teardown-topic="teardownTopic"
+          :clear-topic="clearTopic"
+          :fork-topic="forkSupported ? openForkFromTopic : undefined"
+          :abandon-unknown-runs="abandonUnknownRuns"
+          @select="directBotsStore.switchTopic"
+          @create="newTopicDialogOpen = true"
+        />
+        <span aria-hidden="true">·</span>
+        <!-- Role segment and its separator render together, and only for a
+             non-blank role, so a role-less Bot reads "Default · repo · agent". -->
+        <template v-if="bot?.role?.trim()">
+          <span class="truncate font-medium text-fg/80">{{ bot.role }}</span>
+          <span aria-hidden="true">·</span>
+        </template>
+        <span class="flex items-center gap-1">
+          <Folder :size="10" />
+          <span>{{ bot?.workspace }}</span>
+        </span>
+        <span>·</span>
+        <span>{{ bot?.agent }}</span>
+        <span v-if="bot?.model">· {{ bot.model }}</span>
       </div>
 
       <!-- Actions: Edit, Delete -->

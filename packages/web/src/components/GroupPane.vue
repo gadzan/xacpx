@@ -708,47 +708,45 @@ const worktreeRunId = computed(() => {
     <!-- Opaque on purpose: a backdrop-filtered ancestor becomes the containing block for
          fixed/absolute descendants, which would trap TopicSwitcher's popover, confirm
          dialog and row menu inside this header. -->
-    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 border-b border-hairline bg-transparent px-4 py-1.5">
-      <!-- One collage layout serves both bars: only the container size changes, so
-           a four-member Group draws four cells here and in the sidebar. 32px keeps
-           this header close to one content-bar height; the mobile bar uses the same
-           32 inside its 36px button (44px on a coarse pointer). -->
+    <header data-conversation-header class="hidden lg:flex shrink-0 h-11 items-center gap-2.5 border-b border-hairline bg-transparent px-4">
+      <!-- One collage layout serves every surface: only the container size changes, so
+           a four-member Group draws four cells here, in the sidebar and in the mobile bar.
+           26px here because this bar is a single 44px row (avatar, title, chips on one
+           baseline); the sidebar keeps 40 and the mobile disc keeps 32. -->
       <button type="button" data-test="group-desktop-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
-              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="grid h-7 w-7 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="memberPanelOpen = true">
-        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
+        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="26" :name="group?.title ?? $t('group.nav.title')"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
                           style="--avatar-ring: rgb(var(--c-raised))" />
       </button>
-      <div class="flex min-w-0 flex-col">
-        <div class="flex min-w-0 items-center gap-2"><h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2></div>
-        <div class="flex min-w-0 items-center gap-1.5 text-xs text-fg-muted">
-          <TopicSwitcher
-            v-if="timelineSupported && !isMobile && !needsFirstTopic"
-            :topics="groupsStore.currentTopics"
-            :active-topic-id="groupsStore.activeTopicId"
-            :executing-topic-ids="groupsStore.executingTopicIds"
-            :refresh-executing-topics="groupsStore.refreshExecutingTopics"
-            :preview-topic="previewTopic"
-            :rename-topic="renameTopic"
-            :archive-topic="archiveTopic"
-            :restore-topic="restoreTopic"
-            :teardown-topic="teardownTopic"
-            :clear-topic="clearTopic"
-            :set-topic-isolation="isolationSupported ? setTopicIsolation : undefined"
-            :fork-topic="forkSupported ? openForkFromTopic : undefined"
-            :abandon-unknown-runs="abandonUnknownRuns"
-            @select="groupsStore.switchTopic"
-            @create="newTopicDialogOpen = true"
-          />
-          <span v-if="!needsFirstTopic" aria-hidden="true">·</span>
-          <span data-test="group-pane-member-count" class="shrink-0 whitespace-nowrap">{{ $t("group.header.members", group?.botIds.length ?? 0) }}</span>
-          <span v-if="group?.lifecycle === 'deleting'"
-                data-test="group-pane-deleting-badge"
-                class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
-            {{ $t("group.list.deleting") }}
-          </span>
-        </div>
+      <h2 class="shrink-0 truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
+      <div class="flex min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar text-xs text-fg-muted">
+        <TopicSwitcher
+          v-if="timelineSupported && !isMobile && !needsFirstTopic"
+          :topics="groupsStore.currentTopics"
+          :active-topic-id="groupsStore.activeTopicId"
+          :executing-topic-ids="groupsStore.executingTopicIds"
+          :refresh-executing-topics="groupsStore.refreshExecutingTopics"
+          :preview-topic="previewTopic"
+          :rename-topic="renameTopic"
+          :archive-topic="archiveTopic"
+          :restore-topic="restoreTopic"
+          :teardown-topic="teardownTopic"
+          :clear-topic="clearTopic"
+          :set-topic-isolation="isolationSupported ? setTopicIsolation : undefined"
+          :fork-topic="forkSupported ? openForkFromTopic : undefined"
+          :abandon-unknown-runs="abandonUnknownRuns"
+          @select="groupsStore.switchTopic"
+          @create="newTopicDialogOpen = true"
+        />
+        <span v-if="!needsFirstTopic" aria-hidden="true">·</span>
+        <span data-test="group-pane-member-count" class="shrink-0 whitespace-nowrap">{{ $t("group.header.members", group?.botIds.length ?? 0) }}</span>
+        <span v-if="group?.lifecycle === 'deleting'"
+              data-test="group-pane-deleting-badge"
+              class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
+          {{ $t("group.list.deleting") }}
+        </span>
       </div>
       <button
         v-if="group && groupsStore.instanceId"

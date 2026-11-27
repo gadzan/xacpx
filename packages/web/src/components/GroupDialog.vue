@@ -428,10 +428,10 @@ async function confirmDelete(): Promise<void> {
         <div v-if="memberWorkLoading || memberWork || memberWorkError"
              data-test="group-dialog-member-work"
              class="space-y-2 rounded-lg bg-bg p-3 text-xs">
-          <div v-if="memberWorkLoading" class="flex items-center gap-1.5 text-fg-muted">
-            <Loader2 :size="12" class="animate-spin motion-reduce:animate-none" />
-            <span>{{ $t("group.manage.memberWorkLoading") }}</span>
-          </div>
+          <div v-if="memberWorkLoading" role="status" :aria-label="$t('group.manage.memberWorkLoading')" class="space-y-1.5">
+          <span class="sk-bar block h-2.5 w-2/3 rounded-sm bg-fg/[0.08]" :style="{ '--sk-delay': '0ms' }" />
+          <span class="sk-bar block h-2.5 w-1/2 rounded-sm bg-fg/[0.06]" :style="{ '--sk-delay': '110ms' }" />
+        </div>
           <div v-else-if="memberWorkError" class="text-danger-overlay">
             {{ $t("group.manage.memberWorkFailed", { msg: memberWorkError }) }}
           </div>
@@ -566,10 +566,18 @@ async function confirmDelete(): Promise<void> {
             </div>
             <p class="mb-1.5 text-xs text-fg-muted">{{ $t("group.manage.membersHint") }}</p>
 
-            <div v-if="catalogLoading && !catalogReady" class="flex items-center gap-1.5 py-2 text-xs text-fg-muted">
-              <Loader2 :size="12" class="animate-spin motion-reduce:animate-none" />
-              <span>{{ $t("group.manage.botsLoading") }}</span>
-            </div>
+            <!-- Member-row skeleton: checkbox, name, role — the row the real entry becomes. -->
+      <div v-if="catalogLoading && !catalogReady" role="status" :aria-label="$t('group.manage.botsLoading')"
+           class="space-y-0.5 py-1">
+        <div v-for="(w, i) in [46, 58, 38]" :key="i" class="flex items-center gap-2 px-2 py-1.5"
+             :style="{ '--sk-delay': `${i * 110}ms` }">
+          <span class="sk-bar h-3.5 w-3.5 shrink-0 rounded-sm bg-fg/[0.08]" />
+          <span class="flex min-w-0 flex-1 flex-col gap-1">
+            <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.08]" :style="{ width: `${w}%` }" />
+            <span class="sk-bar h-2 rounded-sm bg-fg/[0.05]" :style="{ width: `${w - 16}%` }" />
+          </span>
+        </div>
+      </div>
             <div v-else-if="catalogError && !catalogReady"
                  data-test="group-dialog-bots-error"
                  class="flex items-center justify-between gap-2 py-2 text-xs text-danger-overlay">
@@ -604,10 +612,10 @@ async function confirmDelete(): Promise<void> {
                     </span>
                     <span class="truncate text-xs text-fg-muted">{{ [bot.role, bot.agent].filter(Boolean).join(" · ") }}</span>
                   </span>
-                  <span class="flex shrink-0 items-center gap-1 text-xs text-fg-muted">
-                    <span class="h-1.5 w-1.5 rounded-full" :class="bot.enabled ? 'bg-run' : 'bg-fg-muted'" />
-                    {{ bot.enabled ? $t("bot.status.enabled") : $t("bot.status.disabled") }}
-                  </span>
+                  <!-- Enabled is the default for a member, so only the exception carries a label. -->
+          <span v-if="!bot.enabled" class="shrink-0 rounded-md border border-hairline bg-bg/60 px-1.5 py-0.5 text-xs font-medium text-fg-muted">
+            {{ $t("bot.status.disabled") }}
+          </span>
                 </label>
                 <label v-for="id in unknownMemberIds"
                        :key="id"

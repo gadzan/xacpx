@@ -36,8 +36,8 @@
   --c-on-accent: 255 255 255;   /* text on a filled accent */
 
   /* Status colours. These only ever mean status. */
-  --c-run: 30 123 52;           /* #1E7B34 */
-  --c-run-bright: 40 167 69;    /* #28A745 */
+  --c-run: 10 124 82;             /* #0A7C52 — deep emerald: dots, +lines, run text */
+  --c-run-bright: 31 176 116;   /* #1FB074 — emerald, graphics/dots only */
   --c-warn: 154 91 0;           /* #9A5B00 */
   --c-warn-dot: 255 149 0;      /* #FF9500 */
   --c-danger: 217 45 32;        /* #D92D20 — solid fills and graphics only, never body text */
@@ -53,7 +53,7 @@
      overlay spec measured against the worst-case scrimmed surface. */
   --c-danger-overlay: 196 24 11; /* #C4180B — danger text under a scrim */
   --c-warn-overlay: 145 82 0;    /* #915200 — warn text under a scrim */
-  --c-run-overlay: 21 114 43;    /* #15722B — run text under a scrim */
+  --c-run-overlay: 10 111 73;      /* #0A6F49 — run text under a scrim */
   --c-fg-muted-overlay: 98 98 104; /* #626268 — muted text under a scrim */
   --c-accent-text-overlay: 0 95 194; /* #005FC2 — light blue text under a scrim */
 
@@ -137,8 +137,8 @@
   --c-accent-text: 64 156 255;  /* #409CFF — 5.34:1 on raised */
   --c-on-accent: 11 20 34;      /* #0B1422 */
 
-  --c-run: 48 209 88;
-  --c-run-bright: 48 209 88;
+  --c-run: 52 211 153;
+  --c-run-bright: 52 211 153;   /* #34D399 — emerald, graphics/dots only */
   --c-warn: 255 159 10;
   --c-warn-dot: 255 159 10;
   --c-danger: 255 105 97;       /* #FF6961 — solid fills and graphics */
@@ -151,7 +151,7 @@
 
   --c-danger-overlay: 255 126 118;   /* #FF7E76 */
   --c-warn-overlay: 255 159 10;
-  --c-run-overlay: 48 209 88;
+  --c-run-overlay: 52 211 153;
   --c-fg-muted-overlay: 174 174 178;
   --c-accent-text-overlay: 79 171 255; /* #4FABFF */
 
@@ -427,10 +427,11 @@ select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
   box-shadow: 0 0 0 2px rgb(var(--c-accent)) !important;
 }
 
-/* Live run-dot: expanding bright-green ring (matches mockup softpulse). */
+/* Live run-dot: a soft emerald halo that breathes. The old 5px spread read as a
+   ringing phone; 3.5px is a settle, not an alarm. */
 @keyframes softpulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(48,209,88,0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(48,209,88,0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--c-run) / 0.40); }
+  50% { box-shadow: 0 0 0 3.5px rgb(var(--c-run) / 0); }
 }
 .pulse-dot { animation: softpulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
 

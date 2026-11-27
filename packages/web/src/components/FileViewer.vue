@@ -271,7 +271,16 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
     <!-- body -->
     <div class="min-h-0 flex-1 overflow-hidden">
       <div v-if="error" data-test="fv-error" class="m-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger-text">{{ error }}</div>
-      <div v-else-if="loading && !file && !diff" data-test="fv-loading" class="p-6 text-sm text-fg-muted">{{ $t("files.loading") }}</div>
+      <!-- Code-shaped, not a caption: the gutter and the ragged line lengths are what a
+         reader expects to appear, so the file looks like it is opening, not waiting. -->
+        <div v-else-if="loading && !file && !diff" data-test="fv-loading" role="status"
+             :aria-label="$t('files.loading')" class="space-y-2 p-6">
+          <div v-for="(w, i) in [45, 72, 60, 30, 84, 52, 68, 38]" :key="i" class="flex items-center gap-3"
+               :style="{ '--sk-delay': `${i * 90}ms` }">
+            <span class="sk-bar h-2.5 w-5 shrink-0 rounded-sm bg-fg/[0.05]" />
+            <span class="sk-bar h-2.5 rounded-sm bg-fg/[0.08]" :style="{ width: `${w}%` }" />
+          </div>
+        </div>
       <!-- save error / stale-conflict banner -->
       <div v-if="saveError" data-test="fv-save-error" class="m-3 flex items-center gap-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger-text">
         <span class="min-w-0 flex-1">{{ saveErrorLabel }}</span>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { X, Folder, Home, ArrowUp, Loader2 } from "lucide-vue-next";
+import { X, Folder, Home, ArrowUp } from "lucide-vue-next";
 import { isErrorPayload, type FsBrowseResult } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import DialogShell from "./DialogShell.vue";
@@ -153,9 +153,14 @@ function onListKeydown(e: KeyboardEvent): void {
 
         <div class="mt-2 min-h-[12rem] flex-1 overflow-y-auto px-2 py-1"
              role="listbox" :aria-label='$t("dirPicker.title")' tabindex="0" @keydown="onListKeydown">
-          <div v-if="loading" class="flex items-center justify-center gap-2 py-8 text-sm text-fg-muted">
-            <Loader2 :size="16" class="animate-spin motion-reduce:animate-none" /> {{ $t("session.loadingOptions") }}
+          <!-- Five folder rows: the list keeps its row height, so the real entries land in place. -->
+        <div v-if="loading" role="status" :aria-label="$t('session.loadingOptions')" class="space-y-0.5 px-1 py-1">
+          <div v-for="(w, i) in [34, 52, 44, 60, 30]" :key="i" class="flex items-center gap-2 px-2 py-1.5"
+               :style="{ '--sk-delay': `${i * 90}ms` }">
+            <span class="sk-bar h-3.5 w-3.5 shrink-0 rounded-sm bg-fg/[0.08]" />
+            <span class="sk-bar h-3 rounded-sm bg-fg/[0.06]" :style="{ width: `${w}%` }" />
           </div>
+        </div>
           <template v-else>
             <button v-for="(d, i) in visibleDirs" :key="d.path" type="button" role="option"
                     :data-test="`dp-dir-${d.name}`" :aria-selected="i === highlight"
