@@ -309,6 +309,61 @@ describe("local web app", () => {
     expect(rows[0]?.structured?.reasoning).toBe("why");
   });
 
+  test("a history read off the daemon carries the agent's process, not just its text", async () => {
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
+      control: {
+        events: { subscribe: () => () => undefined },
+        readSessionHistory: async () => ({
+          hasMore: false,
+          messages: [{
+            role: "agent",
+            text: "done",
+            parts: [
+              { kind: "reasoning", text: "weighing options" },
+              { kind: "tool", tool: { toolCallId: "t1", toolName: "Read", kind: "read", status: "success", title: "a.ts" } },
+              { kind: "text", text: "done" },
+            ],
+          }],
+        }),
+      } as never,
+    });
+    const history = await local.app.request("/api/instances/local/sessions/demo/messages", { headers: headers() });
+    const rows = (await history.json()).messages as Array<{
+      text: string;
+      structured?: { parts?: Array<{ type: string }>; toolSteps?: Array<{ toolName: string }>; reasoning?: string };
+    }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.structured?.parts?.map((p) => p.type)).toEqual(["reasoning", "tool", "text"]);
+    expect(rows[0]?.structured?.toolSteps?.[0]?.toolName).toBe("Read");
+    expect(rows[0]?.structured?.reasoning).toBe("weighing options");
+  });
+
+  test("two history reads racing on an empty store append the backlog once", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
+      control: {
+        events: { subscribe: () => () => undefined },
+        readSessionHistory: async () => {
+          await gate;
+          return { hasMore: false, messages: [{ role: "agent" as const, text: "answer", parts: [{ kind: "text" as const, text: "answer" }] }] };
+        },
+      } as never,
+    });
+    // Both requests observe an empty store and both reach the daemon before either
+    // installs, which is exactly the window that used to duplicate every row.
+    const first = local.app.request("/api/instances/local/sessions/demo/messages", { headers: headers() });
+    const second = local.app.request("/api/instances/local/sessions/demo/messages", { headers: headers() });
+    release?.();
+    const [a, b] = await Promise.all([first, second]);
+    expect(((await a.json()).messages as Array<{ text: string }>).map((r) => r.text)).toEqual(["answer"]);
+    expect(((await b.json()).messages as Array<{ text: string }>).map((r) => r.text)).toEqual(["answer"]);
+  });
+
   test("keeps a rejected prompt out of history", async () => {
     const local = createLocalWebApp({
       config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },

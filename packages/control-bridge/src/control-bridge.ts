@@ -1494,7 +1494,10 @@ async function dispatchControlRequest(
 // Map recovered native-session history (neutral core shape) to wire rows. User turns
 // become plain `in` rows; agent turns carry the ordered transcript (text / reasoning /
 // tool) plus the flat fallbacks, reusing the same tool-step presentation as live turns.
-function historyMessagesToRows(
+// Exported because the dashboard's on-demand history read (control.sessions.history)
+// must produce the SAME rows as this event: two mappings drifted apart once already,
+// and the narrower one dropped every tool step.
+export function historyMessagesToRows(
   messages: Extract<
     Parameters<Parameters<PublicControlService["events"]["subscribe"]>[0]>[0],
     { type: "session-history" }
