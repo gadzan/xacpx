@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
 import { serveStatic } from "@hono/node-server/serve-static";
-import { MemoryMessageStore, compactHistoryMessage, createControlBridge, type ControlBridgeOptions } from "@ganglion/xacpx-control-bridge";
+import { MemoryMessageStore, compactHistoryMessage, createControlBridge, historyMessagesToRows, type ControlBridgeOptions } from "@ganglion/xacpx-control-bridge";
 import {
   MSG,
   RELAY_CAPABILITIES,
@@ -11,6 +11,7 @@ import {
   webEventEnvelope,
   type ControlEventDto,
   type LiveTurnSnapshotDto,
+  type SessionHistoryRowDto,
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -154,11 +155,34 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
   };
 
   /**
+   * Install a daemon-recovered transcript for a session, at most once.
+   *
+   * Two seeders deliver the same daemon mirror: the `session-history` control
+   * event below, and the on-demand read the dashboard makes when this console's
+   * in-memory store is empty. The emptiness check sits immediately above the
+   * appends with no `await` between them, so it is atomic: two seeders that both
+   * arrive while the store is empty cannot both pass, because the first one's
+   * rows are already in by the time the second one checks. The check used to live
+   * in the HTTP handler, before an `await` on the daemon read — two in-flight
+   * reads then both saw an empty store and each appended the whole backlog, so
+   * the dashboard rendered every message twice.
+   */
+  function installRecoveredHistory(alias: string, rows: readonly SessionHistoryRowDto[]): boolean {
+    if (rows.length === 0) return false;
+    if (messages.listBySession(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, alias, { limit: 1 }).messages.length > 0) return false;
+    for (const row of rows) {
+      if (typeof row.text !== "string" || (row.direction !== "in" && row.direction !== "out")) continue;
+      messages.append(LOCAL_INSTANCE_ID, alias, row.direction, row.text, row.structured);
+    }
+    return true;
+  }
+
+  /**
    * Recover a session's transcript from the daemon when this console holds none.
    *
    * The daemon reads the agent's own on-disk record, so a session created before
    * this process started still has its turns. Rows land in the in-memory store so
-   * later reads and the event projection see them too; a failure yields null and
+   * later reads and the event projection see them too; a failure yields false and
    * the caller reports the (empty) in-memory page, which is the old behavior.
    */
   const seedFromDaemon = async (alias: string, limit: number): Promise<boolean> => {
@@ -175,17 +199,16 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
     });
     if (!result || typeof result !== "object" || isErrorPayload(result)) return false;
     const rows = (result as { messages?: unknown }).messages;
-    if (!Array.isArray(rows) || rows.length === 0) return false;
-    let appended = 0;
-    for (const row of rows) {
-      if (!row || typeof row !== "object") continue;
-      const entry = row as { direction?: unknown; text?: unknown };
-      const direction = entry.direction === "in" || entry.direction === "out" ? entry.direction : undefined;
-      if (!direction || typeof entry.text !== "string" || entry.text.length === 0) continue;
-      messages.append(LOCAL_INSTANCE_ID, alias, direction, entry.text);
-      appended += 1;
-    }
-    return appended > 0;
+    if (!Array.isArray(rows)) return false;
+    const native = rows.filter(
+      (row): row is Parameters<typeof historyMessagesToRows>[0][number] =>
+        Boolean(row) && typeof row === "object"
+        && ((row as { role?: unknown }).role === "user" || (row as { role?: unknown }).role === "agent")
+        && typeof (row as { text?: unknown }).text === "string",
+    );
+    // The same mapper the session-history event uses, so a transcript recovered
+    // over this read carries its process instead of degrading to bare text.
+    return installRecoveredHistory(alias, historyMessagesToRows(native));
   };
   const project = (event: ControlEventDto): void => {
     if (!("sessionAlias" in event) || typeof event.sessionAlias !== "string") return;
@@ -203,14 +226,7 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
         }
       }
     } else if (event.type === "session-history") {
-      const existing = messages.listBySession(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, alias, { limit: 1 });
-      if (existing.messages.length === 0) {
-        for (const row of event.messages) {
-          if (typeof row.text === "string" && (row.direction === "in" || row.direction === "out")) {
-            messages.append(LOCAL_INSTANCE_ID, alias, row.direction, row.text, row.structured);
-          }
-        }
-      }
+      installRecoveredHistory(alias, event.messages);
     } else if (event.type === "turn-output") {
       const turn = turns.get(alias) ?? { text: "", startedAt: now() };
       turn.text += event.chunk;
@@ -356,7 +372,12 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
     // An empty in-memory transcript does not mean the session has no history: the
     // daemon can still read the agent's own record. The browser cache only speeds
     // up rendering, so recover from the daemon rather than reporting "no messages".
-    const effective = page.messages.length === 0 && before === undefined && await seedFromDaemon(alias, limit)
+    // Answer from a re-read afterwards: a concurrent seeder may have installed the
+    // rows while this request was reading the daemon, and `page` predates that.
+    if (page.messages.length === 0 && before === undefined) {
+      await seedFromDaemon(alias, limit);
+    }
+    const effective = page.messages.length === 0 && before === undefined
       ? messages.listBySession(LOCAL_ACCOUNT, LOCAL_INSTANCE_ID, alias, { limit })
       : page;
     if (c.req.query("view") === "compact") {

@@ -2,6 +2,7 @@ export {
   CONTROL_RPC_TIMEOUT_MS,
   createControlBridge,
   dispatchControlEvent,
+  historyMessagesToRows,
   orchestrationTaskToDto,
   scheduledTaskToDto,
   subscribeControlEvents,

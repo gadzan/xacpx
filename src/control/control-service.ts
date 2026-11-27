@@ -273,15 +273,17 @@ export interface ControlNativeSessionInfo {
   cwd?: string;
 }
 
-/** One recovered turn, in the same shape the dashboard already renders. */
-export interface ControlSessionHistoryMessage {
-  direction: "in" | "out";
-  text: string;
-  parts?: Array<{ kind: string; text?: string }>;
-}
-
+/**
+ * Recovered turns, in the agent's own neutral shape.
+ *
+ * The rows are handed over verbatim rather than re-encoded: the dashboard's
+ * `session-history` event already maps this exact shape to wire rows, and a
+ * second, narrower encoding here (`{ kind, text? }`) silently dropped the tool
+ * event a `tool` part carries, so history recovered over this RPC rendered
+ * without the agent's process.
+ */
 export interface ControlSessionHistoryResult {
-  messages: ControlSessionHistoryMessage[];
+  messages: NativeHistoryMessage[];
   hasMore: boolean;
 }
 
@@ -1742,21 +1744,7 @@ export class ControlService {
     const cap = Math.min(Math.max(limit ?? DEFAULT_SESSION_HISTORY_LIMIT, 1), MAX_SESSION_HISTORY_LIMIT);
     const kept = history.length > cap ? history.slice(-cap) : history;
     return {
-      messages: kept.map((message) => ({
-        direction: message.role === "user" ? "in" : "out",
-        text: message.text,
-        ...(message.parts && message.parts.length > 0
-          ? {
-              parts: message.parts.map((part) =>
-                part.kind === "text"
-                  ? { kind: "text", text: part.text }
-                  : part.kind === "reasoning"
-                    ? { kind: "reasoning", text: part.text }
-                    : { kind: "tool" },
-              ),
-            }
-          : {}),
-      })),
+      messages: kept,
       hasMore: history.length > kept.length,
     };
   }
