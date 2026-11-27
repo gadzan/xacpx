@@ -14,11 +14,14 @@ import PromptInput from "./PromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
 import QueueStrip from "./QueueStrip.vue";
 import ConversationInteractionForm from "./ConversationInteractionForm.vue";
+import { paneKeyFor } from "../stores/split-layout";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Bot, Folder, GitBranch, Loader2, X } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
+
+const props = defineProps<{ instanceId?: string; sessionAlias?: string; paneMode?: "primary" | "split" }>();
 
 const chat = useChatStore();
 const instances = useInstancesStore();
@@ -29,6 +32,63 @@ const instances = useInstancesStore();
 const directBots = useDirectBotsStore();
 const files = useFilesStore();
 const composer = useComposerStore();
+
+/** Split-workbench target: when both props are provided, this pane reads/writes the
+ *  scoped session state instead of the global selection (which keeps tracking the
+ *  primary column). Absent either prop, every computed below falls back to the
+ *  legacy selected proxies and behaviour is unchanged. */
+const scopedTarget = computed(() =>
+  props.instanceId && props.sessionAlias
+    ? { instanceId: props.instanceId, sessionAlias: props.sessionAlias }
+    : null,
+);
+const effInstanceId = computed(() => scopedTarget.value?.instanceId ?? chat.instanceId);
+const effSessionAlias = computed(() => scopedTarget.value?.sessionAlias ?? chat.sessionAlias);
+const scopedPane = computed(() =>
+  scopedTarget.value
+    ? chat.getSessionState(scopedTarget.value.instanceId, scopedTarget.value.sessionAlias)
+    : null,
+);
+// Scoped-aware views over the transcript + pane flags. Live turn / plan / queue stay
+// on the legacy selection proxies (a later milestone owns per-pane live state).
+const paneMessages = computed(() => scopedPane.value?.messages ?? chat.messages);
+const paneError = computed<string>({
+  get: () => scopedPane.value?.error ?? chat.error,
+  set: (v) => {
+    if (scopedPane.value) scopedPane.value.error = v;
+    else chat.error = v;
+  },
+});
+const paneHasMoreOlder = computed(() => scopedPane.value?.hasMoreOlder ?? chat.hasMoreOlder);
+const paneLoadingOlder = computed(() => scopedPane.value?.loadingOlder ?? chat.loadingOlder);
+const paneLoadingHistory = computed(() => scopedPane.value?.loadingHistory ?? chat.loadingHistory);
+const paneHistoryCapped = computed(() => scopedPane.value?.historyCapped ?? chat.historyCapped);
+const paneSessionKey = computed(() =>
+  effInstanceId.value && effSessionAlias.value
+    ? `${effInstanceId.value}\0${effSessionAlias.value}`
+    : "",
+);
+// paneKeyFor is the stable per-session scroll identity (selection-independent, so a
+// background column keeps its own offset). Legacy single-pane mode passes nothing
+// and MessageList keeps its existing behaviour.
+const paneScrollKey = computed(() =>
+  scopedTarget.value
+    ? paneKeyFor({
+        kind: "session",
+        instanceId: scopedTarget.value.instanceId,
+        sessionAlias: scopedTarget.value.sessionAlias,
+      })
+    : undefined,
+);
+
+// Scoped panes load their own transcript; the legacy path keeps loading via select().
+watch(
+  () => [scopedTarget.value?.instanceId, scopedTarget.value?.sessionAlias] as const,
+  ([id, alias]) => {
+    if (id && alias) void chat.ensureSessionLoaded(id, alias);
+  },
+  { immediate: true },
+);
 const promptInput = ref<InstanceType<typeof PromptInput> | null>(null);
 // While the soft keyboard is open it already covers the iOS home indicator, so the
 // composer's safe-area bottom padding is just a gap — drop it then (see the template).
@@ -51,7 +111,7 @@ const showQueue = computed(() => chat.sessionQueue.length > 0);
  * daemon that happens to share the alias — is never rendered into this pane.
  */
 const sessionInteraction = computed(() =>
-  directBots.pendingSessionInteractionFor(chat.instanceId, chat.sessionAlias),
+  directBots.pendingSessionInteractionFor(effInstanceId.value, effSessionAlias.value),
 );
 
 // Handlers take the entry explicitly: the store's default target is the Direct
@@ -82,11 +142,35 @@ function onSend(
   media: PromptAttachmentRef[] = [],
   agentMentions?: Array<{ range: [number, number]; handle: string }>,
 ) {
-  void chat.send(text, media, agentMentions);
+  const target = scopedTarget.value;
+  if (target) void chat.sendPromptFor(target.instanceId, target.sessionAlias, text, media, agentMentions);
+  else void chat.send(text, media, agentMentions);
+}
+
+function onResend(message: ChatMessage): void {
+  const target = scopedTarget.value;
+  if (!target) {
+    chat.resend(message);
+    return;
+  }
+  if (!message.failed || message.direction !== "in") return;
+  void chat.sendPromptFor(target.instanceId, target.sessionAlias, message.text);
+}
+
+function onCancel(): void {
+  const target = scopedTarget.value;
+  if (target) void chat.cancelTurnFor(target.instanceId, target.sessionAlias);
+  else void chat.cancel();
+}
+
+function onLoadOlder(): void {
+  const target = scopedTarget.value;
+  if (target) void chat.loadOlderFor(target.instanceId, target.sessionAlias);
+  else void chat.loadOlder();
 }
 
 watch(
-  () => [chat.instanceId, chat.sessionAlias] as const,
+  () => [effInstanceId.value, effSessionAlias.value] as const,
   ([id, alias]) => {
     if (id && alias) composer.bindInstance(id, JSON.stringify(["session", id, alias]));
   },
@@ -96,7 +180,7 @@ watch(
 // Context for the header chips: the current session's workspace/agent plus the
 // instance name. Branch comes from the read-only git summary (undefined until the
 // backend ever adds it to the diff result).
-const instance = computed(() => (chat.instanceId ? instances.byId(chat.instanceId) : undefined));
+const instance = computed(() => (effInstanceId.value ? instances.byId(effInstanceId.value) : undefined));
 
 /** Node fork is offered only when the instance advertises the node payload; the
  *  session-menu head fork stays available independently. */
@@ -105,8 +189,8 @@ const nodeForkSupported = computed(() => supportsSessionForkMessage(instance.val
 // request ids (the store pins one id per node, but the UI must not ask twice).
 const forkingNodeId = ref<string | null>(null);
 function onForkNode(message: ChatMessage): void {
-  const instanceId = chat.instanceId;
-  const sourceAlias = chat.sessionAlias;
+  const instanceId = effInstanceId.value;
+  const sourceAlias = effSessionAlias.value;
   const nodeId = message.nodeId;
   if (!instanceId || !sourceAlias || !nodeId || forkingNodeId.value !== null) return;
   forkingNodeId.value = nodeId;
@@ -131,8 +215,8 @@ function onForkNode(message: ChatMessage): void {
 // pages them into groupArchived; flat-mode archive can drop the selected row until a
 // full snapshot loads), and the chat pane must keep its header/driver while one is open.
 const currentSession = computed(() =>
-  chat.instanceId && chat.sessionAlias
-    ? instances.findSessionRow(chat.instanceId, chat.sessionAlias)
+  effInstanceId.value && effSessionAlias.value
+    ? instances.findSessionRow(effInstanceId.value, effSessionAlias.value)
     : undefined,
 );
 // The session's acpx driver (codex/claude/…), driving the assistant avatar glyph.
@@ -145,7 +229,7 @@ const currentDriver = computed(
     currentSession.value?.driver
     ?? instance.value?.agents.find((a) => a.name === currentSession.value?.agent)?.driver,
 );
-const modelRecovery = computed(() => isOmpModelRestoreFailure(currentDriver.value, chat.error));
+const modelRecovery = computed(() => isOmpModelRestoreFailure(currentDriver.value, paneError.value));
 const modelRestore = computed(() => ompRestoreFailure(currentDriver.value, chat.error));
 
 // Booting state: an optimistic session whose create RPC is still cold-starting the agent.
@@ -159,16 +243,18 @@ const bootElapsed = computed(() => {
 // Dismiss a booting/failed optimistic session: drop the row and clear the selection
 // back to the empty pane. A session that actually came up keeps its (now real) row.
 function dismissBooting(): void {
-  const id = chat.instanceId;
-  const alias = chat.sessionAlias;
+  const id = effInstanceId.value;
+  const alias = effSessionAlias.value;
   if (id && alias) instances.cancelSessionCreation(id, alias);
-  chat.clearSelection();
+  // A split column dismisses only its own row: clearing the global selection would
+  // yank the primary view out from under the user.
+  if (!scopedTarget.value) chat.clearSelection();
 }
 
 // Keep a read-only git summary loaded for the current session's workspace so the
 // header chip reflects changes without the user opening the Files panel first.
 watch(
-  () => [chat.instanceId, currentSession.value?.workspace] as const,
+  () => [effInstanceId.value, currentSession.value?.workspace] as const,
   ([id, ws]) => {
     if (id && ws) void files.loadGitSummary(id, ws);
     else files.gitSummary = null;
@@ -184,12 +270,12 @@ onUnmounted(() => clearInterval(timer));
 </script>
 
 <template>
-  <div class="flex h-full flex-1 flex-col">
+  <div class="flex h-full flex-1 flex-col" :data-pane-mode="paneMode ?? 'single'">
     <!-- header (desktop only: <lg the single mobile top bar in DashboardView /
          DirectBotPane carries the title + subtitle instead of this chip row) -->
     <div data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
-      <h1 :title="currentSession?.displayName || chat.sessionAlias || undefined"
-          class="hidden min-w-0 truncate lg:block text-sm font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
+      <h1 :title="currentSession?.displayName || effSessionAlias || undefined"
+          class="hidden min-w-0 truncate lg:block text-sm font-semibold tracking-tight text-fg">{{ currentSession?.displayName || effSessionAlias }}</h1>
       <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
            stay fully readable instead of truncating — title tooltips don't work on touch.
            Each chip is shrink-0 (natural width); the strip overflows and scrolls. -->
@@ -197,7 +283,7 @@ onUnmounted(() => clearInterval(timer));
         <!-- Session name as the leading chip. Mobile only: on lg+ the <h1> above already
              shows it at the front of this row, so showing it here too would duplicate. -->
         <span data-test="ctx-chip-session"
-              class="flex shrink-0 items-center whitespace-nowrap rounded-sm bg-surface-2 px-2 py-0.5 text-xs font-semibold text-fg lg:hidden">{{ currentSession?.displayName || chat.sessionAlias }}</span>
+              class="flex shrink-0 items-center whitespace-nowrap rounded-sm bg-surface-2 px-2 py-0.5 text-xs font-semibold text-fg lg:hidden">{{ currentSession?.displayName || effSessionAlias }}</span>
         <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
                 class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted hover:bg-fg/5"
                 :title='$t("chat.browseFiles")'
@@ -219,17 +305,17 @@ onUnmounted(() => clearInterval(timer));
       </div>
       <slot name="actions" />
     </div>
-    <div v-if="chat.error" data-test="chat-error"
+    <div v-if="paneError" data-test="chat-error"
          class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger-text">
       <AlertTriangle :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
       <div class="min-w-0 flex-1">
-        <p class="max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-ui leading-relaxed">{{ modelRestore ? $t('chat.modelRestoreFailed', { model: modelRestore.modelId ?? '' }) : chat.error }}</p>
+        <p class="max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-ui leading-relaxed">{{ modelRestore ? $t('chat.modelRestoreFailed', { model: modelRestore.modelId ?? '' }) : paneError }}</p>
         <button v-if="modelRecovery" type="button" data-test="model-recovery-refresh"
                 class="mt-1 rounded-sm px-1 py-0.5 text-xs font-medium underline hover:bg-danger/10"
                 @click="promptInput?.refreshModels()">{{ $t('chat.modelRecoveryChoose') }}</button>
       </div>
       <button type="button" class="-mr-0.5 -mt-0.5 shrink-0 rounded-sm p-1 text-danger/70 transition-colors hover:bg-danger/10 hover:text-danger"
-              :title="$t('common.dismissNotice')" @click="chat.error = ''"><X :size="14" /></button>
+              :title="$t('common.dismissNotice')" @click="paneError = ''"><X :size="14" /></button>
     </div>
     <!-- Cold-starting session: an optimistic row whose create RPC is still spinning up
          the agent. Show progress (and a way out) instead of an empty transcript. -->
@@ -255,15 +341,16 @@ onUnmounted(() => clearInterval(timer));
     <!-- min-h-0 keeps the column height chain intact (flex min-height:auto would let a
          long transcript blow past the pane). -->
     <div class="flex min-h-0 flex-1" data-test="chat-body">
-      <MessageList class="min-w-0" :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
-                   :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+      <MessageList class="min-w-0" :messages="paneMessages" :live-turn="chat.liveTurn" :driver="currentDriver"
+                   :session-key="paneSessionKey"
+                   :scroll-pane-key="paneScrollKey"
                    :scroll-to-scheduled="chat.scrollRequest"
-                   :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
-                   :loading-history="chat.loadingHistory"
+                   :has-more-older="paneHasMoreOlder" :loading-older="paneLoadingOlder"
+                   :loading-history="paneLoadingHistory"
                    :ensure-full="chat.ensureFullMessage"
                    :fork-node="nodeForkSupported ? onForkNode : undefined"
-                   :history-capped="chat.historyCapped"
-                   @resend="chat.resend" @load-older="chat.loadOlder" />
+                   :history-capped="paneHistoryCapped"
+                   @resend="onResend" @load-older="onLoadOlder" />
     </div>
     <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
          inset is applied ONCE here (the bottommost element) and never stacks on top of the
@@ -310,9 +397,9 @@ onUnmounted(() => clearInterval(timer));
                                      @dismiss="onInteractionDismiss" />
         <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
              :class="{ 'stack-layer--pull': showPlan || showQueue }">
-          <PromptInput ref="promptInput" :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
-                       :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
-                       @send="onSend" @cancel="chat.cancel" />
+          <PromptInput ref="promptInput" :busy="chat.busy" :draft-key="paneSessionKey"
+                       :instance-id="effInstanceId" :session-alias="effSessionAlias"
+                       @send="onSend" @cancel="onCancel" />
         </div>
       </TransitionGroup>
       </div>

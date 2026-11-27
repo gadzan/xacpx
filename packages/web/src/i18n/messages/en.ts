@@ -246,6 +246,8 @@ export default {
     working: "Agent is working… (Esc to stop)",
     mentionSource: {
       worker: "Worker",
+      bot: "Bot",
+      session: "Session",
       weixin: "WeChat",
       feishu: "Feishu",
       yuanbao: "Yuanbao",
@@ -1110,6 +1112,9 @@ export default {
       emptyHint: "Send a message to start a conversation with this bot.",
       emptyHintDisabled: "Enable this bot to start a conversation.",
       working: "Thinking",
+      dispatchedTitle: "Dispatched sessions",
+      dispatchedOpen: "Open in split",
+      dispatchedFocus: "Focus",
     },
     run: {
       failed: "Run failed",
@@ -1431,5 +1436,24 @@ export default {
   time: {
     justNow: "just now",
     minutesAgo: "{count} min ago",
+  },
+  split: {
+    openInSplit: "Open in side split",
+    addSplit: "+ Split",
+    searchPlaceholder: "Search sessions or bots\u2026",
+    sessions: "Sessions",
+    bots: "Bots",
+    empty: "Nothing available \u2014 bring an instance online first.",
+    setPrimary: "Set as primary",
+    closePane: "Close split",
+    maxReached: "Split view holds up to 4 columns.",
+    alreadyOpen: "Already open in this view.",
+    backgroundBody: "Set this pane as primary to view it here.",
+    dispatched: {
+      open: "Open in split",
+      locate: "Go to split",
+      running: "Running",
+      idle: "Idle",
+    },
   },
 } as const;

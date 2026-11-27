@@ -400,6 +400,16 @@ function persistBotSelection(instanceId: string | null, botId: string | null): v
   }
 }
 
+export interface BotPaneState {
+  topicId: string | null;
+  inputDraft?: string;
+  pending?: boolean;
+}
+
+export function botPaneKeyFor(instanceId: string, botId: string): string {
+  return `${instanceId}::${botId}`;
+}
+
 export const useDirectBotsStore = defineStore("directBots", () => {
   let currentSelectionGeneration = 0;
   let recoveryGeneration = 0;
@@ -430,6 +440,23 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const selectedBotId = ref<string | null>(null);
   const activeConversationId = ref<string | null>(null);
   const activeTopicId = ref<string | null>(null);
+
+  // Multi-pane: per-bot topic/draft state keyed by `botPaneKeyFor`.
+  // Top-level selection refs remain proxies for the currently selected bot.
+  const botPanesByKey = ref<Record<string, BotPaneState>>({});
+  function getBotPaneState(targetInstanceId: string, botId: string): BotPaneState {
+    const k = botPaneKeyFor(targetInstanceId, botId);
+    if (!botPanesByKey.value[k]) {
+      botPanesByKey.value[k] = { topicId: null };
+    }
+    // Return the stored (reactive) entry so identity is stable across calls.
+    return botPanesByKey.value[k]!;
+  }
+  function syncBotPaneTopic(): void {
+    if (instanceId.value && selectedBotId.value) {
+      getBotPaneState(instanceId.value, selectedBotId.value).topicId = activeTopicId.value;
+    }
+  }
 
   // Bots state
   const botsByInstance = ref<Record<string, BotSummaryDto[]>>({});
@@ -1530,6 +1557,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       return;
     }
     activeTopicId.value = null;
+    syncBotPaneTopic();
     messages.value = [];
     activeRun.value = null;
     queuedOwnRuns.value = {};
@@ -2424,6 +2452,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
     liveCompletedRunId.value = null;
+    // Multi-pane: ensure a pane exists for this bot before selection resets.
+    getBotPaneState(targetInstanceId, botId);
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -2502,6 +2532,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const targetTopicId = executing ?? conv.defaultTopicId ?? current.find((topic) => topic.status === "active")?.id ?? current[0]?.id;
         if (targetTopicId) {
           activeTopicId.value = targetTopicId;
+          syncBotPaneTopic();
           // loadHistory owns topicReady from here: it reopens the gate only on
           // proven discovery.
           await loadHistory(targetInstanceId, conv.id, targetTopicId);
@@ -2548,6 +2579,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     touchTranscript();
     topicReady.value = false;
     activeTopicId.value = topicId;
+    syncBotPaneTopic();
     messages.value = [];
     oldestSeq.value = undefined;
     newestSeq.value = undefined;
@@ -4442,6 +4474,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     selectedBotId,
     activeConversationId,
     activeTopicId,
+    botPanesByKey,
+    getBotPaneState,
     botsByInstance,
     botDetails,
     loadingBots,
@@ -4550,5 +4584,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     reconcileOnReconnect,
     reconcileOwnedInstanceNegative,
     applyEvent,
+    botPaneKeyFor,
   };
 });

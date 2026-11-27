@@ -1620,3 +1620,83 @@ describe("PromptInput busy placeholder", () => {
     expect((w2.find("textarea").element as HTMLElement).style.height).toBe(dragged);
   });
 });
+
+describe("PromptInput bot mention badge (M2 unified @ autocomplete)", () => {
+  it("bot endpoint renders a Bot icon + badge; ordinary sessions keep existing rendering", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-bot-1",
+        displayName: "Helper",
+        agent: "codex",
+        workspace: "project",
+        endpointKind: "bot",
+        channelId: "relay",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-sess-1",
+        displayName: "Helper Session",
+        sessionAlias: "helper",
+        agent: "codex",
+        workspace: "project",
+        endpointKind: "logical",
+        channelId: "relay",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @Helper");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+    // Exact display-name match (rank 11) beats exact alias match (rank 15),
+    // so the bot sorts ahead of "Helper Session".
+    const botBadge = items[0].find('[data-test="mention-badge"]');
+    expect(botBadge.exists()).toBe(true);
+    expect(botBadge.text()).toContain("Bot");
+    expect(botBadge.find("svg").exists()).toBe(true);
+    expect(items[1].find('[data-test="mention-badge"]').exists()).toBe(false);
+
+    // Selecting the bot inserts @displayName and binds the canonical handle.
+    await ta.trigger("keydown", { key: "Enter" });
+    await w.vm.$nextTick();
+    expect((ta.element as HTMLTextAreaElement).value).toBe("Ask @Helper ");
+    await ta.trigger("keydown", { key: "Enter" });
+    expect(w.emitted("send")?.[0]).toEqual([
+      "Ask @Helper",
+      [],
+      [
+        {
+          range: [4, 11],
+          handle: "agent:node-1:ep-bot-1",
+        },
+      ],
+    ]);
+  });
+});

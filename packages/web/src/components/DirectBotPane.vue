@@ -12,7 +12,8 @@ import {
   Trash2,
   X,
 } from "lucide-vue-next";
-import { useDirectBotsStore } from "../stores/direct-bots";
+import { botPaneKeyFor, useDirectBotsStore } from "../stores/direct-bots";
+import { paneKeyFor, primaryKeyFor, useSplitLayoutStore } from "../stores/split-layout";
 import { useGroupsStore } from "../stores/groups";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import {
@@ -535,6 +536,66 @@ function openForkSourceTopic(): void {
   }
 }
 
+const props = defineProps<{
+  instanceId?: string;
+  botId?: string;
+  topicId?: string;
+  paneMode?: "primary" | "split";
+}>();
+
+/** Split-workbench target: when instanceId+botId are provided, identity (avatar, name,
+ *  topic entry) resolves from props instead of the global selection — which keeps
+ *  tracking the primary column. The transcript/live/composer below still follow the
+ *  selection, so a scoped pane renders its placeholder until it is the selected Bot. */
+const scopedTarget = computed(() =>
+  props.instanceId && props.botId
+    ? {
+        instanceId: props.instanceId,
+        botId: props.botId,
+        ...(props.topicId ? { topicId: props.topicId } : {}),
+      }
+    : null,
+);
+
+/** True while the global selection shows exactly this pane's Bot: only then do the
+ *  timeline, live turn and composer belong to this pane. */
+const selectionMatches = computed(() => {
+  const target = scopedTarget.value;
+  if (!target) return true;
+  return directBotsStore.instanceId === target.instanceId
+    && directBotsStore.selectedBotId === target.botId;
+});
+/** A scoped pane on a non-selected Bot must not show foreign content: it renders a
+ *  compact placeholder instead (the column header owns the "set as primary" action). */
+const isBackgroundPane = computed(() => !!scopedTarget.value && !selectionMatches.value);
+
+const scopedBot = computed(() => {
+  const target = scopedTarget.value;
+  if (!target) return undefined;
+  return (directBotsStore.botsByInstance[target.instanceId] ?? []).find((b) => b.id === target.botId);
+});
+const scopedDriver = computed(() => {
+  const target = scopedTarget.value;
+  if (!target) return undefined;
+  return instancesStore.byId(target.instanceId)?.agents.find((a) => a.name === scopedBot.value?.agent)?.driver;
+});
+// The pane entry always exists for a scoped target (creates the botPanesByKey record
+// the topic switcher below syncs through).
+watch(scopedTarget, (target) => {
+  if (target) directBotsStore.getBotPaneState(target.instanceId, target.botId);
+}, { immediate: true });
+const scopedEntry = computed(() => {
+  const target = scopedTarget.value;
+  if (!target) return null;
+  return directBotsStore.botPanesByKey[botPaneKeyFor(target.instanceId, target.botId)] ?? null;
+});
+const resolvedTopicId = computed(() => {
+  const target = scopedTarget.value;
+  if (!target) return directBotsStore.activeTopicId;
+  return target.topicId ?? scopedEntry.value?.topicId
+    ?? (selectionMatches.value ? directBotsStore.activeTopicId : null);
+});
+
 const removalOpen = ref(false);
 
 function openRemoval(): void {
@@ -600,10 +661,103 @@ const timelineFeed = useConversationTimelineFeed({
   reloadKey: timelineReloadKey,
 });
 
+const splitLayout = useSplitLayoutStore();
+const dispatchedDd = useDropdown();
+
+/** Sessions this topic dispatched (system dispatch notices), de-duplicated by alias.
+ *  Only meaningful while the selection shows this pane — otherwise the loaded rows
+ *  belong to another Bot and the menu stays hidden. */
+const dispatchedSessions = computed(() => {
+  if (!selectionMatches.value) return [];
+  const topicId = resolvedTopicId.value;
+  if (!topicId) return [];
+  const seen = new Map<string, { sessionAlias: string; displayName?: string; agent: string }>();
+  for (const message of directBotsStore.messages) {
+    if (message.topicId !== topicId || !message.dispatchedSession) continue;
+    const dispatched = message.dispatchedSession;
+    if (seen.has(dispatched.sessionAlias)) continue;
+    seen.set(dispatched.sessionAlias, {
+      sessionAlias: dispatched.sessionAlias,
+      ...(dispatched.displayName ? { displayName: dispatched.displayName } : {}),
+      agent: dispatched.agent,
+    });
+  }
+  return [...seen.values()];
+});
+
+function dispatchedColumns(primary: string, instanceId: string, sessionAlias: string) {
+  return (splitLayout.layoutsByPrimary[primary]?.columns ?? []).filter((candidate) =>
+    candidate.target.kind === "session"
+    && candidate.target.instanceId === instanceId
+    && candidate.target.sessionAlias === sessionAlias,
+  );
+}
+function dispatchedBotPrimary(): string | null {
+  const instanceId = scopedTarget.value?.instanceId ?? directBotsStore.instanceId;
+  const botId = scopedTarget.value?.botId ?? directBotsStore.selectedBotId;
+  return instanceId && botId ? primaryKeyFor({ kind: "bot", instanceId, botId }) : null;
+}
+function dispatchedInstanceId(): string | null {
+  return scopedTarget.value?.instanceId ?? directBotsStore.instanceId;
+}
+/** Open the dispatched session in a split column (un-dismissing a previously closed
+ *  one) and focus it. */
+function openDispatchedInSplit(sessionAlias: string): void {
+  const instanceId = dispatchedInstanceId();
+  const primary = dispatchedBotPrimary();
+  if (!instanceId || !primary) return;
+  dispatchedDd.closeMenu();
+  void instancesStore.loadSessions(instanceId).catch(() => {});
+  splitLayout.reopenDispatchedSession(primary, instanceId, sessionAlias);
+}
+/** Focus the already-open column; a dismissed/not-yet-open session opens instead
+ *  (reopen focuses the column it returns). */
+function focusDispatched(sessionAlias: string): void {
+  const instanceId = dispatchedInstanceId();
+  const primary = dispatchedBotPrimary();
+  if (!instanceId || !primary) return;
+  dispatchedDd.closeMenu();
+  const column = dispatchedColumns(primary, instanceId, sessionAlias)[0];
+  if (column) splitLayout.focusColumn(primary, column.id);
+  else {
+    void instancesStore.loadSessions(instanceId).catch(() => {});
+    splitLayout.reopenDispatchedSession(primary, instanceId, sessionAlias);
+  }
+}
+function isDispatchedOpen(sessionAlias: string): boolean {
+  const instanceId = dispatchedInstanceId();
+  const primary = dispatchedBotPrimary();
+  if (!instanceId || !primary) return false;
+  return dispatchedColumns(primary, instanceId, sessionAlias).length > 0;
+}
+
+// Stable per-bot scroll identity for split columns (selection-independent). Legacy
+// single-pane mode passes nothing and the timeline keeps its existing behaviour.
+const paneScrollKey = computed(() => {
+  const target = scopedTarget.value;
+  if (!target) return undefined;
+  const topicId = resolvedTopicId.value;
+  return paneKeyFor({
+    kind: "bot",
+    instanceId: target.instanceId,
+    botId: target.botId,
+    ...(topicId ? { topicId } : {}),
+  });
+});
+
 </script>
 
 <template>
-  <div class="relative flex h-full flex-col bg-bg text-fg">
+  <div class="relative flex h-full flex-col bg-bg text-fg" :data-pane-mode="paneMode ?? 'single'">
+    <!-- Background split column: the selection (and its transcript) belongs to another
+         pane, so show identity only. The column header owns the set-as-primary action. -->
+    <div v-if="isBackgroundPane" data-test="bot-background-pane"
+         class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+      <BotAvatar :avatar="scopedBot?.avatar" :driver="scopedDriver" :name="scopedBot?.name ?? scopedTarget?.botId" :size="40" static />
+      <p class="text-sm font-semibold text-fg">{{ scopedBot?.name ?? scopedTarget?.botId }}</p>
+      <p class="max-w-xs text-xs text-fg-muted">{{ $t("split.backgroundBody") }}</p>
+    </div>
+    <template v-else>
     <!-- Mobile floating identity (<lg), modeled on the reference mock: the
          timeline runs full-height and the identity floats OVER it — back and ⋯ as
          glass discs at the edges, a centered glass pill (name only) with a large
@@ -737,6 +891,40 @@ const timelineFeed = useConversationTimelineFeed({
                          :title='$t("bot.nav.talkWith")' test-id="direct-nav-menu" role="menu"
                          :groups="navGroups" @select="onNavSelect" />
         </div>
+      <!-- Actions: dispatched sessions, nav, edit, delete -->
+      <div v-if="dispatchedSessions.length > 0" class="relative shrink-0">
+        <button
+          type="button"
+          :ref="(el) => (dispatchedDd.trigger = el as HTMLElement | null)"
+          data-test="dispatched-menu-button"
+          :aria-haspopup="true"
+          :aria-expanded="dispatchedDd.open"
+          class="flex items-center gap-1 rounded-md border border-hairline bg-bg/50 px-2 py-0.5 text-xs font-medium transition-colors dark:bg-white/[0.04]"
+          :class="dispatchedDd.open ? 'bg-fill-strong text-fg' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
+          @click="dispatchedDd.toggle()"
+        >
+          {{ $t("bot.chat.dispatchedTitle") }} ({{ dispatchedSessions.length }})
+          <ChevronDown :size="12" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="dispatchedDd.open ? 'rotate-180' : ''" />
+        </button>
+        <div v-if="dispatchedDd.open" data-test="dispatched-menu"
+             class="absolute right-0 top-full z-40 mt-1 max-h-72 w-72 overflow-y-auto thin-scroll rounded-lg border border-hairline bg-raised shadow-float">
+          <div v-for="row in dispatchedSessions" :key="row.sessionAlias" data-test="dispatched-row"
+               class="flex w-full items-center gap-2 border-b border-hairline px-3 py-2 last:border-b-0">
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-xs font-medium text-fg">{{ row.displayName ?? row.sessionAlias }}</span>
+              <span class="block truncate text-xs text-fg-muted">{{ row.agent }}</span>
+            </span>
+            <span class="flex shrink-0 items-center gap-1">
+              <button type="button" data-test="dispatched-open"
+                      class="rounded-md border border-hairline px-1.5 py-0.5 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
+                      @click="openDispatchedInSplit(row.sessionAlias)">{{ $t("bot.chat.dispatchedOpen") }}</button>
+              <button v-if="isDispatchedOpen(row.sessionAlias)" type="button" data-test="dispatched-focus"
+                      class="rounded-md border border-hairline px-1.5 py-0.5 text-xs font-medium text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg"
+                      @click="focusDispatched(row.sessionAlias)">{{ $t("bot.chat.dispatchedFocus") }}</button>
+            </span>
+          </div>
+        </div>
+      </div>
         <button
           type="button"
           data-test="edit-bot-button"
@@ -784,6 +972,7 @@ const timelineFeed = useConversationTimelineFeed({
     <ConversationTimeline
       v-if="timelineSupported"
       :room="roomView"
+      :scroll-pane-key="paneScrollKey"
       :timeline="timelineFeed.timeline.value"
       :live-overlay="liveOverlay"
       :pending="timelineFeed.pending.value"
@@ -1002,6 +1191,7 @@ const timelineFeed = useConversationTimelineFeed({
       </button>
       <p v-if="memberGroups.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noGroup") }}</p>
     </MobileSheet>
+    </template>
 
   </div>
 </template>

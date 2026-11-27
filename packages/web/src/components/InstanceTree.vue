@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, GitFork, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Pin, PinOff, Plus, Settings2, SquareTerminal, Trash2, Unplug, Filter } from "lucide-vue-next";
+import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Columns2, Folder, GitFork, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Pin, PinOff, Plus, Settings2, SquareTerminal, Trash2, Unplug, Filter } from "lucide-vue-next";
 import { useInstancesStore, groupArchivedKey, nextSessionForkAlias, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop, supportsSessionForkAgent, supportsSessionForkHandoff } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { primaryKeyFor, useSplitLayoutStore } from "../stores/split-layout";
 import { useGroupsStore } from "../stores/groups";
 import { detachSessionTerminal } from "../lib/session-terminal";
 import { confirm } from "../lib/use-confirm";
@@ -242,7 +243,30 @@ watch(
   () => store.instances.filter((i) => i.online).map((i) => i.id).join("\u0000"),
   () => loadModeData(),
 );
-function onBotTap(instanceId: string, botId: string): void {
+const splitLayout = useSplitLayoutStore();
+function currentSplitPrimary(): string {
+  if (chat.instanceId && chat.sessionAlias) return primaryKeyFor({ kind: "session", instanceId: chat.instanceId, sessionAlias: chat.sessionAlias });
+  if (directBotsStore.instanceId && directBotsStore.selectedBotId) return primaryKeyFor({ kind: "bot", instanceId: directBotsStore.instanceId, botId: directBotsStore.selectedBotId });
+  return "";
+}
+function openSessionSplit(instanceId: string, alias: string): void {
+  const primary = currentSplitPrimary();
+  if (!primary) {
+    splitLayout.ensureLayout(primaryKeyFor({ kind: "session", instanceId, sessionAlias: alias }));
+    return;
+  }
+  splitLayout.addColumn(primary, { kind: "session", instanceId, sessionAlias: alias }, "manual");
+}
+function openBotSplit(instanceId: string, botId: string): void {
+  const primary = currentSplitPrimary();
+  if (!primary) {
+    splitLayout.ensureLayout(primaryKeyFor({ kind: "bot", instanceId, botId }));
+    return;
+  }
+  splitLayout.addColumn(primary, { kind: "bot", instanceId, botId }, "manual");
+}
+function onBotTap(instanceId: string, botId: string, e?: MouseEvent): void {
+  if (e?.altKey) { openBotSplit(instanceId, botId); return; }
   emit("selectBot", instanceId, botId);
 }
 function onGroupTap(instanceId: string, groupId: string): void {
@@ -897,9 +921,10 @@ function rowTransform(instanceId: string, s: { alias: string; archived?: boolean
 }
 // Tapping the row body: if its blocks are open, the tap just closes them (iOS-style);
 // otherwise it selects the session.
-function onRowTap(id: string, alias: string) {
+function onRowTap(id: string, alias: string, e?: MouseEvent) {
   const key = `${id}:${alias}`;
   if (openSwipeFor.value === key) { openSwipeFor.value = null; return; }
+  if (e?.altKey) { openSessionSplit(id, alias); return; }
   emit("select", id, alias);
 }
 
@@ -1224,7 +1249,7 @@ const rowSwipes = computed(() => {
               <button
                 type="button"
                 class="flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1.5 text-left"
-                @click="onBotTap(inst.id, entry.bot.id)"
+                @click="(e) => onBotTap(inst.id, entry.bot.id, e)"
               >
                 <BotAvatar :avatar="entry.bot.avatar" :driver="driverForAgentName(inst, entry.bot.agent)" :name="entry.bot.name" :size="40" crop :blink-key="`${inst.id}:${entry.bot.id}`"
                            :disabled="!entry.bot.enabled" :retired="entry.bot.retired" :state="inst.online ? 'idle' : 'offline'"
@@ -1240,6 +1265,16 @@ const rowSwipes = computed(() => {
                   </span>
                   <span v-if="entry.bot.role && !entry.bot.retired" data-test="bot-role" class="truncate text-xs text-fg-muted">{{ entry.bot.role }}</span>
                 </span>
+              </button>
+              <button
+                type="button"
+                data-test="bot-split-open"
+                :title="$t('split.openInSplit')"
+                :aria-label="$t('split.openInSplit')"
+                class="mr-1 hidden h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(hover:hover)]:grid opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                @click.stop="openBotSplit(inst.id, entry.bot.id)"
+              >
+                <Columns2 :size="14" />
               </button>
               <button
                 type="button"
@@ -1409,7 +1444,7 @@ const rowSwipes = computed(() => {
                    :class="isSelected(inst.id, s.alias) ? '' : 'hover:bg-fill-hover'">
                 <button
                   class="relative flex min-h-[52px] lg:min-h-0 min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
-                  @click="onRowTap(inst.id, s.alias)"
+                  @click="(e) => onRowTap(inst.id, s.alias, e)"
                 >
                   <Loader2 v-if="s.creating || sessionActionPending(inst.id, s.alias)"
                             :data-test="s.creating ? 'session-creating' : 'session-action-pending'"
@@ -1485,7 +1520,10 @@ const rowSwipes = computed(() => {
                         class="ml-auto shrink-0 font-mono text-xs tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
                 </button>
                 <!-- Row actions: desktop overflow (⋯) menu → archive / delete. Hidden when the instance is offline. -->
-                <div v-if="inst.online" data-test="session-actions" class="relative mr-1 shrink-0">
+                <div v-if="inst.online" data-test="session-actions" class="relative mr-1 flex shrink-0 items-center">
+                  <button data-test="session-split-open" :title="$t('split.openInSplit')" :aria-label="$t('split.openInSplit')"
+                          class="hidden h-5 w-5 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(hover:hover)]:grid opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                          @click.stop="openSessionSplit(inst.id, s.alias)"><Columns2 :size="13" /></button>
                   <button data-test="session-menu" :aria-label="$t('common.more')"
                           :aria-haspopup="true" :aria-expanded="menuDd.open && menuFor === `${inst.id}:${s.alias}`"
                           class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"

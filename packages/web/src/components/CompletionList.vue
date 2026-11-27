@@ -17,6 +17,8 @@ export interface CompletionRow {
   detail?: string;
   /** Accent marker in front of the label (the skill chip). */
   badge?: string;
+  /** Kind icon in front of the badge (bot / session @-mention targets). */
+  icon?: "bot" | "session";
   /** Muted/accent/mono chips after the label (lead, role, reason, bot id). */
   trailing?: CompletionTrailing[];
   disabled?: boolean;
@@ -29,6 +31,7 @@ export interface CompletionRow {
 </script>
 
 <script setup lang="ts">
+import { Bot as BotIcon, SquareTerminal as SessionIcon } from "lucide-vue-next";
 // The list body of a composer completion menu. It is NOT a full menu: the
 // caller owns the popover/sheet shell (CompletionMenu) and the keyboard.
 //
@@ -87,6 +90,8 @@ const emit = defineEmits<{ pick: [index: number] }>();
       @pointerdown.prevent
       @click="emit('pick', index)"
     >
+      <span v-if="row.icon === 'bot'" class="inline-flex shrink-0 items-center text-accent-text"><BotIcon :size="14" /></span>
+      <span v-else-if="row.icon === 'session'" class="inline-flex shrink-0 items-center text-fg-muted"><SessionIcon :size="14" /></span>
       <span v-if="row.badge" class="shrink-0 text-accent-text">{{ row.badge }}</span>
       <span class="min-w-0 truncate font-medium text-fg" :class="row.trailing?.length ? 'flex-1' : ''">{{ row.label }}</span>
       <span v-if="row.detail" class="truncate text-fg-muted">{{ row.detail }}</span>

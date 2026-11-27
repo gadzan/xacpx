@@ -393,3 +393,37 @@ it("refuses a restored reference draft through an old Hub without sending or los
   expect(prompt).toHaveBeenCalledTimes(1);
   expect(s.currentDraftRequestId).toBe(requestId);
 });
+
+it("mention rows badge bot vs session targets; missing targetKind reads as bot", async () => {
+  vi.mocked(api.rpc).mockResolvedValue({
+    ...ready(),
+    mentions: {
+      status: "ready",
+      items: [
+        { handle: "agent:n:b1", displayName: "Helper", agent: "codex", workspace: "backend", targetKind: "bot" },
+        { handle: "agent:n:s1", displayName: "Runner", agent: "claude", workspace: "frontend", targetKind: "session", sessionAlias: "runner" },
+        // Missing targetKind reads as bot (back-compat with pre-M2 hubs).
+        { handle: "agent:n:legacy", displayName: "Legacy", agent: "codex", workspace: "backend" },
+      ],
+    },
+  });
+  const deliver = vi.fn().mockResolvedValue("uncertain");
+  const w = input({ deliver }),
+    t = w.get("textarea");
+  await t.setValue("@");
+  await flushPromises();
+  const choices = w.findAll('[role="option"]');
+  expect(choices).toHaveLength(3);
+  expect(choices[0]?.text()).toContain("Bot");
+  expect(choices[0]?.text()).toContain("codex · backend");
+  expect(choices[0]?.find("svg").exists()).toBe(true);
+  expect(choices[1]?.text()).toContain("Session");
+  expect(choices[1]?.text()).toContain("claude · frontend");
+  expect(choices[1]?.find("svg").exists()).toBe(true);
+  expect(choices[2]?.text()).toContain("Bot");
+  // Selection submits the canonical handle unchanged.
+  await choices[1]!.trigger("click");
+  await t.trigger("keydown", { key: "Enter" });
+  expect(deliver).toHaveBeenLastCalledWith("@Runner ", [{ range: [0, 7], handle: "agent:n:s1" }], []);
+  expect((t.element as HTMLTextAreaElement).value).toBe("@Runner ");
+});

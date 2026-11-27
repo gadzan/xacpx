@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useSplitLayoutStore } from "../stores/split-layout";
 import type { PeerMessageHistoryEntry, ScheduledOriginDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import StreamMarkdown from "./StreamMarkdown.vue";
@@ -26,7 +27,7 @@ import {
 } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../lib/turn-layout";
 import { expandedTraces } from "../lib/trace-expansion";
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void>; forkNode?: (message: ChatMessage) => void; historyCapped?: { kept: number; dropped: number } | null }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void>; forkNode?: (message: ChatMessage) => void; historyCapped?: { kept: number; dropped: number } | null; scrollPaneKey?: string }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: []; openDetail: [payload: { runId?: string; memberTurnId?: string }] }>();
 
 // While a turn is in progress the live row body renders the ThinkingDots bubble
@@ -397,10 +398,46 @@ function pinToFollowTarget(el: HTMLElement, smooth: boolean): void {
   else el.scrollTop = el.scrollHeight;
 }
 
+const splitLayoutStore = useSplitLayoutStore();
+let lastMsgSaveTs = 0;
+function persistMsgScroll(): void {
+  if (!props.scrollPaneKey) return;
+  const el = scroller.value;
+  if (!el) return;
+  const now = Date.now();
+  if (now - lastMsgSaveTs < 150) return;
+  lastMsgSaveTs = now;
+  splitLayoutStore.saveScroll(props.scrollPaneKey, { scrollTop: el.scrollTop, atBottom: atBottom.value });
+}
+function restoreMsgScroll(): void {
+  if (!props.scrollPaneKey) return;
+  const el = scroller.value;
+  if (!el) return;
+  const rec = splitLayoutStore.getScroll(props.scrollPaneKey);
+  if (!rec || rec.atBottom) {
+    scrollToBottom(false);
+    return;
+  }
+  el.scrollTop = rec.scrollTop;
+  atBottom.value = isPinnedToFollowTarget(el);
+}
+onMounted(() => {
+  if (!props.scrollPaneKey) return;
+  void nextTick(() => restoreMsgScroll());
+});
+watch(() => props.scrollPaneKey, () => {
+  if (!props.scrollPaneKey) return;
+  void nextTick(() => restoreMsgScroll());
+});
+watch(() => props.messages.length, (now, prev) => {
+  if (!props.scrollPaneKey) return;
+  if (prev === 0 && now > 0) void nextTick(() => restoreMsgScroll());
+});
 function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
   atBottom.value = isPinnedToFollowTarget(el);
+  persistMsgScroll();
   // Near the top while older rows are still mounting locally → nothing to fetch yet;
   // the reveal loop is already draining hiddenCount.
   if (hiddenCount.value > 0) return;
@@ -570,6 +607,12 @@ function scrollToBottom(smooth = false): void {
 watch(
   () => props.sessionKey,
   () => {
+    if (props.scrollPaneKey) {
+      pendingDistFromBottom = null;
+      beginEnter();
+      void nextTick(() => restoreMsgScroll());
+      return;
+    }
     atBottom.value = true;
     pendingDistFromBottom = null;
     beginEnter();
@@ -608,7 +651,11 @@ watch(
     return [props.messages.length, lt ? 1 : 0, lt?.parts.length ?? 0, tail, lt?.slotAfterIndex ?? -1] as const;
   },
   () => {
-    if (atBottom.value) void nextTick(() => scrollToBottom(false));
+    // Re-check at execution time: a pane restore (split workbench) may have
+    // landed between scheduling and this callback and cleared the pin.
+    void nextTick(() => {
+      if (atBottom.value) scrollToBottom(false);
+    });
   },
 );
 </script>

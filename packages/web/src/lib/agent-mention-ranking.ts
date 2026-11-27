@@ -46,7 +46,9 @@ export type ContextTier = 0 | 1 | 2 | 3;
  * - 1: same Relay instance, different workspace
  * - 2: different Relay instance
  * - 3: non-Relay logical (channelId present and !== "relay"), worker endpoint,
- *      or legacy row missing both endpointKind and channelId
+ *      or legacy row missing both endpointKind and channelId.
+ * Bots tier exactly like Relay logical endpoints: the non-Relay channel check
+ * never demotes them (unified Session↔Bot @ autocomplete, M2).
  */
 export function contextTierOf(
   item: Pick<RankableMentionItem, "instanceId" | "workspace" | "endpointKind" | "channelId">,
@@ -54,7 +56,8 @@ export function contextTierOf(
 ): ContextTier {
   if (item.endpointKind === "worker") return 3;
   if (!item.endpointKind && !item.channelId) return 3; // unknown / legacy context
-  if (item.channelId && item.channelId !== "relay") return 3; // non-Relay logical
+  // Bots are Relay-directory endpoints regardless of channel tag — never Tier 3.
+  if (item.endpointKind !== "bot" && item.channelId && item.channelId !== "relay") return 3; // non-Relay logical
   // Relay logical endpoint: workspace affinity beats instance affinity.
   if (ctx.currentWorkspace && item.workspace === ctx.currentWorkspace) return 0;
   if (ctx.currentInstanceId && item.instanceId === ctx.currentInstanceId) return 1;

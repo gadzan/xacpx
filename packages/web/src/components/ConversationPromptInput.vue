@@ -198,18 +198,29 @@ const candidates = computed(() =>
             key: c.name,
             label: "/" + c.name,
             detail: c.description ?? "",
+            badge: undefined as string | undefined,
+            icon: undefined as CompletionRow["icon"],
             command: c.name,
             kind: c.kind,
             handle: undefined as string | undefined,
           }))
-      : (snapshot.value?.mentions.items ?? []).map((m) => ({
-          key: m.handle,
-          label: "@" + m.displayName,
-          detail: [m.agent, m.workspace].filter(Boolean).join(" · "),
-          command: undefined as string | undefined,
-          kind: undefined,
-          handle: m.handle,
-        })),
+      : (snapshot.value?.mentions.items ?? []).map((m) => {
+          // Missing targetKind reads as "bot" (back-compat with pre-M2 hubs).
+          const targetKind = m.targetKind ?? "bot";
+          return {
+            key: m.handle,
+            label: "@" + m.displayName,
+            detail: [m.agent, m.workspace].filter(Boolean).join(" · "),
+            badge:
+              targetKind === "session"
+                ? t("chat.mentionSource.session")
+                : t("chat.mentionSource.bot"),
+            icon: targetKind,
+            command: undefined as string | undefined,
+            kind: undefined,
+            handle: m.handle,
+          };
+        }),
 );
 const rows = computed(() =>
   candidates.value.slice(page.value * 8, page.value * 8 + 8),
@@ -221,7 +232,8 @@ const completionRows = computed<CompletionRow[]>(() =>
     key: row.key,
     label: row.label,
     detail: row.detail,
-    badge: row.kind === "skill" ? t("bot.prompt.skillCompletion") : undefined,
+    badge: row.kind === "skill" ? t("bot.prompt.skillCompletion") : row.badge,
+    icon: row.icon,
     testId: "direct-cmd-item",
   })),
 );
