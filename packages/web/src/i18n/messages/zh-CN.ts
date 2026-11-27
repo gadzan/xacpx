@@ -610,7 +610,7 @@ export default {
     readinessWorkspace: "工作区",
     readinessCheckedIn: "已在 {workspace} 检查",
     readinessNoWorkspace: "添加工作区后即可检查就绪状态。",
-    readinessCheckHint: "检查 {workspace} 中的 {name}",
+    readinessCheckHint: "检查 {name}",
   },
   workspaces: {
     title: "工作区",

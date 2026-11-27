@@ -615,7 +615,7 @@ export default {
     readinessWorkspace: "Workspace",
     readinessCheckedIn: "Checked in {workspace}",
     readinessNoWorkspace: "Add a workspace to check readiness.",
-    readinessCheckHint: "Check {name} in {workspace}",
+    readinessCheckHint: "Check {name}",
   },
   workspaces: {
     title: "Workspaces",

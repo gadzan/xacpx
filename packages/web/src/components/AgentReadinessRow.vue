@@ -20,17 +20,16 @@ type RowState = { status: "idle" } | { status: "loading" } | AgentCapabilityStat
 const { t } = useI18n();
 const store = useInstancesStore();
 
-// The selected workspace is the capability scope: capability answers are per
-// agent + workspace, so the row always reads and renders exactly one scope.
-// Every load bumps `seq`; a late answer from a superseded scope is dropped.
+// Capability answers are agent-global (fingerprint V2 excludes workspace cwd),
+// so the row never asks the user to pick a scope: the first workspace is used
+// silently as the protocol-required scope. Late answers from a superseded load
+// are still dropped via `seq`.
 const workspace = ref(props.workspaceNames[0] ?? "");
 const state = ref<RowState>(workspace.value ? { status: "loading" } : { status: "idle" });
-const shownWorkspace = ref<string | null>(null);
 const checking = ref(false);
 let seq = 0;
 
 const hasWorkspace = computed(() => workspace.value !== "");
-const showPicker = computed(() => props.workspaceNames.length > 1);
 
 const statusKey = computed(() => {
   const s = state.value.status;
@@ -67,6 +66,14 @@ const modelCount = computed((): number | null =>
   state.value.status === "ready" ? state.value.models.length : null,
 );
 
+const modelItems = computed((): Array<{ id: string; label: string }> => {
+  if (state.value.status !== "ready") return [];
+  return state.value.models.map((m) => ({
+    id: m.modelId,
+    label: m.name && m.name !== m.modelId ? `${m.name} (${m.modelId})` : m.modelId,
+  }));
+});
+
 async function load(probe: boolean): Promise<void> {
   const ws = workspace.value;
   if (!ws) return;
@@ -82,7 +89,6 @@ async function load(probe: boolean): Promise<void> {
     });
     if (my !== seq) return;
     state.value = next;
-    shownWorkspace.value = ws;
   } catch {
     // getAgentCapabilities already maps transport failures to typed error
     // states; an unexpected throw keeps the last settled row either way.
@@ -140,25 +146,19 @@ watch(
     <p v-if="reason" data-test="arr-reason" class="text-fg-muted">{{ reason }}</p>
     <p v-if="recovery" data-test="arr-recovery" class="text-fg-muted">{{ recovery }}</p>
     <div class="flex flex-wrap items-center gap-2">
-      <label v-if="showPicker" class="inline-flex items-center gap-1 text-fg-muted">
-        <span>{{ $t("agents.readinessWorkspace") }}</span>
-        <select v-model="workspace" data-test="arr-workspace"
-                class="rounded-sm bg-surface-2 px-1 py-0.5 text-xs text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-          <option v-for="name in workspaceNames" :key="name" :value="name">{{ name }}</option>
-        </select>
-      </label>
-      <span v-if="shownWorkspace" data-test="arr-checked-in" class="text-fg-muted">{{
-        $t("agents.readinessCheckedIn", { workspace: shownWorkspace })
-      }}</span>
       <button type="button" data-test="arr-check" :disabled="!hasWorkspace || checking"
-              :title="hasWorkspace ? $t('agents.readinessCheckHint', { name: agentName, workspace: workspace }) : ''"
-              :aria-label="$t('agents.readinessCheckHint', { name: agentName, workspace: workspace || '—' })"
+              :title="$t('agents.readinessCheckHint', { name: agentName })"
+              :aria-label="$t('agents.readinessCheckHint', { name: agentName })"
               class="inline-flex items-center gap-1 rounded-sm bg-surface-2 px-2 py-0.5 text-xs text-fg transition-colors hover:bg-accent-soft disabled:opacity-50"
               @click="check">
         <RefreshCw :size="12" :class="checking ? 'animate-spin motion-reduce:animate-none' : ''" aria-hidden="true" />
         {{ $t("agents.readinessCheck") }}
       </button>
     </div>
+    <ul v-if="modelItems.length" data-test="arr-model-list" class="flex flex-wrap gap-1">
+      <li v-for="m in modelItems" :key="m.id" data-test="arr-model-item"
+          class="rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[11px] text-fg">{{ m.label }}</li>
+    </ul>
     <p v-if="!hasWorkspace" data-test="arr-no-workspace" class="text-fg-muted">{{ $t("agents.readinessNoWorkspace") }}</p>
   </div>
 </template>
