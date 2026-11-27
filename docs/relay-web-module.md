@@ -1380,6 +1380,28 @@ test asserting the sheet's DOM catches it.
 
 The direct-composer store isolates drafts by instance/Conversation/Topic/Bot. A contiguous edit shifts later UTF-16 ranges and removes references touched by the edit. Send freezes original text/references/target and requestId; rejection or uncertainty preserves the draft and repeat payload. Only an accepted result clears the identical captured draft, including when the view has switched. Scope/profile/event changes fence late capability responses; snapshots and agent-commands events refresh the command projection, including ready-empty advertisements. GroupComposer and the ordinary Session composer keep their existing data sources.
 
+## 分栏工作台与 Bot↔Session 双向交互（Milestone 2）
+
+### Herdr 风格横向分栏（`SplitWorkbench.vue` + `stores/split-layout.ts`）
+
+仅桌面宽屏（`showSplit` 要求 `isDesktop`，即 `≥lg`；Group 与非聊天中心 tab 保持单栏）。布局按 primary（当前普通会话或 Direct Bot）键存储，最多 **4 列**、单列最小 **280px**、宽度归一化（和为 1）：列间 4px 拖拽条（Pointer Events，按容器宽度增量收敛）、双击均分。单栏时不渲染任何分栏 chrome（无列头、无右侧竖条），`+ 分栏` 按钮收进主栏 `#actions` 插槽与 `ConversationActions` 并排；分栏后每列显示紧凑列头（图标、标题、聚焦边框、`设为主视图`/`关闭`），`+ 分栏` 停靠在最后一列列头（列数 < 4 时可见），附搜索选择器（会话按 displayName/alias/agent/实例过滤，Bot 按 name/实例过滤，已在栏的排除）。
+
+持久化：`localStorage` 存布局与列宽（键 `xacpx.splitLayouts.v1`，严格校验、非法即兜底），`sessionStorage` 存各 pane 滚动位置（键 `xacpx.splitScroll.v1`，150ms 节流 save，挂载/目标切换/内容就绪时恢复；`atBottom` 吸底）。`SplitWorkbench` 通过 `provide(splitPrimaryKey)` 把布局 primary 注入给列内 pane 与 `DispatchedSessionCard`（standalone 时降级为选中 Bot/会话推导）。`ChatPane` 的 `@show-files`、`DirectBotPane` 的 `@navigate-bot/@navigate-group/@back` 全部透传给 `DashboardView`。 prune 规则：只在实例 `sessionsLoaded && !sessionsHasMore`（完整列表）且 Bot 列表 `botsLoaded` 时才清理找不到了的目标，分页中的列表永不删列。
+
+### 多栏并发 store
+
+- `stores/chat.ts`：`sessionsByKey`（`sessionKeyFor`）+ `ensureSessionLoaded/loadHistoryFor/loadOlderFor/sendPromptFor/cancelTurnFor`，顶层保持 selectedKey 代理——`select()` 语义与 legacy 完全一致（分栏列永远走显式 key API，不调 `select`）。
+- `direct-bots.ts`：`botPanesByKey`（`botPaneKeyFor`）存各 Bot 的 `conversationId/topicId`；per-topic 实时态 `liveTurnsByTopic/activeRunsByTopic/activeMemberTurnsByTopic/topicRevision` 由 `applyEvent` 镜像（display-only，不碰选择），`ensureBotPaneScope/discoverScopedRun/sendPromptTo/cancelRunFor` 提供栏内解析/发送/停止。
+- 分栏 `ChatPane` 按 `(instanceId, sessionAlias)` 读 `liveTurnFor/planFor/queueFor/busyFor`（`QueueStrip` 同作用域 props），副栏 `DirectBotPane` 渲染真实 `ConversationTimeline` + per-topic live overlay + 作用域 `ConversationPromptInput`（`scope/scopeReady`，无 deliver 时直发 `sendPromptTo`）。
+
+### Session ↔ Bot 双向 `@` 自动补全
+
+`lib/agent-mention-ranking.ts` 对 Bot 与 Relay logical 一视同仁（同工作区 tier 0 / 同实例 1 / 跨实例 2，永不 Tier 3；verbatim 精确别名优先于 display 前缀）。`PromptInput` 与 `ConversationPromptInput` 按 `targetKind` 渲染 Bot/Session 徽章与副标题（缺省按 bot，`agentMentions` 透传；缺失 `targetKind` 读 bot 做 pre-M2 兼容）。
+
+### Bot 派发会话自动分栏
+
+`conversation-message` 事件带 `dispatchedSession` 且桌面端、且（主选 Bot 的当前话题，或当前布局内任意 Bot 列的 pane `conversationId` 命中该消息 `conversationId`）时，`DashboardView` 先 `loadSessions` 再 `autoOpenDispatchedSession`（已有关闭记录的不重开）。时间线内联 `DispatchedSessionCard`（运行中/空闲态、`打开`/`定位`）与 Bot 顶栏「派发会话 (N)」菜单（`打开`/`聚焦`）都走同一布局 primary（inject 优先）。已关闭的分栏可用 `reopenDispatchedSession` 取回并聚焦，`dismissedSessionKeys` 防止反复自动弹出。
+
 ## Ordinary session fork entry
 
 A session row's ⋯ menu shows **Fork session** only when the instance advertises

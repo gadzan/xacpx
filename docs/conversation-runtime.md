@@ -1391,3 +1391,35 @@ Unrestricted Direct executions receive a core-owned, ephemeral Direct messaging 
 Same-instance Bot delivery uses DirectMessagingService and the existing Conversation admission/dispatcher/runner. For each source Conversation/Topic and target Bot, ensurePeerTopic persists a separate private peerScope and hidden runtime binding. The target's human Direct Topic is untouched. Its request is role=bot, senderBotId is the source Bot, and the member origin is handoff with no human ingress. Public Topic/history/Run/worktree doors and public message/Run events omit this scope; correlated private streams are not forwarded into Relay reconnect snapshots. It is point-to-point isolation, not encryption or secrecy from the instance administrator.
 
 Message IDs are derived from the source turn, exact target, and explicit content for durable replay. A queued receipt proves admission only. V1 supports queue/auto, same-instance online delivery, and cold target startup; no completion, replyTo, steering, interrupt, broadcast, cross-instance mailbox, or Task is advertised. Content is limited to 16000 bytes, chain depth to 8, and unique messages to 16 per execution; trivial ACK loops are rejected. See [implementation evidence](design/issue-399-direct-completions.md).
+
+## Bot↔Session bidirectional messaging and Direct Bot orchestration (Milestones 1–2)
+
+### Shared endpoint protocol
+
+`PublishedAgentEndpointDto.endpointKind` is `logical | worker | bot` (`botId` set for bot endpoints). Mentions carry `targetKind` (`bot | session`; missing reads as bot for pre-M2 hubs) plus `sessionAlias` for session targets. `DispatchedSessionRecordDto` (`sessionAlias`, optional `displayName`, `agent`, `workspace`) rides on role=system `ConversationMessageDto.dispatchedSession` notices for sessions a Bot dispatched. `validDispatchedSession` admits system rows only and rejects `brt_*` aliases, NUL/control characters, and over-long fields. Bot-created sessions are real `LogicalSession` rows (visible in the Sessions list); product sessions owned by `brt_*` / `bot-direct` / `group-member` / `group-controller` owners never leak into ordinary lists, the agent directory, or dispatched surfaces.
+
+### Fire-and-forget delivery with a replyable envelope
+
+Session↔Bot and Bot→Bot delivery is fire-and-forget: the receipt proves durable queue admission only — no interruption, reply, steering, or completion callbacks (`completion` is always `"none"`; `agent_send` states this in its description). The reader-facing transcript renders the peer envelope (`agent-message-envelope.ts`):
+
+- Bot→Session (`deliverFromBot`): `<xacpx-message id from from-name from-kind="bot" replyable="true" [reply-to]>…</xacpx-message>`
+- Session→* / generic (`renderAgentMessageEnvelope`): `<xacpx-message id [conversation-id] from replyable [reply-to]>…</xacpx-message>`
+
+`from` is the encoded sender handle; the generic variant marks `replyable` only when both endpoints advertise `receive` (the Bot→Session transcript variant always marks it replyable). Answering reuses the envelope (`replyTo` names the inbound message id, `reply-to` attribute on render) and sends a new one-way message back — there is no turn-taking contract. Bot→Bot delivery goes through `direct.send` with the execution token as the coordinator session and the registry handle as target, wrapped as a Bot peer delivery so the transcript attributes it to the sending Bot (`from-kind="bot"`, encoded replyable `from`).
+
+### Direct Bot MCP orchestration tools
+
+Direct (Bot-owned) executions receive six tools (`getDirectTools` in `src/mcp/xacpx-mcp-tools.ts`); the four orchestration tools ride the bot-orchestration transport binding and fail closed when unbound:
+
+- `agent_list` — authorized Bot + session endpoints (`kind`, handle, `displayName`, workspace, agent). Inspect before messaging.
+- `agent_send` — one-way message to a handle (`to`, 1–16000-char `message`, `mode: auto|queue`, optional `replyTo`, `completion` locked to `"none"`). Fire-and-forget; the `xacpx-agent-send-receipt:v1` marker carries messageId + status.
+- `xacpx_environment` — workspaces + agents available to this execution (input to the two creators below).
+- `session_create` — ordinary manageable session, visible in the Sessions list; returns the display alias plus the internal handle; an optional `task` dispatches fire-and-forget.
+- `session_rename` — display-label rename; hidden `brt_*` sessions cannot be renamed.
+- `bot_create` — child Bot spawned by this execution (`name`/`agent`/`workspace`/`role`/`instructions`/`model`/`effort`); an optional `task` notifies the child fire-and-forget.
+
+Server-side safety caps (`src/orchestration/bot-orchestration-service.ts`, per execution unless noted): at most 8 sessions created, at most 4 child Bots, spawn depth at most 3 (the `createdByBotId` chain), at most 64 Bots per instance. Quota errors fail the tool call; they never partially create.
+
+### Dispatched sessions and private sub-Bot peer topics
+
+When a Bot dispatches a session, the runtime persists a role=system notice carrying `dispatchedSession` on the Bot's topic; the dashboard renders it as an inline card with open/locate actions, and the Bot pane header offers the same set under “派发会话”. A Bot→Bot task (`sendToBotTarget`) delivers through the target Bot's private peer topic (`ensurePeerTopic` per source Conversation/Topic + target Bot, same isolation as private peer delivery above): the target's human Direct Topic is untouched, the request is role=bot with the sender as origin and no human ingress, and public Topic/history/Run/worktree doors plus public message/Run events omit the scope. Display aliases resolve through `toDisplaySessionAlias` (the Web opens the pane via the internal handle); `dispatchedSession.sessionAlias` stores the display alias.

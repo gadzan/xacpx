@@ -240,7 +240,7 @@ watch(listsSignature, () => {
                     pane-mode="split"
                     @show-files="emit('showFiles')">
             <template #actions>
-              <slot name="actions" />
+              <slot v-if="columns.length === 1" name="actions" />
               <SplitAddButton v-if="columns.length === 1" :items="pickItems" @opened="onPickerOpened" @pick="pick" />
             </template>
           </ChatPane>
@@ -253,7 +253,7 @@ watch(listsSignature, () => {
                          @navigate-group="(instanceId, groupId) => emit('navigateGroup', instanceId, groupId)"
                          @back="emit('back')">
             <template #actions>
-              <slot name="actions" />
+              <slot v-if="columns.length === 1" name="actions" />
               <SplitAddButton v-if="columns.length === 1" :items="pickItems" @opened="onPickerOpened" @pick="pick" />
             </template>
           </DirectBotPane>

@@ -348,7 +348,33 @@ describe("SplitWorkbench.vue", () => {
     await flushPromises();
     expect(wrapper.findAll('[data-test="split-column"]')).toHaveLength(2);
     expect(wrapper.findAll('[data-test="split-column-header"]')).toHaveLength(2);
-    expect(wrapper.findAll('[data-test="split-add"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-test="split-add"]').length).toBe(1);
+  });
+
+  it("parent #actions renders once in single-col and never in split mode", async () => {
+    seedInstance();
+    const withActions = (primary: SplitPaneTarget) => mount(SplitWorkbench, {
+      props: { primary },
+      slots: { actions: "<button data-test=\"parent-actions\">a</button>" },
+      global: {
+        stubs: {
+          ChatPane: {
+            name: "ChatPane",
+            props: ["instanceId", "sessionAlias", "paneMode"],
+            template: '<div data-stub="chat-pane"><slot name="actions" /></div>',
+          },
+        },
+      },
+    });
+    const single = withActions(sessionTarget("a1"));
+    await flushPromises();
+    expect(single.findAll('[data-test="parent-actions"]')).toHaveLength(1);
+    await single.find('[data-test="split-add"]').trigger("click");
+    await single.find('[data-test="split-pick-session"]').trigger("click");
+    await flushPromises();
+    // Split: the column-0 header owns #actions; pane headers stay quiet.
+    expect(single.findAll('[data-test="parent-actions"]')).toHaveLength(1);
+    expect(single.findAll('[data-test="split-column-header"]')).toHaveLength(2);
   });
 
   it("forwards the session pane show-files event to the parent", async () => {
