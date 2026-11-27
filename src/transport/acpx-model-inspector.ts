@@ -12,6 +12,16 @@ import type { AgentCapabilityProbeRequest, AgentCapabilityProbeResult } from "./
  * session, no transport wiring.
  */
 export const ACPX_MODEL_INSPECT_TIMEOUT_MS = 75_000;
+/** Cold npx fallback needs download/unpack on top of adapter init (Windows slowest).
+ *  Preinstalled releases (node direct) stay on the 75s ceiling. */
+export const ACPX_MODEL_INSPECT_NPX_TIMEOUT_MS = 120_000;
+
+/** True when the probe must pay an npx cold start (managed fallback, not preinstalled). */
+export function isNpxBasedAgentCommand(agentCommand: readonly string[]): boolean {
+  const first = agentCommand[0] ?? "";
+  const base = first.split(/[\\/]/).pop() ?? first;
+  return base === "npx" || base === "npx.cmd" || base === "npx.exe";
+}
 
 export interface AcpxModelInspectorInput {
   agentCommand: string[];
@@ -141,18 +151,30 @@ export async function probeAgentCapabilitiesViaInspector(
     return { ok: false, failure: "unsupported", message: launch.message };
   }
   const agentProcessEnv = input.agentProcessEnv ?? launch.agentProcessEnv;
-  return inspectAcpxModels(
+  const npxColdStart = isNpxBasedAgentCommand(launch.agentCommand);
+  const timeoutMs = npxColdStart
+    ? Math.max(options.timeoutMs ?? ACPX_MODEL_INSPECT_TIMEOUT_MS, ACPX_MODEL_INSPECT_NPX_TIMEOUT_MS)
+    : (options.timeoutMs ?? ACPX_MODEL_INSPECT_TIMEOUT_MS);
+  const result = await inspectAcpxModels(
     {
       agentCommand: launch.agentCommand,
       cwd: launch.cwd,
       ...(agentProcessEnv ? { agentProcessEnv } : {}),
-      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      timeoutMs,
     },
     {
       ...(options.inspectAgentModels ? { inspectAgentModels: options.inspectAgentModels } : {}),
       ...(options.log ? { log: options.log } : {}),
     },
   );
+  if (!result.ok && result.failure === "timeout" && npxColdStart) {
+    const driver = input.driver ?? input.agent;
+    return {
+      ...result,
+      message: `${result.message} (npx cold start; preinstall the adapter with \`xacpx adapter preinstall ${driver}\` and retry)`,
+    };
+  }
+  return result;
 }
 
 function classifyInspectorError(

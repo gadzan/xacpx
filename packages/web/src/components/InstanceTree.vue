@@ -218,9 +218,11 @@ function mixedEntries(instanceId: string): MixedEntry[] {
   }
   return entries;
 }
+function botsListCount(instanceId: string): number {
+  return (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.retired !== true).length;
+}
 function mixedListCount(instanceId: string): number {
-  const bots = (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.retired !== true);
-  return bots.length + (groupsStore.groupsByInstance[instanceId] ?? []).length;
+  return botsListCount(instanceId) + (groupsStore.groupsByInstance[instanceId] ?? []).length;
 }
 function mixedEmpty(instanceId: string): boolean {
   return mixedListCount(instanceId) === 0;
@@ -1169,11 +1171,11 @@ const rowSwipes = computed(() => {
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
         <!-- BOTS MODE (mixed Bots + Groups, pinned first) -->
         <div v-if="inst.online && navMode === 'bots'" class="space-y-0.5">
-          <div v-if="mixedListCount(inst.id)"
+          <div v-if="botsListCount(inst.id)"
                data-test="bots-list-count"
                class="flex items-center gap-1.5 py-1 pl-2.5 text-xs text-fg-muted">
             <span>{{ $t("nav.bots") }}</span>
-            <span class="font-mono tabular-nums">{{ mixedListCount(inst.id) }}</span>
+            <span class="font-mono tabular-nums">{{ botsListCount(inst.id) }}</span>
           </div>
           <div v-if="((directBotsStore.loadingBotsByInstance[inst.id] ?? 0) > 0 && !directBotsStore.botsLoaded[inst.id]) || ((groupsStore.loadingGroupsByInstance[inst.id] ?? 0) > 0 && !groupsStore.groupsLoaded[inst.id])"
                data-test="bots-loading"

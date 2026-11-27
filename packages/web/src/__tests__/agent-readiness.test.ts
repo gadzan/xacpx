@@ -63,7 +63,11 @@ describe("AgentReadinessRow", () => {
     expect(w.get('[data-test="arr-installed"]').text()).toBe("built-in");
     expect(w.get('[data-test="arr-status"]').text()).toBe("Ready");
     expect(w.get('[data-test="arr-models"]').text()).toBe("2 models");
-    expect(w.get('[data-test="arr-checked-in"]').text()).toBe("Checked in repo");
+    // No workspace picker: capability answers are agent-global.
+    expect(w.find('[data-test="arr-workspace"]').exists()).toBe(false);
+    expect(w.find('[data-test="arr-checked-in"]').exists()).toBe(false);
+    const items = w.findAll('[data-test="arr-model-item"]');
+    expect(items.map((i) => i.text())).toEqual(["gpt-a", "gpt-b"]);
   });
 
   test("Check performs exactly one probe for the selected agent and workspace", async () => {
@@ -115,70 +119,40 @@ describe("AgentReadinessRow", () => {
     expect(w.get('[data-test="arr-reason"]').text()).toBe("this adapter cannot list models");
   });
 
-  test("a workspace switch reads the new scope without a probe", async () => {
-    const store = useInstancesStore();
-    seed(store, {
-      workspaces: [
-        { name: "repo", cwd: "/repo", description: "" },
-        { name: "web", cwd: "/web", description: "" },
-      ],
-    });
-    const repoState = readyCapability("cache", [{ modelId: "gpt-a" }], { fetchedAt: FETCHED });
-    const webState = needsSetupCapability(
-      { code: "discovery-available", message: "no saved model list" },
-      "Fetch the model list.",
-      { fetchedAt: FETCHED },
+  test("renders the agent model list when ready", async () => {
+    const { w } = mountRow(
+      readyCapability("cache", [{ modelId: "opus", name: "Opus" }, { modelId: "sonnet" }], { fetchedAt: FETCHED }),
     );
-    const getCaps = vi.spyOn(store, "getAgentCapabilities").mockImplementation(async (_id, input) =>
-      input.workspace === "web" ? webState : repoState,
-    );
-    const w = mount(AgentReadinessRow, {
-      props: { instanceId: "i1", agentName: "codex", workspaceNames: ["repo", "web"] },
-    });
-
     await flushPromises();
-    expect(w.get('[data-test="arr-status"]').text()).toBe("Ready");
-    await w.get('[data-test="arr-workspace"]').setValue("web");
-    await flushPromises();
-    expect(getCaps).toHaveBeenLastCalledWith("i1", { agent: "codex", workspace: "web" });
-    expect(getCaps.mock.calls.every(([, input]) => !input.probe)).toBe(true);
-    expect(w.get('[data-test="arr-status"]').text()).toBe("Needs setup");
-    expect(w.get('[data-test="arr-checked-in"]').text()).toBe("Checked in web");
+    const items = w.findAll('[data-test="arr-model-item"]');
+    expect(items.map((i) => i.text())).toEqual(["Opus (opus)", "sonnet"]);
   });
 
-  test("a late check for the old workspace never overwrites the newer row", async () => {
+  test("a late probe never overwrites a newer settled row", async () => {
     const store = useInstancesStore();
-    seed(store, {
-      workspaces: [
-        { name: "repo", cwd: "/repo", description: "" },
-        { name: "web", cwd: "/web", description: "" },
-      ],
-    });
+    seed(store);
     const cached = readyCapability("cache", [{ modelId: "cached" }], { fetchedAt: FETCHED });
-    const webState = readyCapability("cache", [{ modelId: "web-a" }, { modelId: "web-b" }], { fetchedAt: FETCHED });
     const staleProbe = readyCapability("probe", [{ modelId: "stale-probe-model" }], { fetchedAt: FETCHED });
     const { promise: probeGate, resolve: resolveProbe } = Promise.withResolvers<AgentCapabilityState>();
-    const getCaps = vi.spyOn(store, "getAgentCapabilities").mockImplementation(async (_id, input) => {
-      if (input.probe) return probeGate;
-      return input.workspace === "web" ? webState : cached;
+    let calls = 0;
+    const getCaps = vi.spyOn(store, "getAgentCapabilities").mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) return cached;
+      return probeGate;
     });
     const w = mount(AgentReadinessRow, {
-      props: { instanceId: "i1", agentName: "codex", workspaceNames: ["repo", "web"] },
+      props: { instanceId: "i1", agentName: "codex", workspaceNames: ["repo"] },
     });
     await flushPromises();
     // Singular form: the plural pipe must not render "1 models".
     expect(w.get('[data-test="arr-models"]').text()).toBe("1 model");
-    // Start a probe for repo, then switch to web before it settles.
     await w.get('[data-test="arr-check"]').trigger("click");
-    await w.get('[data-test="arr-workspace"]').setValue("web");
     await flushPromises();
-    expect(w.get('[data-test="arr-models"]').text()).toBe("2 models");
-    expect(w.get('[data-test="arr-checked-in"]').text()).toBe("Checked in web");
     resolveProbe(staleProbe);
     await flushPromises();
     expect(getCaps).toHaveBeenCalledWith("i1", { agent: "codex", workspace: "repo", probe: true });
-    expect(w.get('[data-test="arr-models"]').text()).toBe("2 models");
-    expect(w.get('[data-test="arr-checked-in"]').text()).toBe("Checked in web");
+    expect(w.get('[data-test="arr-models"]').text()).toBe("1 model");
+    expect(w.find('[data-test="arr-workspace"]').exists()).toBe(false);
   });
 
   test("disables Check when no workspace exists and never reads", async () => {

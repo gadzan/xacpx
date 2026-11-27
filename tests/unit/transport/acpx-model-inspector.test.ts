@@ -147,6 +147,33 @@ test("logs carry the digest prefix only, never argv or env", async () => {
   expect(lines[0]).not.toContain("hunter2");
 });
 
+test("npx cold start gets a longer budget and an actionable timeout hint", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const timeout = new Error("deadline");
+  timeout.name = "TimeoutError";
+  const fn: AcpxModelInspectFn = async (options) => {
+    seen.push({ ...options });
+    throw timeout;
+  };
+  const result = await probeAgentCapabilitiesViaInspector(
+    {
+      agent: "claude",
+      cwd: "/tmp/probe-cwd",
+      driver: "claude",
+      acpxAgent: "claude",
+      agentArgv: ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.107.2"],
+    },
+    { inspectAgentModels: fn },
+  );
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.["timeoutMs"]).toBe(120_000);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.failure).toBe("timeout");
+    expect(result.message).toContain("xacpx adapter preinstall claude");
+  }
+});
+
 test("probe entry reuses structured argv and forwards env without guessing", async () => {
   const { fn, seen } = stub({ availableModelIds: ["gpt-x"] });
   const result = await probeAgentCapabilitiesViaInspector(
@@ -165,6 +192,29 @@ test("probe entry reuses structured argv and forwards env without guessing", asy
   expect(seen[0]?.["agentCommand"]).toEqual(["npx", "codex@1"]);
   expect(seen[0]?.["cwd"]).toBe("/tmp/probe-cwd");
   expect(seen[0]?.["agentProcessEnv"]).toEqual({ KEEP: "yes" });
+});
+
+test("preinstalled node launch keeps the 75s ceiling", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const timeout = new Error("deadline");
+  timeout.name = "TimeoutError";
+  const fn: AcpxModelInspectFn = async (options) => {
+    seen.push({ ...options });
+    throw timeout;
+  };
+  const result = await probeAgentCapabilitiesViaInspector(
+    {
+      agent: "claude",
+      cwd: "/tmp/probe-cwd",
+      driver: "claude",
+      acpxAgent: "claude",
+      agentArgv: ["/usr/local/bin/node", "/runtime/adapters/claude/releases/abc/entry.js"],
+    },
+    { inspectAgentModels: fn },
+  );
+  expect(seen[0]?.["timeoutMs"]).toBe(75_000);
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.message).not.toContain("preinstall");
 });
 
 test("probe entry resolves a bare driver through the registry", async () => {
