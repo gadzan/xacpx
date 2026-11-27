@@ -509,6 +509,13 @@ export interface ConversationDetailDto extends ConversationSummaryDto {
     description?: string;
     topics: TopicSummaryDto[];
 }
+export interface DispatchedSessionRecordDto {
+    sessionAlias: string;
+    displayName?: string;
+    agent: string;
+    workspace: string;
+    taskPreview?: string;
+}
 export interface ConversationMessageDto {
     handoff?: {
         senderMemberTurnId: string;
@@ -534,6 +541,8 @@ export interface ConversationMessageDto {
     promptRequestId?: string;
     /** Source message this row was copied from, when the Topic is a fork. */
     forkedFromMessageId?: string;
+    /** Present only on role:"system" dispatch notices; never carries hidden runtime aliases. */
+    dispatchedSession?: DispatchedSessionRecordDto;
     /** Safe display metadata only; never carries daemon filePath. Omitted when the message has no attachments. */
     attachments?: AttachmentMetadata[];
 }
@@ -1097,8 +1106,10 @@ export interface PublishedAgentEndpointDto {
         completion?: boolean;
     };
     labels?: string[];
-    /** Endpoint context for presentation ranking. logical = normal logical session endpoint; worker = orchestration worker endpoint. Optional: old peers omit it. */
-    endpointKind?: "logical" | "worker";
+    /** Endpoint context for presentation ranking. logical = normal logical session endpoint; worker = orchestration worker endpoint; bot = bot-owned endpoint. Optional: old peers omit it. */
+    endpointKind?: "logical" | "worker" | "bot";
+    /** Owning bot when endpointKind is "bot". Optional for wire-compat. */
+    botId?: string;
     /** Source channel namespace owning the endpoint when known (e.g. "relay", "weixin", "feishu"). Optional. */
     channelId?: string;
     updatedAt: number;

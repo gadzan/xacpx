@@ -29,7 +29,7 @@ export interface RankableMentionItem {
   agent: string;
   workspace?: string;
   instanceId?: string;
-  endpointKind?: "logical" | "worker";
+  endpointKind?: "logical" | "worker" | "bot";
   channelId?: string;
   activity?: {
     status: "idle" | "working" | "waiting";

@@ -12,6 +12,7 @@ import { ToolEventBatcher } from "./tool-event-batcher";
 import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import { buildPeerCompletionPrompt } from "../orchestration/agent-message-completion";
+import { renderDirectMentionsBlock } from "../conversations/direct-input-metadata";
 import { commandEpoch, rememberAdvertisedCommands } from "../conversations/advertised-commands";
 import { markTrustedConversationAgentRequest } from "../conversations/trusted-conversation-agent-request";
 import {
@@ -447,6 +448,13 @@ export class SessionTurnRunner {
         chatText = disarmedUserText
           ? `${directive}\n\n<user-prompt>\n${disarmedUserText}\n</user-prompt>`
           : directive;
+        // Human @ mentions of sessions keep their own roster: the directive
+        // above routes the model, this block preserves session identity for
+        // the orchestration layer. Bot-only mentions leave text untouched.
+        const sessionMentions = (req.directMentionContext ?? []).filter((m) => m.sessionAlias !== undefined);
+        if (sessionMentions.length > 0) {
+          chatText = `${chatText}\n\n${renderDirectMentionsBlock(sessionMentions)}`;
+        }
       }
     }
     // v0.3 trusted completion envelope: composed HERE, after user text was

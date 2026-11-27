@@ -16,6 +16,7 @@ import type { ControlEventBus } from "../control/control-event-bus";
 import { MemberTurnTraceRecorder } from "./member-turn-trace-recorder";
 import { resolveRuntimeDirFromConfigPath } from "../daemon/daemon-files";
 import type { AsyncMutex } from "../orchestration/async-mutex";
+import type { SessionPeerDeliveryInput } from "../orchestration/agent-messaging-types";
 import { createStrictOwnedSessionRelease, type ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
 import type { StateStore } from "../state/state-store";
@@ -136,6 +137,14 @@ export interface CreateConversationRuntimeInput {
   beforeTeardownFinalize?: () => Promise<void>;
   /** Test seam: runs after the removal barrier is durable and before cleanup. */
   afterBotRemovalBarrier?: () => Promise<void>;
+  /**
+   * Bot -> session delivery seam (Milestone 1). DirectMessaging bot->session
+   * fan-out delegates here; production wires `agentMessaging.deliverFromBot`.
+   * Optional so tests can construct the runtime without a router. Invoked at
+   * delivery time, never at construction, so the router and the runtime can
+   * reference each other without a construction cycle.
+   */
+  deliverToSession?: (input: SessionPeerDeliveryInput) => Promise<unknown>;
 }
 
 export async function createConversationRuntime(
@@ -284,7 +293,7 @@ export async function createConversationRuntime(
   // retains public memory to current membership). Reinstall the wider
   // bridge so both forget and retain stay wired if those surfaces diverge.
   bots.setConversationWork(botsWorkBridge);
-  const directMessaging = new DirectMessagingService({ state: input.state, bots, store, runs, ...(input.now ? {now:input.now} : {}), nodeId: input.messagingNodeId ?? "test-node" });
+  const directMessaging = new DirectMessagingService({ state: input.state, bots, store, runs, ...(input.now ? {now:input.now} : {}), nodeId: input.messagingNodeId ?? "test-node", ...(input.deliverToSession ? { deliverToSession: input.deliverToSession } : {}) });
   runs.setMentionResolver((botId, mentions) => directMessaging.registry.mentions(botId, mentions));
   dispatcher.setDirectMessaging(directMessaging);
   const removals = new BotRemovalService(

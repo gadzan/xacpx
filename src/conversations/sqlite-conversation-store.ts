@@ -189,6 +189,7 @@ interface MessageRow {
   input_metadata_json?: string | null;
   handoff_json?: string | null;
   group_say_json?: string | null;
+  dispatched_session_json?: string | null;
   id: string;
   conversation_id: string;
   topic_id: string;
@@ -386,6 +387,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL,
   group_say_json TEXT,
   member_turn_id TEXT,
+  dispatched_session_json TEXT,
   forked_from_message_id TEXT,
   UNIQUE (topic_id, seq)
 );
@@ -740,6 +742,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
     ...(row.input_metadata_json !== null && row.input_metadata_json !== undefined ? { inputMetadata: parseDirectInputMetadata(row.content, JSON.parse(row.input_metadata_json)) } : {}),
     ...(row.handoff_json ? { handoff: JSON.parse(row.handoff_json) as ConversationMessage["handoff"] } : {}),
     ...(row.group_say_json ? { groupSay: JSON.parse(row.group_say_json) as ConversationMessage["groupSay"] } : {}),
+    ...(row.dispatched_session_json ? { dispatchedSession: JSON.parse(row.dispatched_session_json) as ConversationMessage["dispatchedSession"] } : {}),
     ...(optionalString(row.run_id) ? { runId: row.run_id as string } : {}),
     ...(optionalString(row.member_turn_id) ? { memberTurnId: row.member_turn_id as string } : {}),
     createdAt: row.created_at,
@@ -1019,6 +1022,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureRoutingReasonColumn();
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
+    this.ensureDispatchedSessionSchema();
     this.ensureRoundtableColumns();
     this.ensureMessageMemberTurnColumn();
     this.ensureForkedFromMessageColumn();
@@ -4935,6 +4939,56 @@ export class SqliteConversationStore implements ConversationStore {
     }
     this.db.close();
     this.closed = true;
+  }
+
+  /**
+   * `messages.dispatched_session_json` (bot → session delivery receipt).
+   * New databases get it from SCHEMA; older ones upgrade in place. Nullable
+   * so every legacy row reads absent; no backfill — only new system receipts
+   * written by appendSystemDispatchedSessionMessage carry it.
+   */
+  private ensureDispatchedSessionSchema(): void {
+    if (!this.sqlite.all<{ name: string }>(`PRAGMA table_info(messages)`).some((column) => column.name === "dispatched_session_json")) {
+      this.sqlite.exec(`ALTER TABLE messages ADD COLUMN dispatched_session_json TEXT`);
+    }
+  }
+
+  /**
+   * Append a system receipt recording a Bot → session dispatch. The receipt
+   * lives in the source (Bot) Topic transcript so the dispatch is auditable
+   * without joining session state. Returns the persisted row.
+   */
+  appendSystemDispatchedSessionMessage(input: {
+    conversationId: string;
+    topicId: string;
+    content: string;
+    dispatchedSession: NonNullable<ConversationMessage["dispatchedSession"]>;
+    senderBotId?: string;
+    runId?: string;
+    memberTurnId?: string;
+    replyTo?: string;
+    now?: string;
+  }): ConversationMessage {
+    const seq = this.allocateSeq(input.conversationId, input.topicId);
+    const messageId = this.ids.messageId();
+    const now = input.now ?? new Date().toISOString();
+    this.sqlite.run(
+      `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, member_turn_id, dispatched_session_json)
+       VALUES (?, ?, ?, ?, 'system', ?, ?, ?, ?, ?, ?)`,
+      [
+        messageId,
+        input.conversationId,
+        input.topicId,
+        seq,
+        input.senderBotId ?? null,
+        input.content,
+        input.runId ?? null,
+        now,
+        input.memberTurnId ?? null,
+        JSON.stringify(input.dispatchedSession),
+      ],
+    );
+    return this.requireMessage(messageId);
   }
 
   private ensurePublicHandoffSchema(): void {

@@ -32,6 +32,10 @@ type EndpointRuntime =
       binding: WorkerBindingRecord;
     }
   | {
+      kind: "bot";
+      botId: string;
+    }
+  | {
       kind: "remote";
     };
 export interface ResolvedAgentIdentity {
@@ -59,6 +63,14 @@ export class AgentEndpointRegistry {
       nodeId: string;
       loadState: () => Promise<AppState>;
       isSessionActive?: (internalAlias: string) => boolean;
+      /** Optional Bot directory: publishes enabled Bots as `product-bot-<id>` endpoints. */
+      listBots?: () => Array<{
+        id: string;
+        name: string;
+        agent: string;
+        workspace: string;
+        enabled: boolean;
+      }>;
     },
   ) {}
   updateRemoteEndpoints(nodeId: string, endpoints: AgentEndpointView[]): void {
@@ -105,7 +117,8 @@ export class AgentEndpointRegistry {
         completion?: boolean;
       };
       /** Remote-published presentation context, preserved verbatim — never synthesized. */
-      endpointKind?: "logical" | "worker";
+      endpointKind?: "logical" | "worker" | "bot";
+      botId?: string;
       channelId?: string;
     }>,
   ): void {
@@ -135,6 +148,7 @@ export class AgentEndpointRegistry {
           },
           // Preserve remote context fields exactly as published (absent stays absent).
           ...(ep.endpointKind ? { endpointKind: ep.endpointKind } : {}),
+          ...(ep.botId ? { botId: ep.botId } : {}),
           ...(ep.channelId ? { channelId: ep.channelId } : {}),
         });
         byNode.set(ep.nodeId, list);
@@ -168,7 +182,8 @@ export class AgentEndpointRegistry {
       };
       labels?: string[];
       /** Endpoint context for presentation ranking (see PublishedAgentEndpointDto). */
-      endpointKind?: "logical" | "worker";
+      endpointKind?: "logical" | "worker" | "bot";
+      botId?: string;
       /** Source channel namespace owning the endpoint when known. */
       channelId?: string;
       updatedAt: number;
@@ -193,6 +208,9 @@ export class AgentEndpointRegistry {
           : {}),
         ...(candidate.endpoint.endpointKind
           ? { endpointKind: candidate.endpoint.endpointKind }
+          : {}),
+        ...(candidate.endpoint.botId
+          ? { botId: candidate.endpoint.botId }
           : {}),
         ...(candidate.endpoint.channelId
           ? { channelId: candidate.endpoint.channelId }
@@ -528,7 +546,11 @@ export class AgentEndpointRegistry {
 
     if (all || !isExternal) {
       for (const logical of Object.values(state.sessions)) {
-        if (logical.archived === true || isHiddenProductSessionOwner(logical.owner)) {
+        if (
+          logical.archived === true ||
+          logical.alias.startsWith("brt_") ||
+          isHiddenProductSessionOwner(logical.owner)
+        ) {
           continue;
         }
         candidates.push({
@@ -581,6 +603,30 @@ export class AgentEndpointRegistry {
           binding: worker,
         },
       });
+    }
+    if (all || !isExternal) {
+      for (const bot of this.deps.listBots?.() ?? []) {
+        if (!bot.enabled) {
+          continue;
+        }
+        const endpointId = `product-bot-${bot.id}`;
+        candidates.push({
+          endpoint: {
+            address: { nodeId: this.deps.nodeId, endpointId },
+            handle: encodeAgentHandle({ nodeId: this.deps.nodeId, endpointId }),
+            node: this.deps.nodeId,
+            agent: bot.agent,
+            workspace: bot.workspace,
+            displayName: bot.name,
+            state: "idle",
+            activity: { status: "idle" },
+            capabilities: queueOnlyCapabilities({ completion: false }),
+            endpointKind: "bot",
+            botId: bot.id,
+          },
+          runtime: { kind: "bot", botId: bot.id },
+        });
+      }
     }
 
     return candidates.sort((left, right) =>
@@ -676,7 +722,9 @@ function findLogicalSession(
   return Object.values(state.sessions)
     .filter(
       (session) =>
-        session.archived !== true && !isHiddenProductSessionOwner(session.owner) &&
+        session.archived !== true &&
+        !session.alias.startsWith("brt_") &&
+        !isHiddenProductSessionOwner(session.owner) &&
         sameCoordinatorSession(session.transport_session, coordinatorSession),
     )
     .sort((left, right) => left.alias.localeCompare(right.alias))[0];

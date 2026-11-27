@@ -3,6 +3,18 @@ export interface AgentMention {
     range: [number, number];
     handle: string;
 }
+export type ConversationCompletionMentionTargetKind = "bot" | "session";
+export interface ConversationCompletionMention {
+    handle: string;
+    displayName: string;
+    botId?: string;
+    agent: string;
+    workspace?: string;
+    /** "bot" targets a bot profile; "session" targets a live session alias. Absent reads as "bot". */
+    targetKind?: ConversationCompletionMentionTargetKind;
+    /** Present when targetKind is "session". */
+    sessionAlias?: string;
+}
 export declare const MAX_AGENT_MENTIONS = 16;
 /** UTF-16 half-open ranges, with no overlapping identity annotations. */
 export declare function validAgentMentions(text: string, value: unknown): value is AgentMention[];
@@ -27,13 +39,7 @@ export interface ConversationCompletions {
     };
     mentions: {
         status: "ready" | "loading" | "unavailable" | "error";
-        items: Array<{
-            handle: string;
-            displayName: string;
-            botId?: string;
-            agent: string;
-            workspace?: string;
-        }>;
+        items: Array<ConversationCompletionMention>;
         nextCursor?: number;
         reason?: string;
     };

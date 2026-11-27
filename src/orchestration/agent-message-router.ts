@@ -37,11 +37,15 @@ import type {
   AgentMessageSendInput,
   AgentMessageTraceRecord,
   AgentSenderBinding,
+  BotPeerDeliveryInput,
+  BotPeerDeliveryResult,
   MessageContext,
   PeerMessageHistoryEntry,
   PeerMessagePeer,
+  SessionPeerDeliveryInput,
 } from "./agent-messaging-types";
 import { RelayAgentMessageRoute } from "./relay-agent-message-route";
+import { isHiddenProductSessionOwner, type AppState } from "../state/types";
 export interface LocalAgentMessageDelivery {
   deliver(
     target: ResolvedAgentEndpoint,
@@ -520,6 +524,12 @@ export class AgentMessageRouter {
       };
       delivery: LocalAgentMessageDelivery;
       remoteRoute?: RelayAgentMessageRoute;
+      /** Bot-runtime delivery seam (Milestone 1): session → bot fire-and-forget. */
+      deliverToBot?: (
+        input: BotPeerDeliveryInput,
+      ) => Promise<BotPeerDeliveryResult>;
+      /** Session-state lookup for bot-originated delivery (alias → logical session). */
+      loadState?: () => Promise<AppState>;
       createId?: () => string;
       now?: () => number;
       limits?: AgentMessageRouterLimits;
@@ -799,7 +809,11 @@ export class AgentMessageRouter {
       ? await this.deps.registry.resolveSelector(sender, input.selector)
       : await this.deps.registry.resolveTarget(sender, input.to!);
 
-    if (completion !== "none") {
+    // Product bots are receive-only fire-and-forget peers (Milestone 1):
+    // they never run on the TurnQueue lane, so a requested notify/result
+    // degrades to none instead of failing the send.
+    const isBotTarget = target.endpoint.endpointKind === "bot";
+    if (completion !== "none" && !isBotTarget) {
       // v0.3 fail-closed scope: completion signals ride the canonical
       // TurnQueue/SessionTurnRunner path, which only logical sessions have on
       // both ends. Worker runtimes inject via transport.injectMessage (no
@@ -831,6 +845,13 @@ export class AgentMessageRouter {
           "TARGET_NOT_INTERRUPTIBLE",
           "The target does not support explicit interrupt delivery.",
         );
+      }
+      if (target.endpoint.endpointKind === "bot") {
+        // Bot peers bypass turn admission, reply threading, and completion
+        // contracts — see sendToBotTarget.
+        return await this.sendToBotTarget(binding, sender, target, input, {
+          requestedMode,
+        });
       }
       const createdAt = (this.deps.now ?? Date.now)();
       const messageId = "msg_" + (this.deps.createId ?? randomUUID)();
@@ -1135,6 +1156,244 @@ export class AgentMessageRouter {
       }
       return receipt;
     });
+  }
+
+  /**
+   * Milestone 1 session → bot delivery: forced fire-and-forget. A requested
+   * notify/result completion degrades to none — the emitted sent-history
+   * entry records completion none, which is the durable downgrade note.
+   */
+  private async sendToBotTarget(
+    binding: AgentSenderBinding,
+    sender: ResolvedAgentIdentity,
+    target: ResolvedAgentEndpoint,
+    input: AgentMessageSendInput,
+    options: { requestedMode: AgentMessageMode },
+  ): Promise<AgentMessageReceipt> {
+    const deliver = this.deps.deliverToBot;
+    if (!deliver) {
+      throw new AgentMessagingError(
+        "TARGET_UNAVAILABLE",
+        "Bot delivery is not configured on this messaging node.",
+      );
+    }
+    const createdAt = (this.deps.now ?? Date.now)();
+    const messageId = "msg_" + (this.deps.createId ?? randomUUID)();
+    const botId =
+      target.endpoint.botId ??
+      stripProductBotPrefix(target.endpoint.address.endpointId);
+    const message: AgentMessage = {
+      id: messageId,
+      conversationId: messageId,
+      depth: 0,
+      from: sender.address,
+      to: target.endpoint.address,
+      content: input.content,
+      requestedMode: options.requestedMode,
+      completion: "none",
+      createdAt,
+      ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+    };
+    const fromHandle = sender.sessionAlias ?? sender.coordinatorSession;
+    try {
+      await deliver({
+        toBotId: botId,
+        fromHandle,
+        fromName: sender.displayName ?? sender.agent ?? fromHandle,
+        fromKind: "session",
+        messageId,
+        content: input.content,
+        ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+      });
+    } catch (error) {
+      const mapped = mapDeliveryError(error);
+      this.logDelivery(message, undefined, createdAt, mapped.code);
+      this.recordTrace({
+        messageId,
+        conversationId: messageId,
+        depth: 0,
+        replyTo: input.replyTo,
+        from: sender.address,
+        to: target.endpoint.address,
+        route: "local",
+        createdAt,
+        status: "failed",
+        errorCode: mapped.code,
+        contentLength: Buffer.byteLength(input.content, "utf8"),
+        contentHash: createHash("sha256").update(input.content.trim()).digest("hex"),
+      });
+      const senderSessionAlias =
+        sender.sessionAlias ??
+        sender.coordinatorSession ??
+        binding.coordinatorSession;
+      this.emitOutboundEvent(senderSessionAlias, message, target, {
+        messageId: message.id,
+        status: "failed",
+        route: "local",
+      });
+      throw mapped;
+    }
+    const receipt: AgentMessageReceipt = {
+      messageId: message.id,
+      status: "injected",
+      route: "local",
+    };
+    this.cacheReceipt(receipt, createdAt);
+    this.recordTrace({
+      messageId,
+      conversationId: messageId,
+      depth: 0,
+      replyTo: input.replyTo,
+      from: sender.address,
+      to: target.endpoint.address,
+      route: "local",
+      createdAt,
+      deliveredAt: (this.deps.now ?? Date.now)(),
+      status: receipt.status,
+      contentLength: Buffer.byteLength(input.content, "utf8"),
+      contentHash: createHash("sha256").update(input.content.trim()).digest("hex"),
+    });
+    this.logDelivery(message, receipt, createdAt);
+    const senderSessionAlias =
+      sender.sessionAlias ??
+      sender.coordinatorSession ??
+      binding.coordinatorSession;
+    this.emitOutboundEvent(senderSessionAlias, message, target, receipt);
+    return receipt;
+  }
+
+  /**
+   * Milestone 1 bot → session delivery: injects a bot-attributed envelope
+   * into the target session lane. Always completion none. Rejects archived,
+   * hidden, and brt_* sessions.
+   */
+  async deliverFromBot(
+    input: SessionPeerDeliveryInput,
+  ): Promise<AgentMessageReceipt> {
+    const loadState = this.deps.loadState;
+    if (!loadState) {
+      throw new AgentMessagingError(
+        "TARGET_UNAVAILABLE",
+        "Bot-to-session delivery requires session state access on this node.",
+      );
+    }
+    if (!input.toSessionAlias || input.toSessionAlias.startsWith("brt_")) {
+      throw new AgentMessagingError(
+        "TARGET_NOT_REACHABLE",
+        "The target session is not reachable for bot delivery.",
+      );
+    }
+    const state = await loadState();
+    const session =
+      state.sessions[input.toSessionAlias] ??
+      Object.values(state.sessions).find(
+        (candidate) =>
+          candidate.alias === input.toSessionAlias ||
+          toDisplaySessionAlias(candidate.alias) === input.toSessionAlias,
+      );
+    if (
+      !session ||
+      session.archived === true ||
+      isHiddenProductSessionOwner(session.owner) ||
+      session.alias.startsWith("brt_")
+    ) {
+      throw new AgentMessagingError(
+        "TARGET_NOT_REACHABLE",
+        "The target session is not reachable for bot delivery.",
+      );
+    }
+    const target =
+      await this.deps.registry.resolveLocalTargetByEndpointId(
+        session.logical_session_id,
+      );
+    const createdAt = (this.deps.now ?? Date.now)();
+    const nodeId = target.endpoint.address.nodeId;
+    const fromEndpointId = `product-bot-${input.fromBotId}`;
+    const fromHandle = encodeAgentHandle({ nodeId, endpointId: fromEndpointId });
+    const message: AgentMessage = {
+      id: input.messageId,
+      conversationId: input.messageId,
+      depth: input.replyTo ? 1 : 0,
+      from: { nodeId, endpointId: fromEndpointId },
+      to: target.endpoint.address,
+      content: input.content,
+      requestedMode: "auto",
+      completion: "none",
+      createdAt,
+      ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+    };
+    const renderedText =
+      `<xacpx-message id="${escapeBotMessageXml(input.messageId)}" ` +
+      `from="${escapeBotMessageXml(fromHandle)}" ` +
+      `from-name="${escapeBotMessageXml(input.fromName)}" ` +
+      `from-kind="bot" replyable="true"` +
+      (input.replyTo ? ` reply-to="${escapeBotMessageXml(input.replyTo)}"` : "") +
+      `>\n${escapeBotMessageXml(input.content)}\n</xacpx-message>`;
+    let result: SessionMessageReceipt;
+    try {
+      result = await this.deps.delivery.deliver(target, message, renderedText);
+    } catch (error) {
+      const mapped = mapDeliveryError(error);
+      this.logDelivery(message, undefined, createdAt, mapped.code);
+      this.recordTrace({
+        messageId: message.id,
+        conversationId: message.conversationId,
+        depth: message.depth,
+        replyTo: message.replyTo,
+        from: message.from,
+        to: message.to,
+        route: "local",
+        createdAt,
+        status: "failed",
+        errorCode: mapped.code,
+        contentLength: Buffer.byteLength(input.content, "utf8"),
+        contentHash: createHash("sha256").update(input.content.trim()).digest("hex"),
+      });
+      throw mapped;
+    }
+    const receipt: AgentMessageReceipt = {
+      messageId: message.id,
+      status: result.status,
+      modeUsed: result.modeUsed,
+      route: "local",
+      ...(result.targetState ? { targetState: result.targetState } : {}),
+    };
+    const contextTtl = this.deps.limits?.contextCache?.ttlMs ?? 60 * 60_000;
+    this.recordMessageContext({
+      messageId: message.id,
+      conversationId: message.conversationId,
+      depth: message.depth,
+      from: message.from,
+      to: message.to,
+      createdAt,
+      expiresAt: createdAt + contextTtl,
+    });
+    this.recordTrace({
+      messageId: message.id,
+      conversationId: message.conversationId,
+      depth: message.depth,
+      replyTo: message.replyTo,
+      from: message.from,
+      to: message.to,
+      route: "local",
+      createdAt,
+      deliveredAt: (this.deps.now ?? Date.now)(),
+      status: receipt.status,
+      modeUsed: receipt.modeUsed,
+      contentLength: Buffer.byteLength(input.content, "utf8"),
+      contentHash: createHash("sha256").update(input.content.trim()).digest("hex"),
+    });
+    this.logDelivery(message, receipt, createdAt);
+    this.emitInboundEvent(session.alias, message, {
+      address: message.from,
+      coordinatorSession: session.transport_session,
+      receive: true,
+      senderKind: "external",
+      sessionAlias: fromHandle,
+      displayName: input.fromName,
+      agent: input.fromBotId,
+    });
+    return receipt;
   }
 
   /**
@@ -2402,6 +2661,21 @@ function inboundFingerprint(input: {
     input.depth ?? 0,
     input.completion ?? "none",
   ]);
+}
+
+function stripProductBotPrefix(endpointId: string): string {
+  return endpointId.startsWith("product-bot-")
+    ? endpointId.slice("product-bot-".length)
+    : endpointId;
+}
+
+function escapeBotMessageXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 function mapDeliveryError(error: unknown): AgentMessagingError {

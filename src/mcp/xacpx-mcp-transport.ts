@@ -152,6 +152,36 @@ export interface XacpxMcpPeerGetArgs {
   coordinatorSession: string;
 }
 
+export interface XacpxMcpBotEnvironmentArgs {
+  coordinatorSession: string;
+  sourceHandle?: string;
+}
+
+export interface XacpxMcpBotSessionCreateArgs extends XacpxMcpBotEnvironmentArgs {
+  agent: string;
+  workspace: string;
+  name?: string;
+  alias?: string;
+  model?: string;
+  task?: string;
+}
+
+export interface XacpxMcpBotSessionRenameArgs extends XacpxMcpBotEnvironmentArgs {
+  alias: string;
+  displayName: string;
+}
+
+export interface XacpxMcpBotCreateArgs extends XacpxMcpBotEnvironmentArgs {
+  name: string;
+  agent: string;
+  workspace?: string;
+  role?: string;
+  instructions?: string;
+  model?: string;
+  effort?: string;
+  task?: string;
+}
+
 export interface XacpxMcpPeerWatchArgs {
   requestId: string;
   timeoutMs?: number;
@@ -201,6 +231,10 @@ export interface XacpxMcpTransport {
   peerCancel?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
   peerList?: (input: XacpxMcpPeerListArgs) => Promise<PeerRequest[]>;
   peerGet?: (input: XacpxMcpPeerGetArgs) => Promise<PeerRequest | null>;
+  getBotEnvironment?: (input: XacpxMcpBotEnvironmentArgs) => Promise<import("../orchestration/orchestration-ipc").BotEnvironmentResult>;
+  createBotSession?: (input: XacpxMcpBotSessionCreateArgs) => Promise<import("../orchestration/orchestration-ipc").BotSessionCreateResult>;
+  renameBotSession?: (input: XacpxMcpBotSessionRenameArgs) => Promise<{ alias: string; displayName: string }>;
+  createBot?: (input: XacpxMcpBotCreateArgs) => Promise<import("../orchestration/orchestration-ipc").BotCreateResult>;
 }
 
 interface OrchestrationClientLike {
@@ -230,6 +264,10 @@ interface OrchestrationClientLike {
   peerCancel?: OrchestrationClient["peerCancel"];
   peerList?: OrchestrationClient["peerList"];
   peerGet?: OrchestrationClient["peerGet"];
+  botEnvironment?: OrchestrationClient["botEnvironment"];
+  createBotSession?: OrchestrationClient["createBotSession"];
+  renameBotSession?: OrchestrationClient["renameBotSession"];
+  createBot?: OrchestrationClient["createBot"];
 }
 
 export function createOrchestrationTransport(
@@ -377,6 +415,30 @@ export function createOrchestrationTransport(
         throw new Error("orchestration client peerGet is not configured");
       }
       return await client.peerGet(input);
+    },
+    getBotEnvironment: async (input) => {
+      if (!client.botEnvironment) {
+        throw new Error("orchestration client botEnvironment is not configured");
+      }
+      return await client.botEnvironment(input);
+    },
+    createBotSession: async (input) => {
+      if (!client.createBotSession) {
+        throw new Error("orchestration client createBotSession is not configured");
+      }
+      return await client.createBotSession(input);
+    },
+    renameBotSession: async (input) => {
+      if (!client.renameBotSession) {
+        throw new Error("orchestration client renameBotSession is not configured");
+      }
+      return await client.renameBotSession(input);
+    },
+    createBot: async (input) => {
+      if (!client.createBot) {
+        throw new Error("orchestration client createBot is not configured");
+      }
+      return await client.createBot(input);
     },
   };
 }

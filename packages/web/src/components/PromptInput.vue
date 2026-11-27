@@ -297,7 +297,8 @@ interface AgentMentionItem {
   endpointId: string;
   // v0.3 directory context metadata (absent on legacy peers) — drives
   // collaboration-tier ranking and the low-priority source label.
-  endpointKind?: "logical" | "worker";
+  // "bot" widened for the M1 directory (M2 renders the Bot badge).
+  endpointKind?: "logical" | "worker" | "bot";
   channelId?: string;
   activity?: {
     status: "idle" | "working" | "waiting";

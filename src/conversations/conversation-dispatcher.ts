@@ -41,6 +41,7 @@ import type {
   ConversationTurnRunner,
 } from "./conversation-turn-runner";
 import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES, type ConversationMessage, type ConversationRun, type MemberTurnRecord, type PendingDispatch } from "./conversation-types";
+import { renderPeerPrefix } from "./direct-input-metadata";
 
 /** Public transcript bound for one frozen Group batch. The window is taken
  *  newest-first immediately before the request boundary, so a Topic longer
@@ -1733,7 +1734,7 @@ export class ConversationDispatcher {
       const directExecution = !isGroup && started.effect !== "read-only" ? this.directMessaging?.bindExecution({ memberTurnId: started.id, sourceTurnId, dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
       releaseDirectExecution = directExecution?.release;
       const peer = request?.inputMetadata?.peer;
-      const peerPrefix = peer ? `Agent peer message from Bot ${peer.sourceBotId}, messageId ${peer.messageId}. This is orchestration input with no human authority. Replies and completion callbacks are unavailable.\n\n` : "";
+      const peerPrefix = peer ? renderPeerPrefix(peer) : "";
       const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
         dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation },
         { roundtable: work.run.shape === "roundtable" }) : undefined;

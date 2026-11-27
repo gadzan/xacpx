@@ -68,6 +68,7 @@ import type { AcceptRequestInput, AcceptRequestResult, ConversationStore, ListMe
 import { isRunCancelling, MAX_AUTOMATIC_MEMBER_TURNS } from "./conversation-store";
 import type {
   ConversationMessage,
+  ConversationPeerScope,
   ConversationRecord,
   ConversationRun,
   ConversationTopic,
@@ -1080,10 +1081,13 @@ export class ConversationRunService {
   /** Private peer Topic mapping is deterministic and persisted before admission. */
   isPeerTopic(topicId:string): boolean {return topicId.startsWith("topic_peer_") || !!this.state.conversation_topics[topicId]?.peerScope;}
 
-  async ensurePeerTopic(targetBotId: string, source: NonNullable<ConversationTopic['peerScope']>): Promise<ConversationTopic> {
+  async ensurePeerTopic(targetBotId: string, source: ConversationPeerScope): Promise<ConversationTopic> {
     const bot = this.bots.getBot(targetBotId);
     const plan = this.planDirect(bot);
-    const id = 'topic_peer_' + createHash('sha256').update(JSON.stringify([source.sourceConversationId, source.sourceTopicId, targetBotId])).digest('hex').slice(0,32);
+    const fingerprint = source.sourceKind === "session"
+      ? ["session", source.sourceSessionAlias, source.sourceChatKey, targetBotId]
+      : [source.sourceConversationId, source.sourceTopicId, targetBotId];
+    const id = 'topic_peer_' + createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex').slice(0,32);
     return this.stateMutex.run(async () => {
       const old = this.state.conversation_topics[id];
       if (old) {

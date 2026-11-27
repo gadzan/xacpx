@@ -56,7 +56,11 @@ export type OrchestrationRpcMethod =
   | "peer.cancel"
   | "peer.list"
   | "peer.get"
-  | "group.new";
+  | "group.new"
+  | "bot.environment"
+  | "bot.session.create"
+  | "bot.session.rename"
+  | "bot.create";
 
 export interface OrchestrationIpcEndpoint {
   kind: "unix" | "named-pipe";
@@ -92,6 +96,51 @@ export interface OrchestrationRpcErrorResponse {
 export type OrchestrationRpcResponse<Result = unknown> =
   | OrchestrationRpcSuccessResponse<Result>
   | OrchestrationRpcErrorResponse;
+
+export interface BotEnvironmentResult {
+  workspaces: Array<{ name: string; cwd: string; description?: string }>;
+  agents: Array<{ name: string; driver: string; model?: string }>;
+}
+
+export interface BotSessionCreateInput {
+  agent: string;
+  workspace: string;
+  name?: string;
+  alias?: string;
+  model?: string;
+  task?: string;
+}
+
+export interface BotSessionCreateResult {
+  /** Display alias (bare slug) — what the Web lists and what humans @-mention. */
+  alias: string;
+  /** Internal channel-scoped alias — stable routing key for agent_send / rename. */
+  handle?: string;
+  displayName?: string;
+  conversationId?: string;
+  topicId?: string;
+}
+
+export interface BotSessionRenameInput {
+  alias: string;
+  displayName: string;
+}
+
+export interface BotCreateInput {
+  name: string;
+  agent: string;
+  workspace?: string;
+  role?: string;
+  instructions?: string;
+  model?: string;
+  effort?: string;
+  task?: string;
+}
+
+export interface BotCreateResult {
+  botId: string;
+  name: string;
+}
 
 export interface OrchestrationRpcHandlers {
   registerExternalCoordinator: (input: RegisterExternalCoordinatorInput) => Promise<ExternalCoordinatorRecord>;

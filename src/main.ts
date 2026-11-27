@@ -45,6 +45,7 @@ import { PeerStore } from "./peer/peer-store";
 import { MessagingNodeIdentityStore } from "./orchestration/messaging-node-identity-store";
 import { AgentEndpointRegistry } from "./orchestration/agent-endpoint-registry";
 import { AgentMessageRouter } from "./orchestration/agent-message-router";
+import { BotOrchestrationService } from "./orchestration/bot-orchestration-service";
 import {
   RelayAgentMessageRoute,
   type RelayRouteClient,
@@ -85,6 +86,8 @@ import {
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
 import type { AppState } from "./state/types";
+import { isHiddenProductSessionOwner } from "./state/types";
+import { toDisplaySessionAlias, toInternalSessionAlias, listKnownChannelIds } from "./channels/channel-scope";
 import { createStateCapabilityCache } from "./agents/capability-cache";
 import { spawnAcpxBridgeClient } from "./transport/acpx-bridge/acpx-bridge-client";
 import { AcpxBridgeTransport } from "./transport/acpx-bridge/acpx-bridge-transport";
@@ -1762,11 +1765,27 @@ export async function buildApp(
     logger,
     deps.channel ?? null,
   );
+  // Milestone 1 bot↔session bridges. Mutable holders so the endpoint registry
+  // and the message router can reference the Conversation runtime built later
+  // without a construction cycle; every read happens at delivery time, after startup.
+  let conversationBotsRef: ConversationRuntime["bots"] | undefined;
+  let conversationDirectMessagingRef: ConversationRuntime["directMessaging"] | undefined;
   const agentEndpointRegistry = new AgentEndpointRegistry({
     nodeId: messagingNodeIdentity.nodeId,
     loadState: async () => state,
     isSessionActive: (internalAlias: string) =>
       Boolean((controlRef?.isSessionBusy(internalAlias) ?? false) || activeTurns.isActiveAnywhere(internalAlias)),
+    // Milestone 1 bot↔session split: publish enabled Bots as `product-bot-<id>`
+    // endpoints alongside ordinary sessions. Read lazily so the registry can be
+    // built before the Conversation runtime exists; populated after `createConversationRuntime`.
+    listBots: () =>
+      (conversationBotsRef?.listBots() ?? []).map((b) => ({
+        id: b.id,
+        name: b.name,
+        agent: b.agent,
+        workspace: b.workspace,
+        enabled: b.enabled,
+      })),
   });
   let controlRef: ControlService | null = null;
   const localAgentMessageDelivery = new LocalAgentMessageDeliveryAdapter({
@@ -1864,6 +1883,25 @@ export async function buildApp(
     registry: agentEndpointRegistry,
     delivery: localAgentMessageDelivery,
     remoteRoute: relayAgentMessageRoute,
+    // Session-state lookup for bot-originated delivery (alias → logical session).
+    loadState: async () => state,
+    // Session → bot fire-and-forget (Milestone 1). Resolved lazily so the
+    // router can be built before the Conversation runtime exists.
+    deliverToBot: async (input) => {
+      const direct = conversationDirectMessagingRef;
+      if (!direct) {
+        throw new Error("Bot delivery is not wired yet (Conversation runtime not ready)");
+      }
+      const accepted = await direct.deliverFromSession({
+        fromSessionAlias: input.fromHandle,
+        fromName: input.fromName,
+        content: input.content,
+        messageId: input.messageId,
+        ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        toBotId: input.toBotId,
+      });
+      return { messageId: accepted.messageId, deliveryState: "accepted" };
+    },
     logger,
     events: controlEvents,
     pendingCompletionStore: {
@@ -1933,6 +1971,191 @@ export async function buildApp(
     promptSession: async (session, text) => transport.prompt(session, text),
     store: new PeerStore(join(dirname(paths.statePath), "peer-requests.json")),
   });
+  // Channel scope bot-dispatched sessions live in. The relay hub and the
+  // local web console share one session list, so prefer "relay" when its
+  // plugin is loaded; a relay-less daemon (local web only) falls back to
+  // "web" instead of dropping sessions into the weixin namespace.
+  const botDispatchScope = (): string => {
+    const known = listKnownChannelIds();
+    if (known.includes("relay")) return "relay";
+    if (known.includes("web")) return "web";
+    return "relay";
+  };
+  const botDispatchChatKey = (): string => `${botDispatchScope()}:bot-dispatch`;
+  // Milestone 1 bot↔session split: bot-side orchestration handle for
+  // direct-execution RPCs. Reads the live config at call time so out-of-band
+  // edits apply without a restart. Delivery itself stays on the
+  // AgentMessageRouter ↔ DirectMessagingService seams below. All runtime
+  // handles are resolved lazily at call time (after control/conversations exist).
+  const botOrchestration = new BotOrchestrationService({
+    getWorkspaces: () =>
+      Object.entries(config.workspaces)
+        .filter(([, w]) => !w.dedicated)
+        .map(([name, w]) => ({
+          name,
+          cwd: w.cwd,
+          ...(w.description ? { description: w.description } : {}),
+        })),
+    getAgents: () =>
+      Object.entries(config.agents).map(([name, a]) => ({
+        name,
+        driver: a.driver,
+        ...(typeof a.model === "string" && a.model ? { model: a.model } : {}),
+      })),
+    sessionAliasScope: () => botDispatchScope(),
+    existingAliases: () => Object.keys(state.sessions),
+    isHiddenSession: (alias) => {
+      const record = sessions.getLogicalSessionRecord(alias);
+      return record ? isHiddenProductSessionOwner(record.owner) : false;
+    },
+    getSession: (alias) => {
+      const session = state.sessions[alias];
+      return session
+        ? { alias: session.alias, ...(session.archived ? { archived: true as const } : {}) }
+        : undefined;
+    },
+    createLogicalSession: async ({ agent, workspace, slug, displayName, model }) => {
+      if (!controlRef) {
+        throw new Error("control service is not ready");
+      }
+      // Bare slug in, channel scoping applied here: `resolveAliasForChat`
+      // returns an already-scoped alias unchanged, and scopes a bare slug
+      // into this daemon's shared-session channel (relay, else web).
+      const chatKey = botDispatchChatKey();
+      const info = await controlRef.createSession(
+        chatKey,
+        slug,
+        agent,
+        workspace,
+        undefined,
+        model,
+      );
+      if (displayName && displayName !== info.alias) {
+        await controlRef.setSessionDisplayName(chatKey, info.alias, displayName);
+      }
+      // The service pre-deduped the slug, so the internal alias is this
+      // scope applied to the created display alias.
+      const internal = toInternalSessionAlias(botDispatchScope(), info.alias);
+      return {
+        alias: internal,
+        displayAlias: toDisplaySessionAlias(internal),
+      };
+    },
+    renameLogicalSession: async ({ alias, displayName }) => {
+      // Resolve display or internal aliases without trusting the caller's
+      // string for owner metadata: hidden/archived checks run on the stored
+      // record, and the rename writes by internal alias only.
+      const record = state.sessions[alias] ??
+        Object.values(state.sessions).find((s) => toDisplaySessionAlias(s.alias) === alias);
+      if (!record) {
+        throw new Error("session not found");
+      }
+      if (
+        record.archived === true ||
+        record.alias.startsWith("brt_") ||
+        isHiddenProductSessionOwner(record.owner)
+      ) {
+        throw new Error("hidden product sessions cannot be renamed");
+      }
+      await sessions.setDisplayName(record.alias, displayName);
+      controlEvents.emit({ type: "sessions-changed" });
+      return { alias: record.alias, displayName };
+    },
+    appendDispatchedSystemMessage: async ({ botId, topicId, message, conversationId, dispatchedSession }) => {
+      const resolvedConversationId =
+        conversationId ?? state.conversation_topics[topicId]?.conversationId;
+      if (!resolvedConversationId || !topicId) {
+        throw new Error("no direct topic for dispatched receipt");
+      }
+      const persisted = conversations.store.appendSystemDispatchedSessionMessage({
+        conversationId: resolvedConversationId,
+        topicId,
+        content: message,
+        dispatchedSession,
+        senderBotId: botId,
+      });
+      conversationKernel(control).emitConversationProduct({
+        type: "conversation-message",
+        message: persisted,
+      });
+    },
+    dispatchTaskToSession: async ({ fromBotId, alias, task }) => {
+      const fromBot = conversationBotsRef?.getBot(fromBotId);
+      await agentMessaging.deliverFromBot({
+        toSessionAlias: alias,
+        fromBotId,
+        fromName: fromBot?.name ?? fromBotId,
+        content: task,
+        messageId: randomUUID(),
+      });
+    },
+    getBot: (id) => {
+      try {
+        return conversationBotsRef?.getBot(id);
+      } catch {
+        return undefined;
+      }
+    },
+    countBots: () => conversationBotsRef?.listBots().length ?? 0,
+    createBot: async (input) => {
+      if (!controlRef) {
+        throw new Error("control service is not ready");
+      }
+      const created = await controlRef.createBot({
+        name: input.name,
+        agent: input.agent,
+        ...(input.workspace ? { workspace: input.workspace } : {}),
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.instructions ? { instructions: input.instructions } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.createdByBotId ? { createdByBotId: input.createdByBotId } : {}),
+        ...(input.spawnDepth !== undefined ? { spawnDepth: input.spawnDepth } : {}),
+      });
+      return { botId: created.id, name: created.name };
+    },
+    sendToBotPeer: async ({ fromBotId, toBotId, task, executionToken }) => {
+      const direct = conversationDirectMessagingRef;
+      if (!direct) {
+        throw new Error("direct messaging is not ready");
+      }
+      // Bot → Bot delivery through the requesting Bot's own execution: the
+      // child lands in a private peer topic carrying from-kind="bot" and an
+      // encoded, replyable `from` handle for the parent.
+      await direct.send(
+        { coordinatorSession: executionToken, sourceHandle: executionToken },
+        {
+          to: direct.registry.handle(toBotId),
+          content: task,
+          mode: "auto",
+          completion: "none",
+        },
+      );
+    },
+    getRequestContext: (params) => {
+      const record = (params ?? {}) as { sourceHandle?: unknown; coordinatorSession?: unknown };
+      const token =
+        typeof record.sourceHandle === "string"
+          ? record.sourceHandle
+          : typeof record.coordinatorSession === "string"
+            ? record.coordinatorSession
+            : "";
+      const direct = conversationDirectMessagingRef;
+      if (!direct) {
+        throw new Error("direct messaging is not ready");
+      }
+      const member = direct.describeExecution({
+        coordinatorSession: token,
+        sourceHandle: token,
+      });
+      return {
+        requestingBotId: member.botId,
+        topicId: member.topicId,
+        conversationId: member.conversationId,
+        executionToken: token,
+      };
+    },
+  });
   const orchestrationServer = new OrchestrationServer(
     orchestrationEndpoint,
     orchestration,
@@ -1956,6 +2179,7 @@ export async function buildApp(
         return { messageId: receipt.message.id, remaining: receipt.remaining, reused: receipt.reused };
       }),
       groupReadResult: async (invocation) => await conversations.withOperation(async () => conversations.handoffs.readResult(invocation)),
+      botOrchestration,
       agentMessaging: {
         listReachable: async binding => binding.sourceHandle?.startsWith('direct-execution:')
           ? conversations.withOperation(async () => conversations.directMessaging.listReachable(binding))
@@ -2562,8 +2786,15 @@ export async function buildApp(
     },
     autoKick: true,
     stateMutex,
+    // Milestone 1 bot → session fan-out: DirectMessaging bot→session sends
+    // land in the target session lane. Deferred to call time so the router
+    // (built above) and the runtime (built here) can reference each other.
+    deliverToSession: (input) => agentMessaging.deliverFromBot(input),
   });
   conversationRuntimeRef = conversations;
+  // Populate the Milestone 1 bridge holders now that the runtime exists.
+  conversationBotsRef = conversations.bots;
+  conversationDirectMessagingRef = conversations.directMessaging;
   conversationKernel(control).bindConversationRuntime(conversations);
   controlEvents.subscribe((event) => {
     if (

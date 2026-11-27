@@ -54,6 +54,12 @@ export class LocalAgentMessageDeliveryAdapter {
         "The target belongs to a remote messaging node; use the remote route.",
       );
     }
+    if (target.runtime.kind === "bot") {
+      throw new AgentMessagingError(
+        "TARGET_NOT_REACHABLE",
+        "Bot endpoints are reached through bot delivery, not session injection.",
+      );
+    }
     if (target.runtime.kind === "logical" && this.deps.deliverLogicalTurn) {
       const peerOrigin: PeerTurnOrigin = {
         requestMessageId: message.id,

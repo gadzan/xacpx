@@ -80,6 +80,10 @@ const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
   "peer.list",
   "peer.get",
   "group.new",
+  "bot.environment",
+  "bot.session.create",
+  "bot.session.rename",
+  "bot.create",
 ]);
 
 interface OrchestrationServerDeps {
@@ -95,6 +99,12 @@ interface OrchestrationServerDeps {
   listScheduledTasksFromRoute?: (input: ScheduledListFromRouteInput) => Promise<ScheduledTaskRecord[]>;
   cancelScheduledTaskFromRoute?: (input: ScheduledCancelFromRouteInput) => Promise<{ id: string; cancelled: boolean }>;
   agentMessaging?: Pick<AgentMessageRouter, "listReachable" | "send">;
+  botOrchestration?: {
+    environment(input: { coordinatorSession: string; sourceHandle?: string }): Promise<unknown>;
+    createSession(input: Record<string, unknown>): Promise<unknown>;
+    renameSession(input: Record<string, unknown>): Promise<unknown>;
+    createBot(input: Record<string, unknown>): Promise<unknown>;
+  };
   /**
    * Peer delegation (prototype), bound by the daemon in main.ts to its
    * single PeerService. Deliberately a dep, not an OrchestrationRpcHandler:
@@ -455,6 +465,43 @@ export class OrchestrationServer {
           coordinatorSession: requireString(params, "coordinatorSession"),
           title: requireString(params, "title"),
         });
+      case "bot.environment": {
+        requireOnlyKeys(params, ["coordinatorSession", "sourceHandle"], "params");
+        this.requireDirectExecution(params);
+        if (!this.deps.botOrchestration) throw new Error("bot orchestration is not configured");
+        const sourceHandle = requireOptionalString(params, "sourceHandle");
+        return await this.deps.botOrchestration.environment({
+          coordinatorSession: requireString(params, "coordinatorSession"),
+          ...(sourceHandle !== undefined ? { sourceHandle } : {}),
+        });
+      }
+      case "bot.session.create": {
+        requireOnlyKeys(params, ["coordinatorSession", "sourceHandle", "agent", "workspace", "name", "alias", "model", "task"], "params");
+        this.requireDirectExecution(params);
+        requireString(params, "coordinatorSession");
+        requireString(params, "agent");
+        requireString(params, "workspace");
+        if (!this.deps.botOrchestration) throw new Error("bot orchestration is not configured");
+        return await this.deps.botOrchestration.createSession(params);
+      }
+      case "bot.session.rename": {
+        requireOnlyKeys(params, ["coordinatorSession", "sourceHandle", "alias", "displayName"], "params");
+        this.requireDirectExecution(params);
+        requireString(params, "coordinatorSession");
+        requireString(params, "alias");
+        requireString(params, "displayName");
+        if (!this.deps.botOrchestration) throw new Error("bot orchestration is not configured");
+        return await this.deps.botOrchestration.renameSession(params);
+      }
+      case "bot.create": {
+        requireOnlyKeys(params, ["coordinatorSession", "sourceHandle", "name", "agent", "workspace", "role", "instructions", "model", "effort", "task"], "params");
+        this.requireDirectExecution(params);
+        requireString(params, "coordinatorSession");
+        requireString(params, "name");
+        requireString(params, "agent");
+        if (!this.deps.botOrchestration) throw new Error("bot orchestration is not configured");
+        return await this.deps.botOrchestration.createBot(params);
+      }
       default:
         throw new OrchestrationInvalidRequestError(`unsupported orchestration method: ${method}`);
     }
@@ -466,6 +513,15 @@ export class OrchestrationServer {
       throw new Error("peer delegation is not configured");
     }
     return this.deps.peer;
+  }
+
+  private requireDirectExecution(params: Record<string, unknown>): void {
+    const sourceHandle = typeof params.sourceHandle === "string" ? params.sourceHandle : undefined;
+    const coordinatorSession = typeof params.coordinatorSession === "string" ? params.coordinatorSession : "";
+    const identity = sourceHandle ?? coordinatorSession;
+    if (!identity.startsWith("direct-execution:")) {
+      throw new AgentMessagingError("DELIVERY_DENIED", "bot orchestration requires a direct-execution token");
+    }
   }
 
   private async dispatchScheduledCreate(params: Record<string, unknown>): Promise<ScheduledTaskRecord> {
@@ -900,5 +956,7 @@ function isServerNotRunningError(error: unknown): error is NodeJS.ErrnoException
 }
 
 function isAgentMessagingMethod(method: OrchestrationRpcMethod | undefined): boolean {
-  return method === "agent.list" || method === "agent.send";
+  return method === "agent.list" || method === "agent.send"
+    || method === "bot.environment" || method === "bot.session.create"
+    || method === "bot.session.rename" || method === "bot.create";
 }
