@@ -18,6 +18,10 @@ import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState, type LogicalSession } from "../../../src/state/types";
 import type { Agent } from "../../../src/weixin/agent/interface";
+import { registerKnownChannelId } from "../../../src/channels/channel-scope";
+
+// Mirror the daemon, where the relay plugin registers its channel id on load.
+registerKnownChannelId("relay");
 
 class MemoryStateStore {
   public saved: AppState[] = [];
@@ -113,6 +117,7 @@ test("Direct mentions include other enabled bots and visible sessions with targe
     const b = await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" });
     await current.control.createBot({ name: "Sleeping", agent: "codex", workspace: "backend", enabled: false });
     current.state.sessions["work"] = fakeSession("work", { display_name: "Work" });
+    current.state.sessions["relay:backend-fix"] = fakeSession("relay:backend-fix");
     current.state.sessions["old"] = fakeSession("old", { archived: true });
     current.state.sessions["brt_hidden"] = fakeSession("brt_hidden");
 
@@ -123,9 +128,9 @@ test("Direct mentions include other enabled bots and visible sessions with targe
     // A query answers from the registry without awaiting command discovery.
     const result = await current.control.getConversationCompletions({ ...scope, query: "" });
     expect(result.mentions.status).toBe("ready");
-    expect(result.mentions.items).toHaveLength(2);
+    expect(result.mentions.items).toHaveLength(3);
 
-    const [botItem, sessionItem] = result.mentions.items;
+    const [botItem, sessionItem, relaySessionItem] = result.mentions.items;
     expect(botItem).toMatchObject({
       handle: current.runtime.directMessaging.registry.handle(b.id),
       displayName: "B",
@@ -145,6 +150,14 @@ test("Direct mentions include other enabled bots and visible sessions with targe
       sessionAlias: "work",
     });
     expect(sessionItem).not.toHaveProperty("botId");
+
+    // Relay-scoped sessions surface the display alias; the handle stays internal.
+    expect(relaySessionItem).toMatchObject({
+      handle: "relay:backend-fix",
+      displayName: "backend-fix",
+      targetKind: "session",
+      sessionAlias: "backend-fix",
+    });
 
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("brt_");

@@ -3273,7 +3273,7 @@ export class ControlService {
                   agent: e.agent,
                   ...(e.workspace ? { workspace: e.workspace } : {}),
                   targetKind: "session" as const,
-                  sessionAlias: e.sessionAlias,
+                  sessionAlias: toDisplaySessionAlias(e.sessionAlias),
                 }
                 : {
                   handle: e.handle,
