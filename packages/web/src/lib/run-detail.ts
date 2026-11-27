@@ -22,6 +22,14 @@ export function runBudgetOf(run: ConversationRunDto): RunBudgetView | undefined 
   return Object.keys(budget).length > 0 ? budget : undefined;
 }
 
+/** Whether a Run should read as a Group Run: several members, a turn budget,
+ *  batches. A single (Direct Bot) Run has none of those, so its drawer must not
+ *  spend lines on them. `shape` is the wire discriminator; an absent one (legacy
+ *  Runs) keeps the old behaviour rather than guessing which side it belongs to. */
+export function isMultiMemberRun(run: ConversationRunDto): boolean {
+  return run.shape !== "single";
+}
+
 /** The translation key for a MemberTurn's origin. Display only: routing stays
  *  the server's decision. */
 export function memberOriginKey(origin: MemberTurnSummaryDto["origin"]): string {

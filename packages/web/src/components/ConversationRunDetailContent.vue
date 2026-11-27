@@ -14,6 +14,7 @@ import type { RoomParticipant } from "../lib/room-view";
 import {
   canStopMemberInDrawer,
   compareMemberTurns,
+  isMultiMemberRun,
   memberOriginKey,
   runReasonKey,
   type RunBudgetView,
@@ -64,6 +65,9 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const members = computed(() => [...props.memberTurns].sort(compareMemberTurns));
+// A single Run has one turn, no batch and no budget to report: the turn-count and
+// member-completion lines below belong to the Group case alone.
+const multiMember = computed(() => isMultiMemberRun(props.run));
 const selected = computed(() => members.value.find((member) => member.id === props.selectedMemberTurnId)
   ?? members.value.find((member) => member.state === "running" || member.state === "dispatched")
   ?? members.value[members.value.length - 1]);
@@ -89,7 +93,13 @@ function reasonText(reason: string | undefined): string | undefined {
   return key ? t(key) : reason;
 }
 
-const completionReason = computed(() => reasonText(props.run.completionReason));
+const completionReason = computed(() => {
+  // `members-completed` is the core's generic terminal reason for every finished
+  // Run, but its sentence names members: a single Run has none to count, so the
+  // state chip carries the outcome alone instead of the drawer inventing a group.
+  if (!multiMember.value && props.run.completionReason === "members-completed") return undefined;
+  return reasonText(props.run.completionReason);
+});
 const runFailure = computed(() => props.run.state === "failed" || props.run.state === "indeterminate"
   ? reasonText(props.run.completionReason) ?? t("conversation.runDetail.unknownFailure")
   : undefined);
@@ -109,7 +119,7 @@ const stopAvailable = computed(() => canStopMemberInDrawer({
 }));
 const budgetLabel = computed(() => {
   const budget = props.budget;
-  if (!budget) return undefined;
+  if (!budget || !multiMember.value) return undefined;
   if (budget.consumed !== undefined && budget.max !== undefined) {
     return { key: "conversation.runDetail.budget", params: { consumed: budget.consumed, max: budget.max } };
   }
@@ -125,6 +135,7 @@ const budgetLabel = computed(() => {
   return undefined;
 });
 const budgetMeta = computed(() => {
+  if (!multiMember.value) return [];
   const parts: string[] = [];
   if (props.budget?.epoch !== undefined) {
     parts.push(t("conversation.runDetail.budgetEpoch", { epoch: props.budget.epoch }));
@@ -134,6 +145,13 @@ const budgetMeta = computed(() => {
   }
   return parts;
 });
+// Nothing to say is not the same as an empty line. A finished single Run has no
+// chip here (the header owns it), no Group reason and no budget, so the block
+// stays out whole instead of leaving its padding behind as a blank strip.
+const summaryShown = computed(() => !stateShownInHeader.value
+  || completionReason.value !== undefined
+  || runFailure.value !== undefined
+  || budgetLabel.value !== undefined);
 
 function roundLabel(member: MemberTurnSummaryDto): string | undefined {
   if (member.roundIndex === undefined) return undefined;
@@ -165,7 +183,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
     <!-- No card: the drawer header already carries the state chip and title, so this
          block is the run's outcome/budget text and nothing else. The state chip is
          rendered here ONLY for a historical attempt, where the header hides it. -->
-    <section class="space-y-1.5" data-test="run-detail-summary">
+    <section v-if="summaryShown" class="space-y-1.5" data-test="run-detail-summary">
       <div v-if="!stateShownInHeader" class="flex flex-wrap items-center gap-2">
         <span
           data-test="run-detail-state"
