@@ -260,6 +260,23 @@ export interface TopicForkHandoff {
   consumedAt?: string;
 }
 
+/** Bot-origin private peer Topic scope. Missing sourceKind reads as bot. */
+export interface ConversationBotPeerScope {
+  sourceKind?: "bot";
+  sourceConversationId: string;
+  sourceTopicId: string;
+  sourceBotId?: string;
+}
+
+/** Session-origin private peer Topic scope (human session → Bot). */
+export interface ConversationSessionPeerScope {
+  sourceKind: "session";
+  sourceSessionAlias: string;
+  sourceChatKey: string;
+}
+
+export type ConversationPeerScope = ConversationBotPeerScope | ConversationSessionPeerScope;
+
 export interface ConversationTopic {
   id: string;
   conversationId: string;
@@ -279,8 +296,10 @@ export interface ConversationTopic {
   managedAt?: string;
   /** Creation-time physical admission cap; absent preserves legacy scheduling. */
   maxConcurrentMemberTurns?: number;
-  /** Core-private peer scope. Never accessible through public Topic APIs. */
-  peerScope?: { sourceConversationId: string; sourceTopicId: string; sourceBotId: string };
+  /** Core-private peer scope. Never accessible through public Topic APIs.
+   *  Bot shape (legacy rows omit sourceKind) names the source Bot Topic;
+   *  session shape names the originating human session. */
+  peerScope?: ConversationPeerScope;
   /** Effective work target for this Topic. Absent on pre-Group rows: readers
    *  must treat absence as unknown, never as a default policy. Writers always
    *  persist it on Group Topics; direct Topics resolve execution from the
@@ -322,6 +341,16 @@ export interface ConversationMessage {
   };
   /** Source message this row was copied from, when the Topic is a fork. */
   forkedFromMessageId?: string;
+  /** Bot → session delivery receipt: which session this message was dispatched to.
+   *  Present only on the system receipt written when a Bot message fans out to
+   *  a human session; never on human or peer-admission rows. */
+  dispatchedSession?: {
+    sessionAlias: string;
+    displayName?: string;
+    agent: string;
+    workspace: string;
+    taskPreview?: string;
+  };
 }
 
 export interface PublicHandoffEnvelope {

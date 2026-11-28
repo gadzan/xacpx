@@ -4,13 +4,14 @@ import { useI18n } from "vue-i18n";
 import { connectEvents, sendSubscribe, TerminalRequestError, isRetryableTerminalError } from "../api/events";
 import { useInstancesStore, supportsRmuxTerminal, supportsDesktop } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
-import { useDirectBotsStore, loadPersistedBotSelection } from "../stores/direct-bots";
+import { botPaneKeyFor, useDirectBotsStore, loadPersistedBotSelection } from "../stores/direct-bots";
 import { useTasksStore } from "../stores/tasks";
 import { useGroupsStore, loadPersistedGroupSelection } from "../stores/groups";
 import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
+import { primaryKeyFor, useSplitLayoutStore, type SplitPaneTarget } from "../stores/split-layout";
 import { useDesktopStore } from "../stores/desktop";
 import { useFilesStore } from "../stores/files";
 import { iconForFile } from "../lib/file-icons";
@@ -24,6 +25,7 @@ import MobileSheet from "../components/MobileSheet.vue";
 import QuickSwitchSheet from "../components/QuickSwitchSheet.vue";
 import MobileConnStrip from "../components/MobileConnStrip.vue";
 import ChatPane from "../components/ChatPane.vue";
+import SplitWorkbench from "../components/SplitWorkbench.vue";
 import EmptySessionState, { type RecentSessionItem } from "../components/EmptySessionState.vue";
 import DirectBotPane from "../components/DirectBotPane.vue";
 import GroupPane from "../components/GroupPane.vue";
@@ -56,6 +58,7 @@ const tasks = useTasksStore();
 const directBotsStore = useDirectBotsStore();
 const groupsStore = useGroupsStore();
 const terminals = useTerminalStore();
+const splitLayout = useSplitLayoutStore();
 const desktops = useDesktopStore();
 const files = useFilesStore();
 const notices = useNoticesStore();
@@ -78,6 +81,29 @@ const rightOpen = ref(false);
 const rightTab = ref<"tasks" | "files">("files");
 /** Instance-level Desktop tab (not a per-session center tab): one viewer per instance. */
 const desktopTabOpen = ref(false);
+
+/** Split-workbench primary: the currently viewed ordinary session or Direct Bot.
+ *  Desktop only (see showSplit); Group + non-chat center tabs stay single-pane. */
+const splitPrimary = computed<SplitPaneTarget | null>(() => {
+  if (groupsStore.isGroupSelected) return null;
+  if (directBotsStore.isBotSelected && directBotsStore.instanceId && directBotsStore.selectedBotId) {
+    return { kind: "bot", instanceId: directBotsStore.instanceId, botId: directBotsStore.selectedBotId };
+  }
+  if (chat.instanceId && chat.sessionAlias) {
+    return { kind: "session", instanceId: chat.instanceId, sessionAlias: chat.sessionAlias };
+  }
+  return null;
+});
+const showSplit = computed(() => {
+  if (!isDesktop.value || !splitPrimary.value) return false;
+  // A file/diff/terminal tab open for the current session keeps its single-pane view.
+  if (currentKey.value && centerTabs.activeFor(currentKey.value) !== "chat") return false;
+  return true;
+});
+function onSplitPromote(target: SplitPaneTarget): void {
+  if (target.kind === "session") onSelect(target.instanceId, target.sessionAlias);
+  else onSelectBot(target.instanceId, target.botId);
+}
 function openRight(tab: "tasks" | "files") {
   rightTab.value = tab;
   rightOpen.value = true;
@@ -740,6 +766,42 @@ onMounted(async () => {
     chat.applyEvent(event);
     directBotsStore.applyEvent(event);
     groupsStore.applyEvent(event);
+    if (event.kind === "control-event") {
+      const inner = (event as unknown as { event?: {
+        type?: string;
+        message?: { conversationId?: string; topicId?: string; dispatchedSession?: { sessionAlias?: string } };
+      } }).event;
+      const dispatched = inner?.type === "conversation-message" ? inner.message?.dispatchedSession : undefined;
+      // Bot-dispatched sessions auto-open as split columns under the visible Bot's
+      // layout: refresh that instance's sessions first so the new row resolves, then
+      // open (a dismissed session stays closed until reopened from the Bot pane).
+      // Desktop only (the workbench never mounts elsewhere), and aware of Bot
+      // columns: a dispatch from a Bot running in any column of the current
+      // layout auto-opens there, not just from the selected Bot.
+      if (
+        dispatched?.sessionAlias
+        && isDesktop.value
+        && inner?.message?.conversationId
+        && splitPrimary.value
+      ) {
+        const layoutKey = primaryKeyFor(splitPrimary.value);
+        const columns = splitLayout.layoutsByPrimary[layoutKey]?.columns ?? [];
+        const matchesSelection = event.instanceId === directBotsStore.instanceId
+          && directBotsStore.isBotSelected
+          && directBotsStore.selectedBotId
+          && inner.message.conversationId === directBotsStore.activeConversationId
+          && inner.message.topicId === directBotsStore.activeTopicId;
+        const matchesColumn = columns.some((column) => {
+          if (column.target.kind !== "bot" || column.target.instanceId !== event.instanceId) return false;
+          const pane = directBotsStore.botPanesByKey[botPaneKeyFor(column.target.instanceId, column.target.botId)];
+          return !!pane?.conversationId && pane.conversationId === inner.message!.conversationId;
+        });
+        if (matchesSelection || matchesColumn) {
+          void instances.loadSessions(event.instanceId).catch(() => {});
+          splitLayout.autoOpenDispatchedSession(layoutKey, event.instanceId, dispatched.sessionAlias);
+        }
+      }
+    }
     // If the selected turn completed while the browser was offline, the authoritative
     // snapshot clears its stale live card. Reload persisted history immediately so the
     // completed answer replaces it without requiring a manual page refresh.
@@ -979,8 +1041,25 @@ onUnmounted(() => {
            cleared (clearSession). -->
       <div data-test="column" class="relative flex min-w-0 flex-1 flex-col" :class="nothingSelected ? 'max-lg:hidden' : ''">
         <div class="relative min-h-0 flex-1">
+          <SplitWorkbench
+            v-if="showSplit && splitPrimary"
+            :primary="splitPrimary"
+            class="absolute inset-0 z-10"
+            @promote="onSplitPromote"
+            @show-files="onShowFiles"
+            @navigate-bot="onSelectBot"
+            @navigate-group="onSelectGroup"
+            @back="navigateBack"
+          >
+            <template #actions>
+              <ConversationActions v-if="isDesktop"
+                                   v-bind="conversationActions"
+                                   @terminal="openTerminalTab"
+                                   @desktop="toggleDesktopViewer" />
+            </template>
+          </SplitWorkbench>
           <DirectBotPane
-            v-if="directBotsStore.isBotSelected"
+            v-if="directBotsStore.isBotSelected && !showSplit"
             class="absolute inset-0 z-10"
             @navigate-bot="onSelectBot"
             @navigate-group="onSelectGroup"
@@ -1004,8 +1083,13 @@ onUnmounted(() => {
           <EmptySessionState v-else-if="nothingSelected" class="absolute inset-0"
                              :sessions="recentSessions" :instances="fabInstances"
                              @select="onSelect" @create="createSessionIn" />
+          <!-- Split mode owns the conversation surface: its own per-column ChatPane /
+               DirectBotPane render the transcript, so the single-pane ChatPane must leave the
+               DOM entirely. `v-show` alone keeps it mounted, and two `chat-body` /
+               `toggle-terminal` nodes in one document break every strict-mode locator. -->
           <ChatPane class="absolute inset-0"
                     :inert="directBotsStore.isBotSelected || groupsStore.isGroupSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"
+                    v-if="!showSplit"
                     v-show="!!currentKey && centerTabs.activeFor(currentKey) === 'chat'"
                     @show-files="onShowFiles">
             <!-- ChatPane stays mounted behind the Bot / Group pane, so this slot must not

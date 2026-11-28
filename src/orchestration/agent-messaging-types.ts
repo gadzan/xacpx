@@ -52,9 +52,35 @@ export interface AgentEndpointView {
   /** Presentation context mirrored from the published wire DTO. Local rows are
    * derived at construction; federated rows keep exactly what the remote
    * published (absent stays absent — no synthesis). */
-  endpointKind?: "logical" | "worker";
+  endpointKind?: "logical" | "worker" | "bot";
+  /** Product Bot id when endpointKind is "bot". */
+  botId?: string;
   /** Channel namespace owning the endpoint when known (e.g. "relay", "weixin"). */
   channelId?: string;
+}
+
+export interface BotPeerDeliveryInput {
+  toBotId: string;
+  fromHandle: string;
+  fromName: string;
+  fromKind: "session" | "bot";
+  messageId: string;
+  content: string;
+  replyTo?: string;
+}
+
+export interface BotPeerDeliveryResult {
+  messageId: string;
+  deliveryState: string;
+}
+
+export interface SessionPeerDeliveryInput {
+  toSessionAlias: string;
+  fromBotId: string;
+  fromName: string;
+  content: string;
+  messageId: string;
+  replyTo?: string;
 }
 
 export interface AgentSenderBinding {

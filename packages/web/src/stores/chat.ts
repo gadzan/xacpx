@@ -179,10 +179,69 @@ function keepRicherStructured(incoming: MessageRecordDto[], previous: ChatMessag
   });
 }
 
+export interface SessionPaneState {
+  messages: ChatMessage[];
+  hasMoreOlder: boolean;
+  loadingOlder: boolean;
+  loadingHistory: boolean;
+  historyCapped: { kept: number; dropped: number } | null;
+  error: string;
+  sending: boolean;
+}
+
+export function sessionKeyFor(instanceId: string, alias: string): string {
+  return `${instanceId}::${alias}`;
+}
+
+function defaultSessionPaneState(): SessionPaneState {
+  return {
+    messages: [],
+    hasMoreOlder: false,
+    loadingOlder: false,
+    loadingHistory: false,
+    historyCapped: null,
+    error: "",
+    sending: false,
+  };
+}
+
 export const useChatStore = defineStore("chat", () => {
   const instanceId = ref<string | null>(null);
   const sessionAlias = ref<string | null>(null);
-  const messages = ref<ChatMessage[]>([]);
+  // Multi-pane: per-session transcript + pane flags keyed by `sessionKeyFor`.
+  // Top-level refs below are computed proxies for the selected key (zero breakage).
+  const sessionsByKey = ref<Record<string, SessionPaneState>>({});
+  function getSessionState(id: string, alias: string): SessionPaneState {
+    const k = sessionKeyFor(id, alias);
+    if (!sessionsByKey.value[k]) {
+      sessionsByKey.value[k] = defaultSessionPaneState();
+    }
+    // Return the stored (reactive) entry, not the pre-wrap plain object, so
+    // identity is stable across calls and matches `sessionsByKey[k]`.
+    return sessionsByKey.value[k]!;
+  }
+  const selectedPaneKey = computed(() =>
+    instanceId.value && sessionAlias.value
+      ? sessionKeyFor(instanceId.value, sessionAlias.value)
+      : null,
+  );
+  function selectedPane(createIfMissing = false): SessionPaneState | null {
+    const k = selectedPaneKey.value;
+    if (!k) return null;
+    const existing = sessionsByKey.value[k];
+    if (existing) return existing;
+    if (!createIfMissing) return null;
+    const s = defaultSessionPaneState();
+    sessionsByKey.value[k] = s;
+    return s;
+  }
+  const messages = computed<ChatMessage[]>({
+    get: () => selectedPane()?.messages ?? [],
+    set: (v) => {
+      const p = selectedPane(true);
+      if (p) p.messages = v;
+    },
+  });
   const liveTurns = ref<Record<string, LiveTurn>>({});
   // The agent's plan/todo list, kept PER SESSION and OUTSIDE the live turn so it survives
   // turn-finished — an agent often ends a turn mid-plan to ask a question, and the panel
@@ -250,14 +309,42 @@ export const useChatStore = defineStore("chat", () => {
   const liveToolSteps = computed(() => (liveTurn.value ? toolStepsOf(liveTurn.value.parts) : []));
   const busy = computed(() => liveTurn.value !== null);
 
-  const sending = ref(false);
+  /** Per-pane live/plan/queue/busy for split columns: same backing maps as the
+   *  selected proxies above, keyed by explicit (instanceId, sessionAlias) so a
+   *  background column never reads the primary pane's live state. */
+  function liveTurnFor(id: string, alias: string): LiveTurn | null {
+    return liveTurns.value[bufKey(id, alias)] ?? null;
+  }
+  function planFor(id: string, alias: string): PlanEntryDto[] | null {
+    return plans.value[bufKey(id, alias)] ?? null;
+  }
+  function queueFor(id: string, alias: string): QueueItemDto[] {
+    return queues.value[bufKey(id, alias)] ?? [];
+  }
+  function busyFor(id: string, alias: string): boolean {
+    return liveTurnFor(id, alias) !== null;
+  }
+
+  const sending = computed<boolean>({
+    get: () => selectedPane()?.sending ?? false,
+    set: (v) => {
+      const p = selectedPane(true);
+      if (p) p.sending = v;
+    },
+  });
   // A turn-finished event may trigger history convergence while a queued prompt RPC
   // still has no queueItemId. Keep that session on its optimistic transcript until
   // the response establishes correlation; a later finish reloads authoritative rows.
   const pendingPromptRequests = new Map<string, number>();
   const deferredHistoryLoads = new Set<string>();
   const hydratingMessages = new Map<number, Promise<void>>();
-  const error = ref("");
+  const error = computed<string>({
+    get: () => selectedPane()?.error ?? "",
+    set: (v) => {
+      const p = selectedPane(true);
+      if (p) p.error = v;
+    },
+  });
   // "View" on a fired scheduled task asks MessageList to scroll to that run. Nonce-keyed
   // so repeat clicks on the same task re-trigger the jump (a plain id wouldn't change).
   const scrollRequest = ref<{ taskId: string; nonce: number } | null>(null);
@@ -290,10 +377,19 @@ export const useChatStore = defineStore("chat", () => {
   // Upper-bound notice: cumulative rows evicted by the client transcript caps
   // (per-session 1000 rows / 8 MB, global 64 MB, 30-day TTL). Non-null → the
   // MessageList banner tells the user older history was trimmed locally.
-  const historyCapped = ref<{ kept: number; dropped: number } | null>(null);
+  const historyCapped = computed<{ kept: number; dropped: number } | null>({
+    get: () => selectedPane()?.historyCapped ?? null,
+    set: (v) => {
+      const p = selectedPane(true);
+      if (p) p.historyCapped = v;
+    },
+  });
   const setHistoryCapped = (total: number, droppedTotal: number): void => {
     historyCapped.value = droppedTotal > 0 ? { kept: total, dropped: droppedTotal } : null;
   };
+  function setHistoryCappedFor(id: string, alias: string, total: number, droppedTotal: number): void {
+    getSessionState(id, alias).historyCapped = droppedTotal > 0 ? { kept: total, dropped: droppedTotal } : null;
+  }
   const HISTORY_PAGE = 10;
   const historyPath = (id: string, alias: string, before?: number): string => {
     const qs = before === undefined
@@ -301,12 +397,30 @@ export const useChatStore = defineStore("chat", () => {
       : `before=${before}&limit=${HISTORY_PAGE}&view=compact`;
     return `/api/instances/${id}/sessions/${alias}/messages?${qs}`;
   };
-  const hasMoreOlder = ref(false);
-  const loadingOlder = ref(false);
+  const hasMoreOlder = computed<boolean>({
+    get: () => selectedPane()?.hasMoreOlder ?? false,
+    set: (v) => {
+      const p = selectedPane(true);
+      if (p) p.hasMoreOlder = v;
+    },
+  });
+  const loadingOlder = computed<boolean>({
+    get: () => selectedPane()?.loadingOlder ?? false,
+    set: (v) => {
+      const p = selectedPane(true);
+      if (p) p.loadingOlder = v;
+    },
+  });
   // True while the initial history page for a freshly selected session is in flight —
   // drives the transcript skeleton. Background reloads (turn-finished convergence) set
   // it too, but the skeleton only renders when the pane is empty, so those never flash.
-  const loadingHistory = ref(false);
+  const loadingHistory = computed<boolean>({
+    get: () => selectedPane()?.loadingHistory ?? false,
+    set: (v) => {
+      const p = selectedPane(true);
+      if (p) p.loadingHistory = v;
+    },
+  });
   // An async history response may replace messages only if the user is still on
   // the same selection, it is the newest request, and no transcript mutation
   // happened while it was in flight.
@@ -314,10 +428,23 @@ export const useChatStore = defineStore("chat", () => {
   let transcriptRevision = 0;
   const touchTranscript = (): void => { transcriptRevision += 1; };
 
+  function paneForBufKey(k: string): SessionPaneState | null {
+    const idx = k.indexOf("\0");
+    if (idx < 0) return null;
+    const id = k.slice(0, idx);
+    const alias = k.slice(idx + 1);
+    return getSessionState(id, alias);
+  }
+
   function ensureTurn(k: string, startedAt?: number): LiveTurn {
     let t = liveTurns.value[k];
     if (!t) {
-      const selected = selectedKey.value === k;
+      const pane = paneForBufKey(k);
+      const baseLen = pane
+        ? pane.messages.length
+        : selectedKey.value === k
+          ? messages.value.length
+          : 0;
       t = {
         parts: [],
         status: "working",
@@ -325,7 +452,7 @@ export const useChatStore = defineStore("chat", () => {
         // value the persisted row will carry, so the optimistic → persisted transition
         // keeps one identity. Browser clock is the fallback for older hubs.
         startedAt: startedAt ?? Date.now(),
-        slotAfterIndex: selected ? messages.value.length - 1 : -1,
+        slotAfterIndex: baseLen - 1,
       };
       liveTurns.value[k] = t;
     }
@@ -346,12 +473,17 @@ export const useChatStore = defineStore("chat", () => {
   function ensurePendingCancelTurn(k: string, pending: PendingCancel): LiveTurn {
     let t = pending.turn;
     if (!t) {
-      const selected = selectedKey.value === k;
+      const pane = paneForBufKey(k);
+      const baseLen = pane
+        ? pane.messages.length
+        : selectedKey.value === k
+          ? messages.value.length
+          : 0;
       t = {
         parts: [],
         status: "working",
         startedAt: Date.now(),
-        slotAfterIndex: selected ? messages.value.length - 1 : -1,
+        slotAfterIndex: baseLen - 1,
       };
       pending.turn = t;
     }
@@ -411,9 +543,17 @@ export const useChatStore = defineStore("chat", () => {
   /** Place the live bubble after the Hub insert-order anchor (history/seed/snapshot). */
   function syncLiveSlot(k: string): void {
     const t = liveTurns.value[k];
-    if (!t || selectedKey.value !== k) return;
-    if (typeof t.slotAfterId === "number") {
+    if (!t) return;
+    if (typeof t.slotAfterId !== "number") return;
+    if (selectedKey.value === k) {
       t.slotAfterIndex = slotAfterIndexFromAnchor(messages.value, t.slotAfterId, t.peerTriggerMessageId);
+      return;
+    }
+    // Multi-pane: keep background panes anchored too so selecting them later
+    // places the pre-buffered reply correctly.
+    const pane = paneForBufKey(k);
+    if (pane) {
+      t.slotAfterIndex = slotAfterIndexFromAnchor(pane.messages, t.slotAfterId, t.peerTriggerMessageId);
     }
   }
 
@@ -577,9 +717,21 @@ export const useChatStore = defineStore("chat", () => {
     sessionAlias.value = alias;
     persistSelection(id, alias);
     recordTabFocus(id, alias);
-    messages.value = [];
+    // Multi-pane: panes are independent records, but `select()` keeps exact
+    // legacy single-pane semantics — the newly selected transcript always
+    // resets (split columns never call select(); they use the explicit-key
+    // APIs, so background panes are unaffected by this reset).
+    const pane = getSessionState(id, alias);
+    pane.messages = [];
+    pane.hasMoreOlder = false;
+    pane.historyCapped = null;
+    pane.loadingOlder = false;
+    pane.loadingHistory = false;
+    messages.value = pane.messages;
     touchTranscript();
     historyRequestSequence += 1;
+    // Legacy: selecting clears the error banner. Per-pane keeps other panes' errors.
+    pane.error = "";
     error.value = "";
     hasMoreOlder.value = false;
     loadingOlder.value = false;
@@ -1480,5 +1632,254 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, historyCapped, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, clearContext, cancelQueuedItem, purgeTailCache, reconcileTailCache };
+  // ---- Multi-pane concurrent API (explicit key, never current selection) ----
+  const historySeqByPane = new Map<string, number>();
+
+  function hasAuthoritativeTurnRowInPane(id: string, alias: string, turn: LiveTurn): boolean {
+    const pane = getSessionState(id, alias);
+    return pane.messages.some((message) => {
+      if (message.direction !== "out" || typeof message.id !== "number") return false;
+      if (typeof turn.slotAfterId === "number") {
+        return typeof message.slotAfterId === "number"
+          && message.slotAfterId === turn.slotAfterId
+          && message.startedAt === turn.startedAt;
+      }
+      return message.startedAt === turn.startedAt;
+    });
+  }
+
+  function removePendingCancelRowFor(id: string, alias: string, k: string, pending: PendingCancel): void {
+    const pane = getSessionState(id, alias);
+    const cancelledIndex = pending.optimisticRow
+      ? pane.messages.indexOf(pending.optimisticRow)
+      : -1;
+    if (cancelledIndex >= 0) {
+      pane.messages.splice(cancelledIndex, 1);
+    } else {
+      const user = useAuthStore().account?.username;
+      if (user) void tailCache.drop(user, id, alias);
+    }
+  }
+
+  function flushTurnFor(instId: string, alias: string, status: TurnStatus, errorMessage?: string): ChatMessage | undefined {
+    const k = bufKey(instId, alias);
+    const t = liveTurns.value[k];
+    delete liveTurns.value[k];
+    const pane = getSessionState(instId, alias);
+    if (status === "error") pane.error = errorMessage ?? "turn-failed";
+    if (!t) return undefined;
+    const text = textOf(t.parts);
+    const toolSteps = toolStepsOf(t.parts);
+    const reasoning = reasoningOf(t.parts);
+    const hasContent = text.length > 0 || toolSteps.length > 0 || reasoning.length > 0;
+    if (!hasContent) return undefined;
+    const hasStructured = toolSteps.length > 0 || reasoning.length > 0;
+    const trigger = t.peerTriggerMessageId ? { peerTriggerMessageId: t.peerTriggerMessageId } : undefined;
+    const structured = hasStructured || trigger
+      ? markRaw({
+        ...(hasStructured ? { toolSteps, ...(reasoning ? { reasoning } : {}), parts: t.parts } : {}),
+        ...trigger,
+      })
+      : undefined;
+    const insertAt = Math.min(Math.max((t.slotAfterIndex ?? pane.messages.length - 1) + 1, 0), pane.messages.length);
+    const row: ChatMessage = {
+      instanceId: instId,
+      sessionAlias: alias,
+      direction: "out",
+      text,
+      createdAt: new Date().toISOString(),
+      startedAt: t.startedAt,
+      ...(typeof t.slotAfterId === "number" ? { slotAfterId: t.slotAfterId } : {}),
+      failed: status === "error",
+      status,
+      ...(structured ? { structured } : {}),
+    };
+    pane.messages.splice(insertAt, 0, row);
+    return pane.messages[insertAt];
+  }
+
+  async function loadHistoryFor(id: string, alias: string): Promise<void> {
+    const pane = getSessionState(id, alias);
+    const paneKey = sessionKeyFor(id, alias);
+    const historyKey = bufKey(id, alias);
+    if ((pendingPromptRequests.get(historyKey) ?? 0) > 0) {
+      deferredHistoryLoads.add(historyKey);
+      if (pane.messages.length > 0) return;
+    }
+    const seq = (historySeqByPane.get(paneKey) ?? 0) + 1;
+    historySeqByPane.set(paneKey, seq);
+    pane.loadingHistory = true;
+    try {
+      const [{ messages: rows, hasMore }, pending] = await Promise.all([
+        api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(historyPath(id, alias)),
+        api.get<{ items: QueueItemDto[] }>(`/api/instances/${id}/sessions/${alias}/messages?view=pending`).catch(() => ({ items: [] as QueueItemDto[] })),
+      ]);
+      if (historySeqByPane.get(paneKey) !== seq) return;
+      const cacheUser = useAuthStore().account?.username;
+      const cached = cacheUser
+        ? await tailCache.readTranscript(cacheUser, id, alias, incarnationOf(id, alias), TRANSCRIPT_SHOW + 1)
+        : null;
+      if (historySeqByPane.get(paneKey) !== seq) return;
+      const union = unionRows(cached?.rows ?? [], rows);
+      const shown = union.slice(-TRANSCRIPT_SHOW);
+      pane.messages = placeTurnsInSlots(keepRicherStructured(shown, pane.messages).map(rawStructured));
+      queues.value[historyKey] = pending.items;
+      pane.hasMoreOlder = (hasMore ?? false) || (cached?.hasMore ?? false) || union.length > shown.length;
+      if (cached) setHistoryCappedFor(id, alias, cached.total, cached.droppedTotal);
+      syncLiveSlot(historyKey);
+    } finally {
+      if (historySeqByPane.get(paneKey) === seq) pane.loadingHistory = false;
+    }
+  }
+
+  async function ensureSessionLoaded(id: string, alias: string): Promise<void> {
+    const pane = getSessionState(id, alias);
+    if (pane.messages.length === 0 && !pane.loadingHistory) {
+      await loadHistoryFor(id, alias);
+    }
+  }
+
+  async function loadOlderFor(id: string, alias: string): Promise<void> {
+    const pane = getSessionState(id, alias);
+    if (pane.loadingOlder || !pane.hasMoreOlder) return;
+    const oldestId = pane.messages.find((m) => typeof m.id === "number")?.id;
+    if (oldestId === undefined) return;
+    pane.loadingOlder = true;
+    try {
+      const cacheUser = useAuthStore().account?.username;
+      const [hubPage, cachedOlder] = await Promise.all([
+        api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(historyPath(id, alias, oldestId)),
+        cacheUser ? tailCache.readOlder(cacheUser, id, alias, oldestId, TRANSCRIPT_PAGE, incarnationOf(id, alias)) : null,
+      ]);
+      const have = new Set(pane.messages.map((m) => m.id));
+      const merged = unionRows(cachedOlder?.rows ?? [], hubPage.messages).filter((m) => !have.has(m.id));
+      if (merged.length > 0) {
+        pane.messages = placeTurnsInSlots([...merged.map(rawStructured), ...pane.messages]);
+        const live = liveTurns.value[bufKey(id, alias)];
+        if (live) live.slotAfterIndex = (live.slotAfterIndex ?? 0) + merged.length;
+        syncLiveSlot(bufKey(id, alias));
+      }
+      pane.hasMoreOlder = (hubPage.hasMore ?? false) || (cachedOlder?.hasMore ?? false);
+      if (cachedOlder) setHistoryCappedFor(id, alias, cachedOlder.total, cachedOlder.droppedTotal);
+    } catch {
+      // Best-effort
+    } finally {
+      pane.loadingOlder = false;
+    }
+  }
+
+  async function sendPromptFor(
+    id: string,
+    alias: string,
+    text: string,
+    attachments: PromptAttachmentRef[] = [],
+    agentMentions?: Array<{ range: [number, number]; handle: string }>,
+  ): Promise<void> {
+    const pane = getSessionState(id, alias);
+    const pendingEffortSet = useSessionControlsStore().waitForEffortSet(id, alias);
+    if (pendingEffortSet) await pendingEffortSet;
+    const pendingKey = bufKey(id, alias);
+    pendingPromptRequests.set(pendingKey, (pendingPromptRequests.get(pendingKey) ?? 0) + 1);
+    pane.error = "";
+    pane.sending = true;
+    const optimistic: ChatMessage = {
+      instanceId: id,
+      sessionAlias: alias,
+      direction: "in",
+      text,
+      createdAt: new Date().toISOString(),
+      ...(attachments.length > 0
+        ? { attachments: attachments.map((a): AttachmentMetadata => ({ id: a.id, filename: a.fileName, mimeType: a.mimeType, size: a.size, kind: a.kind, ...(a.previewUrl ? { previewUrl: a.previewUrl } : {}) })) }
+        : {}),
+    };
+    pane.messages.push(optimistic);
+    const entry = pane.messages[pane.messages.length - 1]!;
+    let transportFailure = false;
+    try {
+      const res = await api.rpc<{ ok?: boolean; errorMessage?: string; queued?: boolean; queueItemId?: string }>(id, "control.prompt", {
+        sessionAlias: alias,
+        text,
+        ...(attachments.length > 0 ? { media: attachments } : {}),
+        ...(agentMentions && agentMentions.length > 0 ? { agentMentions } : {}),
+      });
+      if (res && res.ok === false) {
+        pane.error = res.errorMessage ?? "prompt-failed";
+        entry.failed = true;
+      } else if (res?.queued && res.queueItemId) {
+        const entryIndex = pane.messages.indexOf(entry);
+        if (entryIndex >= 0) pane.messages.splice(entryIndex, 1);
+        if (!pane.messages.some((message) => message.queueItemId === res.queueItemId)
+          && !queues.value[bufKey(id, alias)]?.some((item) => item.id === res.queueItemId)) {
+          queues.value[bufKey(id, alias)] = [
+            ...(queues.value[bufKey(id, alias)] ?? []),
+            { id: res.queueItemId, textPreview: text.slice(0, 120), enqueuedAt: new Date().toISOString() },
+          ];
+        }
+      }
+    } catch (e) {
+      const isTimeout = e instanceof ApiError && (e.status === 504 || e.code === "timeout");
+      const isTransportFailure = e instanceof TypeError;
+      transportFailure = isTransportFailure;
+      if (!isTimeout && !isTransportFailure) {
+        pane.error = e instanceof ApiError ? e.code : "send-failed";
+        entry.failed = true;
+      }
+    } finally {
+      const remaining = (pendingPromptRequests.get(pendingKey) ?? 1) - 1;
+      if (remaining > 0) pendingPromptRequests.set(pendingKey, remaining);
+      else pendingPromptRequests.delete(pendingKey);
+      if (transportFailure) deferredHistoryLoads.add(pendingKey);
+      const shouldReload = remaining === 0 && deferredHistoryLoads.delete(pendingKey);
+      if (shouldReload) void loadHistoryFor(id, alias).catch(() => {});
+      pane.sending = false;
+    }
+  }
+
+  async function cancelTurnFor(id: string, alias: string): Promise<void> {
+    const k = bufKey(id, alias);
+    if (pendingCancels.has(k)) return;
+    const live = liveTurns.value[k];
+    const pending: PendingCancel = live ? { turn: cloneLiveTurn(live) } : {};
+    pendingCancels.set(k, pending);
+    finishedTurns.add(k);
+    pending.optimisticRow = flushTurnFor(id, alias, "cancelled");
+    try {
+      const result = await api.rpc<{ cancelled: boolean }>(id, "control.prompt.cancel", { sessionAlias: alias });
+      if (result?.cancelled === false && pendingCancels.get(k) === pending) {
+        finishedTurns.add(k);
+        removePendingCancelRowFor(id, alias, k, pending);
+        void loadHistoryFor(id, alias).catch(() => {});
+        return;
+      }
+    } catch (e) {
+      if (pendingCancels.get(k) !== pending) return;
+      const pane = getSessionState(id, alias);
+      pane.error = e instanceof ApiError ? e.code : "cancel-failed";
+      const ambiguousFailure = e instanceof TypeError
+        || (e instanceof ApiError && (e.status === 504 || e.code === "timeout" || e.code === "instance-offline" || e.code === "instance-reconnected"));
+      if (pending.ambiguousBoundary || ambiguousFailure) {
+        pending.ambiguousBoundary = true;
+        removePendingCancelRowFor(id, alias, k, pending);
+        if (pending.activeSnapshotAfterAmbiguousBoundary && pending.turn) {
+          pendingCancels.delete(k);
+          finishedTurns.delete(k);
+          liveTurns.value[k] = pending.turn;
+          syncLiveSlot(k);
+        } else {
+          pending.rpcFailedAmbiguous = true;
+        }
+        return;
+      }
+      pendingCancels.delete(k);
+      finishedTurns.delete(k);
+      const restored = pending.turn;
+      if (restored) {
+        removePendingCancelRowFor(id, alias, k, pending);
+        liveTurns.value[k] = restored;
+        syncLiveSlot(k);
+      }
+    }
+  }
+
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveTurnFor, sessionPlan, planFor, sessionUsage, sessionCommands, liveToolSteps, busy, busyFor, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, historyCapped, queues, sessionQueue, queueFor, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, clearContext, cancelQueuedItem, purgeTailCache, reconcileTailCache, sessionsByKey, getSessionState, ensureSessionLoaded, loadHistoryFor, loadOlderFor, sendPromptFor, cancelTurnFor };
 });

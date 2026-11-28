@@ -203,12 +203,15 @@ describe("Direct completion", () => {
       s = useDirectBotsStore();
     await t.setValue("  first  ");
     await t.trigger("keydown", { key: "Enter" });
+    // While the send is in flight the composer is sending-disabled; resolve
+    // first, then move scopes (an accepted clear must not clobber the new
+    // scope's draft, and the cleared scope must stay cleared).
+    resolve("accepted");
+    await flushPromises();
+    expect((t.element as HTMLTextAreaElement).value).toBe("");
     s.activeTopicId = "t2";
     await flushPromises();
     await t.setValue("second");
-    resolve("accepted");
-    await flushPromises();
-    expect((t.element as HTMLTextAreaElement).value).toBe("second");
     s.activeTopicId = "t1";
     await flushPromises();
     expect((t.element as HTMLTextAreaElement).value).toBe("");
@@ -392,4 +395,107 @@ it("refuses a restored reference draft through an old Hub without sending or los
   await s.sendPrompt("@同名 ", refs);
   expect(prompt).toHaveBeenCalledTimes(1);
   expect(s.currentDraftRequestId).toBe(requestId);
+});
+
+it("mention rows badge bot vs session targets; missing targetKind reads as bot", async () => {
+  vi.mocked(api.rpc).mockResolvedValue({
+    ...ready(),
+    mentions: {
+      status: "ready",
+      items: [
+        { handle: "agent:n:b1", displayName: "Helper", agent: "codex", workspace: "backend", targetKind: "bot" },
+        { handle: "agent:n:s1", displayName: "Runner", agent: "claude", workspace: "frontend", targetKind: "session", sessionAlias: "runner" },
+        // Missing targetKind reads as bot (back-compat with pre-M2 hubs).
+        { handle: "agent:n:legacy", displayName: "Legacy", agent: "codex", workspace: "backend" },
+      ],
+    },
+  });
+  const deliver = vi.fn().mockResolvedValue("uncertain");
+  const w = input({ deliver }),
+    t = w.get("textarea");
+  await t.setValue("@");
+  await flushPromises();
+  const choices = w.findAll('[role="option"]');
+  expect(choices).toHaveLength(3);
+  expect(choices[0]?.text()).toContain("Bot");
+  expect(choices[0]?.text()).toContain("codex · backend");
+  expect(choices[0]?.find("svg").exists()).toBe(true);
+  expect(choices[1]?.text()).toContain("Session");
+  expect(choices[1]?.text()).toContain("claude · frontend");
+  expect(choices[1]?.find("svg").exists()).toBe(true);
+  expect(choices[2]?.text()).toContain("Bot");
+  // Selection submits the canonical handle unchanged.
+  await choices[1]!.trigger("click");
+  await t.trigger("keydown", { key: "Enter" });
+  expect(deliver).toHaveBeenLastCalledWith("@Runner ", [{ range: [0, 7], handle: "agent:n:s1" }], []);
+  expect((t.element as HTMLTextAreaElement).value).toBe("@Runner ");
+});
+
+describe("ConversationPromptInput explicit scope", () => {
+  it("resolves completions against the scope, not the selection", async () => {
+    seed();
+    const w = input({
+      scope: { instanceId: "i1", conversationId: "c1", topicId: "t2", botId: "b1" },
+      scopeReady: true,
+    });
+    const t = w.get("textarea");
+    await t.setValue("/re");
+    await flushPromises();
+    expect(api.rpc).toHaveBeenCalledWith(
+      "i1",
+      "control.conversation.completions.get",
+      { conversationId: "c1", topicId: "t2" },
+    );
+  });
+
+  it("stays blocked until scopeReady, even with a complete scope", async () => {
+    seed();
+    const deliver = vi.fn().mockResolvedValue("accepted");
+    const w = input({
+      deliver,
+      scope: { instanceId: "i1", conversationId: "c1", topicId: "t2", botId: "b1" },
+    });
+    const t = w.get("textarea");
+    await t.setValue("hi");
+    await t.trigger("keydown", { key: "Enter" });
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("sends through the scoped default deliver without a deliver prop", async () => {
+    seed();
+    (api.rpc as ReturnType<typeof vi.fn>).mockImplementation(async (_instanceId: unknown, method: unknown) => {
+      if (method === "control.conversation.prompt") {
+        return {
+          message: {
+            id: "m2", conversationId: "c1", topicId: "t1", seq: 2, role: "user",
+            content: "hi scoped", createdAt: "2026-01-01T00:00:01.000Z",
+          },
+          run: {
+            id: "r1", conversationId: "c1", topicId: "t1", requestMessageId: "m2",
+            requestId: "req1", mode: "explicit", state: "running", profileRevision: 1,
+            createdAt: "2026-01-01T00:00:01.000Z", startedAt: "2026-01-01T00:00:01.000Z",
+          },
+          memberTurn: null,
+        };
+      }
+      return ready();
+    });
+    const w = input({
+      scope: { instanceId: "i1", conversationId: "c1", topicId: "t1", botId: "b1" },
+      scopeReady: true,
+    });
+    const t = w.get("textarea");
+    await t.setValue("hi scoped");
+    await t.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(api.rpc).toHaveBeenCalledWith(
+      "i1",
+      "control.conversation.prompt",
+      expect.objectContaining({ conversationId: "c1", topicId: "t1", text: "hi scoped" }),
+    );
+    // The scoped run is tracked per-topic; the selection stays clean.
+    const store = useDirectBotsStore();
+    expect(store.activeRunForTopic("i1", "c1", "t1")?.id).toBe("r1");
+    expect(store.activeRun).toBeNull();
+  });
 });

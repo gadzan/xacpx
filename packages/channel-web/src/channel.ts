@@ -64,6 +64,7 @@ export class WebChannel {
         return;
       }
       this.server?.local.project(event.event);
+      this.server?.local.noteDirectoryEvent(event.event);
       this.server?.local.publish(event);
     });
     const host = config.host.includes(":") ? `[${config.host}]` : config.host;

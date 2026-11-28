@@ -84,6 +84,10 @@ export interface BotCreateRequestDto {
   model?: string;
   effort?: string;
   enabled?: boolean;
+  /** Provenance for bot-spawned bots (Milestone 1 split). Absent = human-created root. */
+  createdByBotId?: string;
+  /** Spawn depth for bot-spawned bots; human-created roots read as 0. */
+  spawnDepth?: number;
 }
 
 export interface BotRemovalPreviewDto {
@@ -277,6 +281,10 @@ export interface ConversationMessageDto {
   promptRequestId?: string;
   /** Safe display metadata only; never carries daemon filePath. Omitted when the message has no attachments. */
   attachments?: AttachmentMetadata[];
+  /** Bot → session dispatch receipt (system messages only). Drives the Web
+   *  auto-split workbench and dispatched-session cards; dropped nowhere on
+   *  the timeline/history/event projections. */
+  dispatchedSession?: ConversationMessage["dispatchedSession"];
 }
 
 export interface ConversationRunDto {
@@ -624,6 +632,7 @@ export function toConversationMessage(message: ConversationMessage): Conversatio
     ...(message.memberTurnId ? { memberTurnId: message.memberTurnId } : {}),
     ...(message.sourceTurn?.turnId ? { promptRequestId: message.sourceTurn.turnId } : {}),
     ...(message.media && message.media.length > 0 ? { attachments: message.media.map(toAttachmentMetadata) } : {}),
+    ...(message.dispatchedSession ? { dispatchedSession: { ...message.dispatchedSession } } : {}),
   };
 }
 

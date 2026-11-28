@@ -10,9 +10,12 @@ import type {
   AgentMessageReceipt,
 } from "../orchestration/agent-messaging-types";
 import type { AppState } from "../state/types";
+import { isHiddenProductSessionOwner } from "../state/types";
+import { toDisplaySessionAlias } from "../channels/channel-scope";
 import type { BotService } from "../bots/bot-service";
 import type { ConversationStore } from "./conversation-store";
 import type { ConversationRunService } from "./conversation-run-service";
+import type { ConversationSessionPeerScope } from "./conversation-types";
 import type { AgentMention } from "@ganglion/xacpx-relay-protocol";
 import type { ResolvedDirectMention } from "./direct-input-metadata";
 import { ConversationError } from "./conversation-error";
@@ -24,19 +27,64 @@ interface Binding {
   owner: string;
   generation: number;
 }
+
+/** Orchestration-worker contract: deliver a peer message into a Bot's private Topic. */
+export interface BotPeerDeliveryInput {
+  toBotId: string;
+  fromHandle: string;
+  fromName: string;
+  fromKind: "session" | "bot";
+  messageId: string;
+  content: string;
+  replyTo?: string;
+}
+
+/** Orchestration-worker contract: deliver a Bot message into a human session. */
+export interface SessionPeerDeliveryInput {
+  toSessionAlias: string;
+  fromBotId: string;
+  fromName: string;
+  content: string;
+  messageId: string;
+  replyTo?: string;
+}
+
+export interface DirectSessionSummary {
+  alias: string;
+  displayName?: string;
+  agent: string;
+  workspace: string;
+  archived: boolean;
+}
+
+export type DirectEndpointKind = "bot" | "session";
+
+export interface DirectEndpointView extends AgentEndpointView {
+  kind: DirectEndpointKind;
+  botId?: string;
+}
+
+export type DirectResolveResult =
+  | { kind: "bot"; botId: string; endpoint: DirectEndpointView }
+  | { kind: "session"; sessionAlias: string; endpoint: DirectEndpointView };
+
 /** Same-instance product Endpoint registry. Handles are identities, never authority. */
 export class DirectBotEndpointRegistry {
+  private readonly listSessions?: () => DirectSessionSummary[];
   constructor(
     private readonly state: AppState,
     private readonly bots: BotService,
     private readonly nodeId: string,
-  ) {}
-  list(senderBotId: string): AgentEndpointView[] {
+    listSessions?: () => DirectSessionSummary[],
+  ) {
+    this.listSessions = listSessions;
+  }
+  list(senderBotId: string): DirectEndpointView[] {
     const sender = this.bots.getBot(senderBotId);
     this.bots.assertAcceptsWork(sender.id);
     if (!sender.enabled)
       throw new ConversationError("bot_disabled", "sender Bot disabled");
-    return this.bots
+    const bots = this.bots
       .listBots()
       .filter((b) => b.id !== senderBotId && b.enabled)
       .filter((b) => {
@@ -47,13 +95,45 @@ export class DirectBotEndpointRegistry {
           return false;
         }
       })
-      .map((b) => ({
+      .map((b): DirectEndpointView => ({
+        kind: "bot",
+        botId: b.id,
         address: { nodeId: this.nodeId, endpointId: "product-bot-" + b.id },
         handle: this.handle(b.id),
         node: this.nodeId,
         displayName: b.name,
         agent: b.agent,
         workspace: b.workspace,
+        state: "idle" as const,
+        activity: { status: "idle" as const },
+        capabilities: {
+          receive: true,
+          queue: true,
+          steer: false,
+          interrupt: false,
+          conversation: false,
+          completion: false,
+        },
+      }));
+    return [...bots, ...this.sessionEndpoints()];
+  }
+  /** Active human sessions, excluding archived rows and hidden product
+   *  plumbing (owner metadata is authoritative; the `brt_*` prefix stays as
+   *  defense-in-depth). Handles keep the canonical internal alias so
+   *  `resolve()` matches exactly; display names are Web-facing. */
+  private sessionEndpoints(): DirectEndpointView[] {
+    const summaries = this.listSessions?.() ?? defaultSessionSummaries(this.state);
+    return summaries
+      .filter((s) => !s.archived && !s.alias.startsWith("brt_"))
+      .map((s): DirectEndpointView => ({
+        kind: "session",
+        address: { nodeId: this.nodeId, endpointId: s.alias },
+        handle: s.alias,
+        node: this.nodeId,
+        displayName: s.displayName ?? toDisplaySessionAlias(s.alias),
+        agent: s.agent,
+        workspace: s.workspace,
+        sessionAlias: s.alias,
         state: "idle" as const,
         activity: { status: "idle" as const },
         capabilities: {
@@ -72,15 +152,18 @@ export class DirectBotEndpointRegistry {
       endpointId: "product-bot-" + botId,
     });
   }
-  resolve(
-    senderBotId: string,
-    handle: string,
-  ): { botId: string; endpoint: AgentEndpointView } {
+  resolve(senderBotId: string, handle: string): DirectResolveResult {
+    const session = this.sessionEndpoints().find((e) => e.handle === handle);
+    if (session?.sessionAlias) {
+      this.assertResolvable(senderBotId, handle);
+      return { kind: "session", sessionAlias: session.sessionAlias, endpoint: session };
+    }
     const address = decodeAgentHandle(handle);
     const endpoint = this.list(senderBotId).find((e) => e.handle === handle);
     if (
       !address ||
       !endpoint ||
+      endpoint.kind !== "bot" ||
       address.nodeId !== this.nodeId ||
       !address.endpointId.startsWith("product-bot-")
     )
@@ -88,15 +171,26 @@ export class DirectBotEndpointRegistry {
         "target_unavailable",
         "reference target is no longer authorized",
       );
-    return { botId: address.endpointId.slice("product-bot-".length), endpoint };
+    return { botId: address.endpointId.slice("product-bot-".length), endpoint, kind: "bot" as const };
+  }
+  /** Reachability probe shared by both handle kinds. */
+  private assertResolvable(senderBotId: string, handle: string): void {
+    const endpoint = this.list(senderBotId).find((e) => e.handle === handle);
+    if (!endpoint) {
+      throw new ConversationError(
+        "target_unavailable",
+        "reference target is no longer authorized",
+      );
+    }
   }
   mentions(botId: string, mentions: AgentMention[]): ResolvedDirectMention[] {
     return mentions.map((m) => {
-      const { botId: target, endpoint } = this.resolve(botId, m.handle);
+      const target = this.resolve(botId, m.handle);
+      const endpoint = target.endpoint;
       return {
         ...m,
         range: [...m.range] as [number, number],
-        botId: target,
+        ...(target.kind === "bot" ? { botId: target.botId } : { sessionAlias: target.sessionAlias }),
         agent: endpoint.agent,
         workspace: endpoint.workspace!,
         displayName: endpoint.displayName!,
@@ -106,22 +200,48 @@ export class DirectBotEndpointRegistry {
   revalidate(botId: string, mentions: ResolvedDirectMention[]): void {
     for (const m of mentions) {
       const target = this.resolve(botId, m.handle);
-      if (
-        target.botId !== m.botId ||
-        target.endpoint.agent !== m.agent ||
-        target.endpoint.workspace !== m.workspace
-      )
-        throw new ConversationError(
-          "target_unavailable",
-          "accepted reference identity changed",
-        );
+      if (target.kind === "bot") {
+        if (
+          target.botId !== m.botId ||
+          target.endpoint.agent !== m.agent ||
+          target.endpoint.workspace !== m.workspace
+        )
+          throw new ConversationError(
+            "target_unavailable",
+            "accepted reference identity changed",
+          );
+      } else {
+        if (
+          target.sessionAlias !== m.sessionAlias ||
+          target.endpoint.agent !== m.agent ||
+          target.endpoint.workspace !== m.workspace
+        )
+          throw new ConversationError(
+            "target_unavailable",
+            "accepted reference identity changed",
+          );
+      }
     }
   }
 }
+
+function defaultSessionSummaries(state: AppState): DirectSessionSummary[] {
+  return Object.values(state.sessions ?? {})
+    .filter((s) => !isHiddenProductSessionOwner(s.owner))
+    .map((s) => ({
+      alias: s.alias,
+      ...(s.display_name ? { displayName: s.display_name } : {}),
+      agent: s.agent,
+      workspace: s.workspace,
+      archived: s.archived === true,
+    }));
+}
+
 export class DirectMessagingService {
   readonly registry: DirectBotEndpointRegistry;
   private readonly bindings = new Map<string, Binding>();
   private readonly sent = new Map<string, Set<string>>();
+  private readonly deliverToSession?: (input: SessionPeerDeliveryInput) => Promise<unknown>;
   private closed = false;
   constructor(
     private readonly input: {
@@ -131,13 +251,17 @@ export class DirectMessagingService {
       runs: ConversationRunService;
       nodeId: string;
       now?: () => Date;
+      listSessions?: () => DirectSessionSummary[];
+      deliverToSession?: (input: SessionPeerDeliveryInput) => Promise<unknown>;
     },
   ) {
     this.registry = new DirectBotEndpointRegistry(
       input.state,
       input.bots,
       input.nodeId,
+      input.listSessions,
     );
+    this.deliverToSession = input.deliverToSession;
   }
   bindExecution(binding: Binding): { token: string; release: () => void } {
     if (this.closed)
@@ -150,6 +274,23 @@ export class DirectMessagingService {
         this.bindings.delete(token);
         this.sent.delete(token);
       },
+    };
+  }
+  /**
+   * Resolve a direct-execution token to its owning member identity for
+   * bot orchestration (quotas, receipts, task dispatch). Reuses the same
+   * lease/owner/revision checks as message sending.
+   */
+  describeExecution(binding: AgentSenderBinding): {
+    botId: string;
+    conversationId: string;
+    topicId: string;
+  } {
+    const member = this.sender(binding);
+    return {
+      botId: member.botId,
+      conversationId: member.conversationId,
+      topicId: member.topicId,
     };
   }
   close(): void {
@@ -246,12 +387,11 @@ export class DirectMessagingService {
     const source = this.sender(binding);
     if (
       (args.mode && !["auto", "queue"].includes(args.mode)) ||
-      args.replyTo ||
       (args.completion && args.completion !== "none")
     )
       throw new ConversationError(
         "messaging_mode_unavailable",
-        "Direct V1 supports one-way queue/auto only; no reply/completion",
+        "Direct V1 supports one-way queue/auto only; no completion",
       );
     if (
       typeof args.content !== "string" ||
@@ -268,7 +408,50 @@ export class DirectMessagingService {
         "invalid-target",
         "Direct messaging requires an exact authorized handle",
       );
-    const { botId: targetBotId } = this.registry.resolve(source.botId, args.to);
+    const target = this.registry.resolve(source.botId, args.to);
+    const senderBot = this.input.bots.getBot(source.botId);
+    const fromHandle = this.registry.handle(source.botId);
+    // Stable per-execution/message id makes repeated identical calls replay durable admission.
+    const messageId =
+      "msg_direct_" +
+      createHash("sha256")
+        .update(JSON.stringify([source.sourceTurnId, args.to, args.content, args.replyTo ?? null]))
+        .digest("hex")
+        .slice(0, 40);
+    const sent = this.sent.get(binding.sourceHandle!) ?? new Set<string>();
+    if (!sent.has(messageId) && sent.size >= 16)
+      throw new ConversationError(
+        "message_budget_exceeded",
+        "at most 16 messages per execution",
+      );
+    sent.add(messageId);
+    this.sent.set(binding.sourceHandle!, sent);
+    if (target.kind === "session") {
+      const deliver = this.deliverToSession;
+      if (!deliver) {
+        throw new ConversationError(
+          "target_unavailable",
+          "session delivery is not wired for this runtime",
+        );
+      }
+      this.sender(binding);
+      this.registry.resolve(source.botId, args.to);
+      await deliver({
+        toSessionAlias: target.sessionAlias,
+        fromBotId: source.botId,
+        fromName: senderBot.name,
+        content: args.content,
+        messageId,
+        ...(args.replyTo ? { replyTo: args.replyTo } : {}),
+      });
+      return {
+        messageId,
+        status: "queued",
+        modeUsed: "queue",
+        route: "local",
+      };
+    }
+    const targetBotId = target.botId;
     const request = this.input.store.getMessage(
       this.input.store.getRun(source.runId)!.requestMessageId,
     );
@@ -281,21 +464,6 @@ export class DirectMessagingService {
         "message_budget_exceeded",
         "peer depth budget or acknowledgement loop rejected",
       );
-    // Stable per-execution/message id makes repeated identical calls replay durable admission.
-    const messageId =
-      "msg_direct_" +
-      createHash("sha256")
-        .update(JSON.stringify([source.sourceTurnId, args.to, args.content]))
-        .digest("hex")
-        .slice(0, 40);
-    const sent = this.sent.get(binding.sourceHandle!) ?? new Set<string>();
-    if (!sent.has(messageId) && sent.size >= 16)
-      throw new ConversationError(
-        "message_budget_exceeded",
-        "at most 16 messages per execution",
-      );
-    sent.add(messageId);
-    this.sent.set(binding.sourceHandle!, sent);
     const scope = {
       sourceConversationId: source.conversationId,
       sourceTopicId: source.topicId,
@@ -310,7 +478,18 @@ export class DirectMessagingService {
       topicId: topic.id,
       requestId: messageId,
       content: args.content,
-      peerInput: { version: 1, peer: { messageId, ...scope, depth } },
+      peerInput: {
+        version: 1,
+        peer: {
+          messageId,
+          ...scope,
+          fromHandle,
+          fromName: senderBot.name,
+          fromKind: "bot",
+          ...(args.replyTo ? { replyTo: args.replyTo } : {}),
+          depth,
+        },
+      },
       beforeCommit: () => {
         this.sender(binding);
         this.registry.resolve(source.botId, args.to!);
@@ -323,5 +502,64 @@ export class DirectMessagingService {
       route: "local",
       ...(accepted.reused ? { deduplicated: true } : {}),
     };
+  }
+
+  /**
+   * Session → Bot ingress. Lands in the target Bot's private peer Topic for
+   * the originating session and admits one Direct prompt. Idempotent on
+   * messageId: a retry replays the same durable admission.
+   */
+  async deliverFromSession(input: {
+    fromSessionAlias: string;
+    fromName: string;
+    content: string;
+    messageId: string;
+    replyTo?: string;
+    toBotId: string;
+    sourceChatKey?: string;
+  }): Promise<{ messageId: string }> {
+    if (
+      typeof input.content !== "string" ||
+      !input.content.trim() ||
+      Buffer.byteLength(input.content) > 16000 ||
+      input.content.includes("\0")
+    ) {
+      throw new ConversationError(
+        "invalid-message",
+        "message must be nonempty and at most 16000 bytes",
+      );
+    }
+    if (!input.fromSessionAlias || !input.messageId || !input.toBotId || !input.fromName) {
+      throw new ConversationError("invalid-target", "session delivery requires a sender, a target Bot and a messageId");
+    }
+    this.input.bots.assertAcceptsWork(input.toBotId);
+    const scope: ConversationSessionPeerScope = {
+      sourceKind: "session",
+      sourceSessionAlias: input.fromSessionAlias,
+      sourceChatKey: input.sourceChatKey ?? input.fromSessionAlias,
+    };
+    const topic = await this.input.runs.ensurePeerTopic(input.toBotId, scope);
+    const accepted = await this.input.runs.acceptDirectPrompt({
+      botId: input.toBotId,
+      conversationId: topic.conversationId,
+      topicId: topic.id,
+      requestId: input.messageId,
+      content: input.content,
+      peerInput: {
+        version: 1,
+        peer: {
+          messageId: input.messageId,
+          sourceSessionAlias: scope.sourceSessionAlias,
+          sourceChatKey: scope.sourceChatKey,
+          fromHandle: input.fromSessionAlias,
+          fromName: input.fromName,
+          fromKind: "session",
+          ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+          depth: 1,
+        },
+      },
+    });
+    void accepted;
+    return { messageId: input.messageId };
   }
 }

@@ -22,3 +22,21 @@ PR9 Group executions use a private `group-execution:` capability as both launch 
 ## Direct launch isolation (Issue #399)
 
 Direct Conversation dispatch mints an ephemeral direct-execution identity only after the durable execution-start CAS. It is bound through private Chat metadata provenance to the owned logical session and immutable transport/MCP launch. The tool registry exposes only agent_list/agent_send for this Direct identity; server authorization validates the live Run/member/dispatch generation, owner, lease, Topic generation, and lifecycle again on each call and immediately before receiver admission. Completion preparation uses a non-sending discovery identity and cannot become an active sender. Group and restricted launch tool ceilings remain unchanged.
+
+## Direct Bot orchestration tools (Milestones 1–2)
+
+Bot-owned Direct executions additionally receive four orchestration tools (six total with `agent_list` / `agent_send` above), bound through the bot-orchestration transport (`bot-orchestration-service.ts`, `xacpx-mcp-transport.ts`, `orchestration-ipc.ts`) and failing closed when the runtime does not bind them. All sends are fire-and-forget (`completion: "none"`); optional `task` payloads dispatch with no completion callback:
+
+- `xacpx_environment` — workspaces + agents available to this execution. No arguments. Call before creating anything.
+- `session_create` (`agent`, `workspace`, optional `name`/`alias`/`model`/`task`) — creates an ordinary manageable `LogicalSession`, visible in the Sessions list. Returns the display alias plus the internal handle (the Web opens the pane via the handle). An optional `task` starts work in the new session fire-and-forget.
+- `session_rename` (`alias`, `displayName`) — renames a session's display label. Hidden `brt_*` sessions cannot be renamed.
+- `bot_create` (`name`, `agent`, optional `workspace`/`role`/`instructions`/`model`/`effort`/`task`) — spawns a child Bot owned by this execution (`createdByBotId` chain). An optional `task` notifies the child fire-and-forget.
+
+Server-side safety caps, enforced before any creation RPC runs:
+
+- `MAX_SESSIONS_CREATED_PER_EXECUTION = 8` — sessions per execution.
+- `MAX_BOTS_CREATED_PER_EXECUTION = 4` — child Bots per execution.
+- `MAX_BOT_SPAWN_DEPTH = 3` — depth of the `createdByBotId` chain.
+- `MAX_TOTAL_BOTS = 64` — Bots per instance.
+
+Quota violations fail the tool call with an error; nothing is partially created. Bot-created sessions and child Bots are ordinary manageable rows (sessions appear in the Sessions list, bots in the agent directory); product sessions with hidden owners (`brt_*`, `bot-direct`, `group-member`, `group-controller`) stay out of ordinary lists. See [Conversation runtime](conversation-runtime.md#bot↔session-bidirectional-messaging-and-direct-bot-orchestration-milestones-12) for the delivery envelope, the dispatched-session system notice, and private sub-Bot peer topics.

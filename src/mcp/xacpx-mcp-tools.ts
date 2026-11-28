@@ -1027,10 +1027,98 @@ export function buildXacpxMcpToolRegistry(input: {
       (tool) => !externalCoordinatorIncompatibleTools.has(tool.name),
     );
   }
-  if (sourceHandle?.startsWith("direct-execution:")) return tools.filter(tool => tool.name === "agent_list" || tool.name === "agent_send").map(tool => tool.name !== "agent_send" ? tool : ({...tool,
-    description:"Send a concise actionable one-way message to an authorized Bot handle from agent_list. The receipt proves durable queue admission only. V1 supports auto/queue, with no interruption, reply or completion callbacks. Do not send acknowledgements or status polling.",
-    inputSchema:z.object({to:z.string().min(1),message:z.string().min(1).max(16000),mode:z.enum(["auto","queue"]).optional(),completion:z.literal("none").optional()}).strict(),
-  }));
+  if (sourceHandle?.startsWith("direct-execution:")) {
+    const directTools: XacpxMcpToolDefinition<unknown>[] = [
+      {
+        name: "agent_list",
+        description: "List authorized Bot and session endpoints reachable from this execution. Each item carries kind bot|session plus workspace, agent, and displayName. Inspect before messaging.",
+        inputSchema: z.object({}).strict(),
+        handler: async () =>
+          await asToolResult(async () => {
+            const agents = await transport.listAgentEndpoints({ coordinatorSession, ...(sourceHandle ? { sourceHandle } : {}) });
+            const mapped = agents.map((agent) => {
+              const record = agent as typeof agent & { kind?: string; botId?: string; endpointKind?: string };
+              const kind = record.kind === "bot" || record.kind === "session"
+                ? record.kind
+                : record.botId !== undefined || record.endpointKind === "bot" ? "bot" : "session";
+              return { ...agent, kind: kind as "bot" | "session" };
+            });
+            const text = mapped.length === 0
+              ? "No authorized endpoints are currently reachable."
+              : [
+                  "Authorized endpoints:",
+                  ...mapped.map((agent) => `- ${(agent as { handle: string }).handle}: [${(agent as { kind: string }).kind}] ${(agent as { displayName?: string }).displayName ?? ""} [${(agent as { workspace?: string }).workspace ?? ""}] ${(agent as { agent: string }).agent}`),
+                ].join("\n");
+            return createSuccessResult(text, { agents: mapped });
+          }),
+      },
+      {
+        name: "agent_send",
+        description: "Send a concise actionable one-way message to any authorized handle from agent_list — a Bot or an ordinary Session. Use replyTo when answering an earlier message. Fire-and-forget: the receipt proves durable queue admission only, with no interruption, reply, or completion callbacks. Do not send acknowledgements or status polling.",
+        inputSchema: z.object({ to: z.string().min(1).max(512), message: z.string().min(1).max(16000), mode: z.enum(["auto", "queue"]).optional(), replyTo: z.string().min(1).max(512).optional(), completion: z.literal("none").optional() }).strict(),
+        handler: async (args) =>
+          await asToolResult(async () => {
+            const input = args as { to: string; message: string; mode?: "auto" | "queue"; replyTo?: string };
+            const receipt = await transport.sendAgentMessage({
+              coordinatorSession,
+              ...(sourceHandle ? { sourceHandle } : {}),
+              to: input.to,
+              message: input.message,
+              ...(input.mode !== undefined ? { mode: input.mode } : {}),
+              ...(input.replyTo !== undefined ? { replyTo: input.replyTo } : {}),
+              completion: "none",
+            });
+            const receiptMarker = `xacpx-agent-send-receipt:v1 ${JSON.stringify({ messageId: receipt.messageId, status: receipt.status })}`;
+            return createSuccessResult(`Peer message ${receipt.messageId} accepted with status=${receipt.status}.\n${receiptMarker}`, receipt);
+          }),
+      },
+      {
+        name: "xacpx_environment",
+        description: "Read the workspaces and agents available to this execution for session_create and bot_create.",
+        inputSchema: z.object({}).strict(),
+        handler: async () =>
+          await asToolResult(async () => {
+            if (!transport.getBotEnvironment) throw new Error("xacpx_environment is not bound for this runtime");
+            const result = await transport.getBotEnvironment({ coordinatorSession, ...(sourceHandle ? { sourceHandle } : {}) });
+            return createSuccessResult(`Available workspaces: ${result.workspaces.length}; agents: ${result.agents.length}.`, result);
+          }),
+      },
+      {
+        name: "session_create",
+        description: "Create an ordinary manageable session for this execution (visible in the Sessions list). Returns the display alias plus the internal handle. Optional task dispatches fire-and-forget with no completion.",
+        inputSchema: z.object({ agent: z.string().min(1).max(64), workspace: z.string().min(1).max(128), name: z.string().min(1).max(80).optional(), alias: z.string().min(1).max(128).optional(), model: z.string().min(1).max(256).optional(), task: z.string().min(1).max(16000).optional() }).strict(),
+        handler: async (args) =>
+          await asToolResult(async () => {
+            if (!transport.createBotSession) throw new Error("session_create is not bound for this runtime");
+            const result = await transport.createBotSession({ coordinatorSession, ...(sourceHandle ? { sourceHandle } : {}), ...(args as { agent: string; workspace: string; name?: string; alias?: string; model?: string; task?: string }) });
+            return createSuccessResult(`Session ${result.alias} created.`, result);
+          }),
+      },
+      {
+        name: "session_rename",
+        description: "Rename a session display label. Hidden brt_* sessions cannot be renamed.",
+        inputSchema: z.object({ alias: z.string().min(1).max(128), displayName: z.string().min(1).max(128) }).strict(),
+        handler: async (args) =>
+          await asToolResult(async () => {
+            if (!transport.renameBotSession) throw new Error("session_rename is not bound for this runtime");
+            const result = await transport.renameBotSession({ coordinatorSession, ...(sourceHandle ? { sourceHandle } : {}), ...(args as { alias: string; displayName: string }) });
+            return createSuccessResult(`Session ${result.alias} renamed.`, result);
+          }),
+      },
+      {
+        name: "bot_create",
+        description: "Create a child Bot spawned by this execution. Optional task notifies the child fire-and-forget with no completion.",
+        inputSchema: z.object({ name: z.string().min(1).max(80), agent: z.string().min(1).max(64), workspace: z.string().min(1).max(128).optional(), role: z.string().min(1).max(256).optional(), instructions: z.string().min(1).max(16384).optional(), model: z.string().min(1).max(256).optional(), effort: z.string().min(1).max(64).optional(), task: z.string().min(1).max(16000).optional() }).strict(),
+        handler: async (args) =>
+          await asToolResult(async () => {
+            if (!transport.createBot) throw new Error("bot_create is not bound for this runtime");
+            const result = await transport.createBot({ coordinatorSession, ...(sourceHandle ? { sourceHandle } : {}), ...(args as { name: string; agent: string; workspace?: string; role?: string; instructions?: string; model?: string; effort?: string; task?: string }) });
+            return createSuccessResult(`Bot ${result.name} (${result.botId}) created.`, result);
+          }),
+      },
+    ];
+    return directTools;
+  };
   return tools;
 }
 

@@ -650,6 +650,21 @@ function validTopicSummary(value: unknown): boolean {
     && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
 
+function validDispatchedSession(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const d = value as Record<string, unknown>;
+  if (!Object.keys(d).every((key) => ["sessionAlias", "displayName", "agent", "workspace", "taskPreview"].includes(key))) return false;
+  if (typeof d.sessionAlias !== "string" || d.sessionAlias.length === 0 || d.sessionAlias.length > 256) return false;
+  if (d.sessionAlias.startsWith("brt_")) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\0-\x1F\x7F]/.test(d.sessionAlias)) return false;
+  if (typeof d.agent !== "string" || d.agent.length > 128) return false;
+  if (typeof d.workspace !== "string" || d.workspace.length > 256) return false;
+  if (d.displayName !== undefined && (typeof d.displayName !== "string" || d.displayName.length > 256)) return false;
+  if (d.taskPreview !== undefined && (typeof d.taskPreview !== "string" || d.taskPreview.length > 2000)) return false;
+  return true;
+}
+
 function validConversationMessage(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -663,7 +678,8 @@ function validConversationMessage(value: unknown): boolean {
     && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId)
     && optStr(c.forkedFromMessageId)
     && (c.handoff === undefined || (c.role === "system" && typeof c.runId === "string"
-      && typeof c.senderBotId === "string" && validPublicHandoff(c.handoff)));
+      && typeof c.senderBotId === "string" && validPublicHandoff(c.handoff)))
+    && (c.dispatchedSession === undefined || (c.role === "system" && validDispatchedSession(c.dispatchedSession)));
 }
 
 function validPublicHandoff(value: unknown): boolean {
@@ -1340,6 +1356,18 @@ function validDesktopServerEvent(candidate: Record<string, unknown>): boolean {
   }
 }
 
+const AGENT_DIRECTORY_ENDPOINT_KINDS: ReadonlySet<string> = new Set(["logical", "worker", "bot"]);
+
+function validAgentDirectoryEndpoint(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const e = value as Record<string, unknown>;
+  if (typeof e.nodeId !== "string" || typeof e.endpointId !== "string" || typeof e.agent !== "string") return false;
+  if (e.endpointKind !== undefined && (typeof e.endpointKind !== "string" || !AGENT_DIRECTORY_ENDPOINT_KINDS.has(e.endpointKind))) return false;
+  if (e.botId !== undefined && typeof e.botId !== "string") return false;
+  if (typeof e.sessionAlias === "string" && e.sessionAlias.startsWith("brt_")) return false;
+  return true;
+}
+
 /** Parse + validate a relay→web push payload; returns null for any malformed envelope. */
 export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | null {
   if (envelope.kind !== "event" || envelope.type !== WEB_EVENT_TYPE) return null;
@@ -1348,7 +1376,8 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   const candidate = payload as Record<string, unknown>;
   if (typeof candidate.kind !== "string" || !WEB_EVENT_KINDS.has(candidate.kind)) return null;
   if (candidate.kind === "agent-directory") {
-    return Array.isArray(candidate.endpoints) ? (payload as WebServerEvent) : null;
+    if (!Array.isArray(candidate.endpoints)) return null;
+    return (candidate.endpoints as unknown[]).every(validAgentDirectoryEndpoint) ? (payload as WebServerEvent) : null;
   }
   if (typeof candidate.instanceId !== "string") return null;
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean") return null;

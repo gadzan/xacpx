@@ -252,3 +252,60 @@ describe("rankAgentMentions comparator (spec §16–17)", () => {
     expect(ranked.map((r) => r.handle)).toEqual(["h-match"]);
   });
 });
+
+describe("bot endpoints tier exactly like Relay logical endpoints (M2 unified @ autocomplete)", () => {
+  const bot = (over: Partial<RankableMentionItem> = {}) =>
+    item({ endpointKind: "bot", channelId: "relay", ...over });
+
+  it("same workspace is Tier 0 (with or without a relay channel tag)", () => {
+    expect(contextTierOf(bot({ instanceId: "inst-2", workspace: "xacpx" }), ctx())).toBe(0);
+    expect(
+      contextTierOf(item({ endpointKind: "bot", instanceId: "inst-2", workspace: "xacpx" }), ctx()),
+    ).toBe(0);
+  });
+
+  it("same instance, different workspace is Tier 1", () => {
+    expect(contextTierOf(bot({ instanceId: "inst-1", workspace: "other" }), ctx())).toBe(1);
+  });
+
+  it("different instance, different workspace is Tier 2", () => {
+    expect(contextTierOf(bot({ instanceId: "inst-2", workspace: "elsewhere" }), ctx())).toBe(2);
+  });
+
+  it("never Tier 3, even with a non-Relay channel tag", () => {
+    // A channel tag must not demote a bot the way it demotes a logical endpoint.
+    expect(
+      contextTierOf(bot({ instanceId: "inst-2", workspace: "xacpx", channelId: "weixin" }), ctx()),
+    ).toBe(0);
+    expect(
+      contextTierOf(bot({ instanceId: "inst-1", workspace: "other", channelId: "weixin" }), ctx()),
+    ).toBe(1);
+    expect(
+      contextTierOf(bot({ instanceId: "inst-2", workspace: "elsewhere", channelId: "weixin" }), ctx()),
+    ).toBe(2);
+  });
+
+  it("no context degrades to Tier 2, never Tier 3", () => {
+    expect(contextTierOf(bot({ instanceId: "inst-1", workspace: "xacpx" }), {})).toBe(2);
+    expect(
+      contextTierOf(bot({ instanceId: "inst-1", workspace: "xacpx", channelId: "weixin" }), {}),
+    ).toBe(2);
+  });
+
+  it("empty query orders a same-workspace bot ahead of same-instance logical, remote, and worker", () => {
+    const c = ctx();
+    const relay = (over: Partial<RankableMentionItem> = {}) =>
+      item({ endpointKind: "logical", channelId: "relay", ...over });
+    const ranked = rankAgentMentions(
+      [
+        relay({ handle: "h-worker", displayName: "Worker", instanceId: "inst-1", workspace: "xacpx", endpointKind: "worker" }),
+        relay({ handle: "h-remote", displayName: "Remote", instanceId: "inst-2", workspace: "elsewhere" }),
+        relay({ handle: "h-same-inst", displayName: "SameInst", instanceId: "inst-1", workspace: "other" }),
+        bot({ handle: "h-bot-ws", displayName: "Helper", instanceId: "inst-9", workspace: "xacpx" }),
+      ],
+      "",
+      c,
+    );
+    expect(ranked.map((r) => r.handle)).toEqual(["h-bot-ws", "h-same-inst", "h-remote", "h-worker"]);
+  });
+});

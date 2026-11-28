@@ -241,6 +241,8 @@ export default {
     working: "Agent 正在工作…（按 Esc 停止）",
     mentionSource: {
       worker: "Worker",
+      bot: "机器人",
+      session: "会话",
       weixin: "微信",
       feishu: "飞书",
       yuanbao: "元宝",
@@ -1105,6 +1107,9 @@ export default {
       emptyHint: "发送一条消息开始与该 Bot 对话。",
       emptyHintDisabled: "启用该 Bot 后即可开始对话。",
       working: "思考中",
+      dispatchedTitle: "派发会话",
+      dispatchedOpen: "在分栏中打开",
+      dispatchedFocus: "聚焦",
     },
     run: {
       failed: "运行失败",
@@ -1424,5 +1429,23 @@ export default {
   time: {
     justNow: "刚刚",
     minutesAgo: "{count} 分钟前",
+  },
+  split: {
+    openInSplit: "在右侧分栏打开",
+    addSplit: "+ 分栏",
+    searchPlaceholder: "搜索会话或机器人\u2026",
+    sessions: "会话",
+    bots: "机器人",
+    empty: "暂无可用——请先让实例上线。",
+    setPrimary: "设为主视图",
+    closePane: "关闭分栏",
+    maxReached: "分栏视图最多支持 4 列。",
+    alreadyOpen: "已在此视图中打开。",
+    dispatched: {
+      open: "在分栏打开",
+      locate: "定位到分栏",
+      running: "运行中",
+      idle: "空闲",
+    },
   },
 };

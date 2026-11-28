@@ -83,6 +83,97 @@ describe("local web app", () => {
     expect(me.status).toBe(200);
   });
 
+  test("advertises and serves the agent directory the @ menu ranks", async () => {
+    // The composer's @ selector ranks `instancesStore.agentDirectory`. A console
+    // that reports the capability but answers an empty list (or 404s, which the
+    // SPA fallback turns into 200 + HTML) leaves the menu with zero candidates,
+    // so typing @ shows nothing at all.
+    const endpoints = [
+      {
+        nodeId: "node-1",
+        endpointId: "session:demo",
+        displayName: "Demo session",
+        sessionAlias: "demo",
+        agent: "codex",
+        workspace: "ws",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        endpointKind: "logical",
+        updatedAt: 1,
+      },
+      {
+        nodeId: "node-1",
+        endpointId: "bot:bot_1",
+        displayName: "架构师",
+        agent: "codex",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        endpointKind: "bot",
+        botId: "bot_1",
+        updatedAt: 2,
+      },
+    ];
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
+      control: {
+        events: { subscribe: () => () => undefined },
+        getPublishedAgentEndpoints: async () => endpoints,
+      } as never,
+    });
+
+    const config = await local.app.request("/api/config", { headers: headers() });
+    expect((await config.json()).capabilities.agentDirectory).toBe(true);
+
+    const directory = await local.app.request("/api/agent-directory", { headers: headers() });
+    expect(directory.status).toBe(200);
+    const body = await directory.json();
+    expect(body.endpoints).toHaveLength(2);
+    // Every row is tagged with this console's instance, the way the hub does.
+    expect(body.endpoints.every((e: { instanceId: string }) => e.instanceId === "local")).toBe(true);
+    expect(body.endpoints.map((e: { displayName: string }) => e.displayName))
+      .toEqual(["Demo session", "架构师"]);
+  });
+
+  test("broadcasts the agent directory on connect and after a directory event", async () => {
+    const sent: string[] = [];
+    const local = createLocalWebApp({
+      config: { host: "127.0.0.1", port: 7138, terminal: { enabled: false } },
+      port: 7138,
+      control: {
+        events: { subscribe: () => () => undefined },
+        getPublishedAgentEndpoints: async () => [{
+          nodeId: "node-1",
+          endpointId: "session:demo",
+          displayName: "Demo session",
+          sessionAlias: "demo",
+          agent: "codex",
+          state: "idle",
+          capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+          endpointKind: "logical",
+          updatedAt: 1,
+        }],
+      } as never,
+    });
+    const detach = local.attach((data) => sent.push(data), () => undefined, undefined);
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const kinds = sent.map((raw) => JSON.parse(raw).payload.kind);
+    expect(kinds).toContain("agent-directory");
+
+    sent.length = 0;
+    local.noteDirectoryEvent({ type: "bots-changed" } as never);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(sent.map((raw) => JSON.parse(raw).payload.kind)).toEqual(["agent-directory"]);
+
+    // An unrelated event must not re-read the directory.
+    sent.length = 0;
+    local.noteDirectoryEvent({ type: "workspaces-changed" } as never);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(sent).toEqual([]);
+    detach();
+  });
+
   test("stamps the local chat scope before a browser prompt reaches core", async () => {
     const seen: Array<Record<string, unknown>> = [];
     const local = createLocalWebApp({

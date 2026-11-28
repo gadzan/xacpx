@@ -855,6 +855,7 @@ export class RelayChannel implements MessageChannelRuntime {
       if (
         eventType === "sessions-changed" ||
         eventType === "orchestration-changed" ||
+        eventType === "bots-changed" ||
         eventType === "turn-started" ||
         eventType === "turn-finished"
       ) {

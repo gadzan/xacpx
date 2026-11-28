@@ -1,14 +1,27 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { X } from "lucide-vue-next";
 import { useChatStore } from "../stores/chat";
 
+/** Optional explicit scope for split columns: when both are provided the strip
+ *  reads and cancels that pane's queue instead of the global selection's. */
+const props = defineProps<{ instanceId?: string | null; sessionAlias?: string | null }>();
+
 const chat = useChatStore();
+const useScoped = computed(() => props.instanceId != null && props.sessionAlias != null);
+const queue = computed(() =>
+  useScoped.value ? chat.queueFor(props.instanceId!, props.sessionAlias!) : chat.sessionQueue,
+);
+function cancelItem(id: string): void {
+  if (useScoped.value) void chat.cancelQueuedItem(props.instanceId!, props.sessionAlias!, id);
+  else void chat.cancelQueuedItem(chat.instanceId!, chat.sessionAlias!, id);
+}
 </script>
 
 <template>
   <!-- Server-side pending-prompt queue for the selected session (Task 6's sessionQueue).
        Renders nothing when the queue is empty — no v-if needed at the call site. -->
-  <div v-if="chat.sessionQueue.length" data-test="queue-strip"
+  <div v-if="queue.length" data-test="queue-strip"
        class="flex w-fit max-w-full self-start items-center gap-2 rounded-2xl bg-surface/95 px-3 py-1.5 backdrop-blur-md">
     <span class="shrink-0 text-xs font-medium text-fg-muted">{{ $t("chat.queuedHeader") }}</span>
     <TransitionGroup tag="div"
@@ -18,12 +31,12 @@ const chat = useChatStore();
         leave-active-class="transition-[opacity,transform] duration-150 ease-ui motion-reduce:transition-none absolute"
         leave-to-class="opacity-0 scale-95"
         class="relative flex flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
-      <span v-for="item in chat.sessionQueue" :key="item.id" data-test="queue-item"
+      <span v-for="item in queue" :key="item.id" data-test="queue-item"
             class="inline-flex max-w-[220px] items-center gap-1.5 rounded-full bg-bg px-2.5 py-1 text-xs text-fg-muted">
         <span class="truncate">{{ item.textPreview }}</span>
         <button type="button" data-test="queue-cancel" :aria-label="$t('chat.queueCancelAria')"
                 class="grid h-4 w-4 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                @click="chat.cancelQueuedItem(chat.instanceId!, chat.sessionAlias!, item.id)">
+                @click="cancelItem(item.id)">
           <X :size="10" />
         </button>
       </span>

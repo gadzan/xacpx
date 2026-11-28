@@ -731,11 +731,33 @@ function validTopicSummary(value) {
   const c = value;
   return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64) && (c.contextGeneration === undefined || typeof c.contextGeneration === "number" && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1) && validTopicFork(c.forkedFrom) && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
+function validDispatchedSession(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const d = value;
+  if (!Object.keys(d).every((key) => ["sessionAlias", "displayName", "agent", "workspace", "taskPreview"].includes(key)))
+    return false;
+  if (typeof d.sessionAlias !== "string" || d.sessionAlias.length === 0 || d.sessionAlias.length > 256)
+    return false;
+  if (d.sessionAlias.startsWith("brt_"))
+    return false;
+  if (/[\0-\x1F\x7F]/.test(d.sessionAlias))
+    return false;
+  if (typeof d.agent !== "string" || d.agent.length > 128)
+    return false;
+  if (typeof d.workspace !== "string" || d.workspace.length > 256)
+    return false;
+  if (d.displayName !== undefined && (typeof d.displayName !== "string" || d.displayName.length > 256))
+    return false;
+  if (d.taskPreview !== undefined && (typeof d.taskPreview !== "string" || d.taskPreview.length > 2000))
+    return false;
+  return true;
+}
 function validConversationMessage(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.seq === "number" && (c.role === "human" || c.role === "bot" || c.role === "system") && typeof c.content === "string" && typeof c.createdAt === "string" && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId) && optStr(c.forkedFromMessageId) && (c.handoff === undefined || c.role === "system" && typeof c.runId === "string" && typeof c.senderBotId === "string" && validPublicHandoff(c.handoff));
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.seq === "number" && (c.role === "human" || c.role === "bot" || c.role === "system") && typeof c.content === "string" && typeof c.createdAt === "string" && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId) && optStr(c.forkedFromMessageId) && (c.handoff === undefined || c.role === "system" && typeof c.runId === "string" && typeof c.senderBotId === "string" && validPublicHandoff(c.handoff)) && (c.dispatchedSession === undefined || c.role === "system" && validDispatchedSession(c.dispatchedSession));
 }
 function validPublicHandoff(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -1254,6 +1276,21 @@ function validDesktopServerEvent(candidate) {
       return false;
   }
 }
+var AGENT_DIRECTORY_ENDPOINT_KINDS = new Set(["logical", "worker", "bot"]);
+function validAgentDirectoryEndpoint(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const e = value;
+  if (typeof e.nodeId !== "string" || typeof e.endpointId !== "string" || typeof e.agent !== "string")
+    return false;
+  if (e.endpointKind !== undefined && (typeof e.endpointKind !== "string" || !AGENT_DIRECTORY_ENDPOINT_KINDS.has(e.endpointKind)))
+    return false;
+  if (e.botId !== undefined && typeof e.botId !== "string")
+    return false;
+  if (typeof e.sessionAlias === "string" && e.sessionAlias.startsWith("brt_"))
+    return false;
+  return true;
+}
 function parseWebServerEvent(envelope) {
   if (envelope.kind !== "event" || envelope.type !== WEB_EVENT_TYPE)
     return null;
@@ -1264,7 +1301,9 @@ function parseWebServerEvent(envelope) {
   if (typeof candidate.kind !== "string" || !WEB_EVENT_KINDS.has(candidate.kind))
     return null;
   if (candidate.kind === "agent-directory") {
-    return Array.isArray(candidate.endpoints) ? payload : null;
+    if (!Array.isArray(candidate.endpoints))
+      return null;
+    return candidate.endpoints.every(validAgentDirectoryEndpoint) ? payload : null;
   }
   if (typeof candidate.instanceId !== "string")
     return null;

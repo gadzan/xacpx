@@ -8,6 +8,7 @@ import {
   watch,
 } from "vue";
 import {
+  Bot,
   Brain,
   Check,
   ChevronDown,
@@ -297,7 +298,8 @@ interface AgentMentionItem {
   endpointId: string;
   // v0.3 directory context metadata (absent on legacy peers) — drives
   // collaboration-tier ranking and the low-priority source label.
-  endpointKind?: "logical" | "worker";
+  // "bot" widened for the M1 directory (M2 renders the Bot badge).
+  endpointKind?: "logical" | "worker" | "bot";
   channelId?: string;
   activity?: {
     status: "idle" | "working" | "waiting";
@@ -937,11 +939,19 @@ function onKeydown(e: KeyboardEvent) {
           >
             <div class="flex min-w-0 flex-1 flex-col">
               <div class="flex min-w-0 items-center justify-between gap-2">
-                <span
-                  class="font-semibold text-accent-text truncate"
-                  data-test="mention-primary"
-                  >@{{ agentItem.displayName }}</span
-                >
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <span
+                    class="font-semibold text-accent-text truncate"
+                    data-test="mention-primary"
+                    >@{{ agentItem.displayName }}</span
+                  >
+                  <span
+                    v-if="agentItem.endpointKind === 'bot'"
+                    data-test="mention-badge"
+                    class="inline-flex shrink-0 items-center gap-0.5 rounded-sm bg-accent/10 px-1 py-px text-[11px] font-semibold text-accent-text"
+                    ><Bot :size="11" />{{ t("chat.mentionSource.bot") }}</span
+                  >
+                </span>
                 <span
                   v-if="activityLabel(agentItem.activity)"
                   data-test="mention-activity"

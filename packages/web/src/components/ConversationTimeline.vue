@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
+import DispatchedSessionCard from "./DispatchedSessionCard.vue";
+import { useSplitLayoutStore } from "../stores/split-layout";
+import { useChatStore } from "../stores/chat";
+import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 import { GitFork, Loader2, MessagesSquare } from "lucide-vue-next";
-import type { ConversationTimelineDto, TopicForkDto } from "@ganglion/xacpx-relay-protocol";
+import type { ConversationMessageDto, ConversationTimelineDto, TopicForkDto } from "@ganglion/xacpx-relay-protocol";
 import TimelineRow from "./TimelineRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import ConversationSkeleton from "./ConversationSkeleton.vue";
@@ -10,7 +15,12 @@ import {
   timelineHasMoreBefore,
   type RoomView,
   type TimelineLiveTurn,
+  type TimelineRow as TimelineRowType,
 } from "../lib/room-view";
+function dispatchedMessageOf(row: TimelineRowType): ConversationMessageDto | null {
+  if (row.kind !== "message") return null;
+  return row.entry.message.dispatchedSession ? row.entry.message : null;
+}
 
 /**
  * The single conversation timeline (design §8.1): Direct and Group render this
@@ -56,6 +66,8 @@ const props = defineProps<{
   forkMessage?: (messageId: string) => void;
   /** Group rooms keep each speaker's avatar and name at every breakpoint. */
   keepMobileIdentity?: boolean;
+  /** When set, scroll position persists per pane via the split-layout store. */
+  scrollPaneKey?: string;
 }>();
 
 const emit = defineEmits<{
@@ -99,7 +111,51 @@ function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+  persistTimelineScroll();
 }
+
+const splitLayoutStore = useSplitLayoutStore();
+let lastTimelineSaveTs = 0;
+function persistTimelineScroll(): void {
+  if (!props.scrollPaneKey) return;
+  const el = scroller.value;
+  if (!el) return;
+  const now = Date.now();
+  if (now - lastTimelineSaveTs < 150) return;
+  lastTimelineSaveTs = now;
+  splitLayoutStore.saveScroll(props.scrollPaneKey, { scrollTop: el.scrollTop, atBottom: atBottom.value });
+}
+function restoreTimelineScroll(): void {
+  if (!props.scrollPaneKey) return;
+  const el = scroller.value;
+  if (!el) return;
+  const rec = splitLayoutStore.getScroll(props.scrollPaneKey);
+  if (!rec || rec.atBottom) {
+    atBottom.value = true;
+    scrollToBottom(false);
+    return;
+  }
+  el.scrollTop = rec.scrollTop;
+  atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+}
+const timelineInstanceId = computed(() => {
+  const direct = useDirectBotsStore();
+  const groups = useGroupsStore();
+  const chat = useChatStore();
+  return direct.instanceId ?? groups.instanceId ?? chat.instanceId ?? "";
+});
+onMounted(() => {
+  if (!props.scrollPaneKey) return;
+  void nextTick(() => restoreTimelineScroll());
+});
+watch(() => props.scrollPaneKey, () => {
+  if (!props.scrollPaneKey) return;
+  void nextTick(() => restoreTimelineScroll());
+});
+watch(() => rows.value.length, (now, prev) => {
+  if (!props.scrollPaneKey) return;
+  if (prev === 0 && now > 0) void nextTick(() => restoreTimelineScroll());
+});
 
 function scrollToBottom(smooth = false): void {
   const el = scroller.value;
@@ -140,12 +196,18 @@ watch(
       });
       return;
     }
-    if (atBottom.value) void nextTick(() => scrollToBottom(false));
+    // Re-check at execution time: a pane restore (split workbench) may have
+    // landed between scheduling and this callback and cleared the pin.
+    void nextTick(() => {
+      if (atBottom.value) scrollToBottom(false);
+    });
   },
 );
 
 watch(liveRevision, () => {
-  if (atBottom.value) void nextTick(() => scrollToBottom(false));
+  void nextTick(() => {
+    if (atBottom.value) scrollToBottom(false);
+  });
 });
 
 async function handleLoadOlder(): Promise<void> {
@@ -240,18 +302,25 @@ defineExpose({ scrollToBottom });
       </div>
 
       <div v-else class="mx-auto max-w-3xl space-y-5">
-        <TimelineRow
-          v-for="(row, index) in rows"
-          :key="row.key"
-          :data-row-key="row.key"
-          :data-first="index === 0 ? 'true' : undefined"
-          :row="row"
-          :room="room"
-          :is-run-queued="isRunQueued"
-          :keep-mobile-identity="keepMobileIdentity"
-          :fork-message="forkMessage"
-          @open-detail="(payload) => emit('openDetail', payload)"
-        />
+        <template v-for="(row, index) in rows" :key="row.key">
+          <DispatchedSessionCard
+            v-if="dispatchedMessageOf(row)"
+            :data-row-key="row.key"
+            :message="dispatchedMessageOf(row)!"
+            :instance-id="timelineInstanceId"
+          />
+          <TimelineRow
+            v-else
+            :data-row-key="row.key"
+            :data-first="index === 0 ? 'true' : undefined"
+            :row="row"
+            :room="room"
+            :is-run-queued="isRunQueued"
+            :keep-mobile-identity="keepMobileIdentity"
+            :fork-message="forkMessage"
+            @open-detail="(payload) => emit('openDetail', payload)"
+          />
+        </template>
       </div>
 
       <p v-if="error" data-test="timeline-error" class="mt-3 text-center text-xs text-danger-text">

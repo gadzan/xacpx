@@ -203,11 +203,17 @@ function onInput(event: Event): void {
   <!-- The card is glass-strong: a translucent surface with a hairline and the
        card shadow. The glass is static — it is not in the transition list, so
        the radius animation below is unchanged. -->
+  <!-- Focus is signalled by the SURFACE and the EDGE, not a blue frame: tapping
+       the input on a phone used to draw a 2px accent box around the whole card,
+       which read as a selection state rather than "this field is active". The
+       hairline strengthens one step and the face lifts; the textarea keeps
+       data-ring="container" so the global field rule never paints a second,
+       square ring inside the rounded card. -->
   <form class="relative mx-auto w-full max-w-3xl px-0" @submit.prevent="emit('send')" @dragover.prevent @drop="emit('drop', $event)">
     <div
       ref="surface"
       data-test="composer-surface"
-      class="relative bg-glass-strong backdrop-blur-glass backdrop-saturate-glass shadow-glass-float transition-[background-color,border-radius] duration-200 ease-out focus-within:ring-2 focus-within:ring-accent"
+      class="relative bg-glass-strong backdrop-blur-glass backdrop-saturate-glass shadow-glass-float transition-[background-color,border-radius] duration-200 ease-out focus-within:bg-raised focus-within:ring-1 focus-within:ring-inset focus-within:ring-hairline-strong"
       :class="[expanded ? 'rounded-2xl' : 'rounded-3xl', surfaceDisabled ? 'cursor-not-allowed opacity-60' : '']"
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >

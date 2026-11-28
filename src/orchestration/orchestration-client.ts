@@ -3,6 +3,12 @@ import { createConnection } from "node:net";
 
 import {
   encodeOrchestrationRpcRequest,
+  type BotCreateInput,
+  type BotCreateResult,
+  type BotEnvironmentResult,
+  type BotSessionCreateInput,
+  type BotSessionCreateResult,
+  type BotSessionRenameInput,
   type OrchestrationIpcEndpoint,
   type OrchestrationRpcErrorCode,
   type OrchestrationRpcMethod,
@@ -275,6 +281,22 @@ export class OrchestrationClient {
 
   async peerGet(input: PeerGetInput): Promise<PeerRequest | null> {
     return await this.request<PeerRequest | null>("peer.get", input);
+  }
+
+  async botEnvironment(input: AgentSenderBinding): Promise<BotEnvironmentResult> {
+    return await this.request<BotEnvironmentResult>("bot.environment", input);
+  }
+
+  async createBotSession(input: AgentSenderBinding & BotSessionCreateInput): Promise<BotSessionCreateResult> {
+    return await this.request<BotSessionCreateResult>("bot.session.create", input);
+  }
+
+  async renameBotSession(input: AgentSenderBinding & BotSessionRenameInput): Promise<{ alias: string; displayName: string }> {
+    return await this.request<{ alias: string; displayName: string }>("bot.session.rename", input);
+  }
+
+  async createBot(input: AgentSenderBinding & BotCreateInput): Promise<BotCreateResult> {
+    return await this.request<BotCreateResult>("bot.create", input);
   }
 
   async request<Result>(method: OrchestrationRpcMethod, params: unknown, timeoutMs = this.timeoutMs): Promise<Result> {

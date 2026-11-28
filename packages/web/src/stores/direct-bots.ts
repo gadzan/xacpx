@@ -16,6 +16,7 @@ import {
   type ConversationHistoryResponseDto,
   type ConversationMessageDto,
   type ConversationPromptResponseDto,
+  type ControlEventDto,
   type ConversationRunDetailDto,
   type ConversationRunDto,
   type ConversationRunStateDto,
@@ -400,6 +401,30 @@ function persistBotSelection(instanceId: string | null, botId: string | null): v
   }
 }
 
+export interface BotPaneState {
+  topicId: string | null;
+  /** Resolved Direct Conversation id for this bot (null until ensureBotPaneScope runs). */
+  conversationId: string | null;
+  inputDraft?: string;
+  pending?: boolean;
+}
+
+export function botPaneKeyFor(instanceId: string, botId: string): string {
+  return `${instanceId}::${botId}`;
+}
+
+/** Explicit per-topic scope for background split columns (never the selection). */
+export interface BotTopicScope {
+  instanceId: string;
+  botId: string;
+  conversationId: string;
+  topicId: string;
+}
+
+export function botTopicKeyFor(instanceId: string, conversationId: string, topicId: string): string {
+  return `${instanceId}::${conversationId}::${topicId}`;
+}
+
 export const useDirectBotsStore = defineStore("directBots", () => {
   let currentSelectionGeneration = 0;
   let recoveryGeneration = 0;
@@ -430,6 +455,23 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const selectedBotId = ref<string | null>(null);
   const activeConversationId = ref<string | null>(null);
   const activeTopicId = ref<string | null>(null);
+
+  // Multi-pane: per-bot topic/draft state keyed by `botPaneKeyFor`.
+  // Top-level selection refs remain proxies for the currently selected bot.
+  const botPanesByKey = ref<Record<string, BotPaneState>>({});
+  function getBotPaneState(targetInstanceId: string, botId: string): BotPaneState {
+    const k = botPaneKeyFor(targetInstanceId, botId);
+    if (!botPanesByKey.value[k]) {
+      botPanesByKey.value[k] = { topicId: null, conversationId: null };
+    }
+    // Return the stored (reactive) entry so identity is stable across calls.
+    return botPanesByKey.value[k]!;
+  }
+  function syncBotPaneTopic(): void {
+    if (instanceId.value && selectedBotId.value) {
+      getBotPaneState(instanceId.value, selectedBotId.value).topicId = activeTopicId.value;
+    }
+  }
 
   // Bots state
   const botsByInstance = ref<Record<string, BotSummaryDto[]>>({});
@@ -541,6 +583,51 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const liveCompletedRunId = ref<string | null>(null);
   const activeMemberTurn = ref<MemberTurnSummaryDto | null>(null);
   const liveTurn = ref<DirectBotLiveTurn | null>(null);
+  // Multi-pane: per-topic live/run state for background split columns. The
+  // selected proxies above stay the primary pane's source of truth; these maps
+  // mirror the same control events keyed by topic so a scoped column streams
+  // without hijacking the selection. Display-only: no ownership fences or
+  // discovery machinery here — a scoped Stop cancels that pane's own tracked
+  // run id, and the timeline feed converges on the next event.
+  const liveTurnsByTopic = ref<Record<string, DirectBotLiveTurn | null>>({});
+  const activeRunsByTopic = ref<Record<string, ConversationRunDto | null>>({});
+  const activeMemberTurnsByTopic = ref<Record<string, MemberTurnSummaryDto | null>>({});
+  /** Bumped on every per-topic mirror write: scoped timeline feeds refetch
+   *  their newest page off this (they cannot watch the selection's seq). */
+  const topicRevisions = ref<Record<string, number>>({});
+  const promptInFlightByTopic = ref<Record<string, boolean>>({});
+  const promptErrorByTopic = ref<Record<string, { code: string; detail: string | null } | null>>({});
+  function bumpTopicRevisionByKey(topicKey: string): void {
+    topicRevisions.value = { ...topicRevisions.value, [topicKey]: (topicRevisions.value[topicKey] ?? 0) + 1 };
+  }
+  function scopedTopicKeyOf(instanceId: string, conversationId: string | undefined, topicId: string | undefined): string | null {
+    return conversationId && topicId ? botTopicKeyFor(instanceId, conversationId, topicId) : null;
+  }
+  function liveTurnForTopic(instanceId: string, conversationId: string, topicId: string): DirectBotLiveTurn | null {
+    return liveTurnsByTopic.value[botTopicKeyFor(instanceId, conversationId, topicId)] ?? null;
+  }
+  function activeRunForTopic(instanceId: string, conversationId: string, topicId: string): ConversationRunDto | null {
+    return activeRunsByTopic.value[botTopicKeyFor(instanceId, conversationId, topicId)] ?? null;
+  }
+  function activeMemberTurnForTopic(instanceId: string, conversationId: string, topicId: string): MemberTurnSummaryDto | null {
+    return activeMemberTurnsByTopic.value[botTopicKeyFor(instanceId, conversationId, topicId)] ?? null;
+  }
+  function topicRevisionFor(instanceId: string, conversationId: string, topicId: string): number {
+    return topicRevisions.value[botTopicKeyFor(instanceId, conversationId, topicId)] ?? 0;
+  }
+  function isPromptInFlightFor(instanceId: string, conversationId: string, topicId: string): boolean {
+    return promptInFlightByTopic.value[botTopicKeyFor(instanceId, conversationId, topicId)] ?? false;
+  }
+  function promptErrorForTopic(instanceId: string, conversationId: string, topicId: string): { code: string; detail: string | null } | null {
+    return promptErrorByTopic.value[botTopicKeyFor(instanceId, conversationId, topicId)] ?? null;
+  }
+  function ensureScopedLive(topicKey: string): DirectBotLiveTurn {
+    const existing = liveTurnsByTopic.value[topicKey];
+    if (existing) return existing;
+    const fresh: DirectBotLiveTurn = { parts: [], status: "working", startedAt: Date.now(), revision: 0 };
+    liveTurnsByTopic.value = { ...liveTurnsByTopic.value, [topicKey]: fresh };
+    return fresh;
+  }
   /** The last streamed parts and the Run they belong to. A reconnect can
    *  retire `liveTurn` between a stream and its accept response; the accept
    *  path restores exactly that Run's snapshot, so already-streamed text stays
@@ -1530,6 +1617,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       return;
     }
     activeTopicId.value = null;
+    syncBotPaneTopic();
     messages.value = [];
     activeRun.value = null;
     queuedOwnRuns.value = {};
@@ -2424,6 +2512,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
     liveCompletedRunId.value = null;
+    // Multi-pane: ensure a pane exists for this bot before selection resets.
+    getBotPaneState(targetInstanceId, botId);
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -2502,6 +2592,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const targetTopicId = executing ?? conv.defaultTopicId ?? current.find((topic) => topic.status === "active")?.id ?? current[0]?.id;
         if (targetTopicId) {
           activeTopicId.value = targetTopicId;
+          syncBotPaneTopic();
           // loadHistory owns topicReady from here: it reopens the gate only on
           // proven discovery.
           await loadHistory(targetInstanceId, conv.id, targetTopicId);
@@ -2548,6 +2639,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     touchTranscript();
     topicReady.value = false;
     activeTopicId.value = topicId;
+    syncBotPaneTopic();
     messages.value = [];
     oldestSeq.value = undefined;
     newestSeq.value = undefined;
@@ -2646,6 +2738,128 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return snapshot.requestId;
   }
 
+  /** Display-only per-topic mirror for background split columns: every
+   *  control event carrying topic identity updates the per-topic maps (and
+   *  bumps the topic revision so scoped timeline feeds refetch) WITHOUT
+   *  touching the selection. Same-owner merges keep a standing run; stream
+   *  frames always append to the topic's live turn. */
+  function mirrorScopedControlEvent(eventInstanceId: string, e: ControlEventDto): void {
+    switch (e.type) {
+      case "conversation-message": {
+        const msg = e.message;
+        const k = scopedTopicKeyOf(eventInstanceId, msg.conversationId, msg.topicId);
+        if (!k) return;
+        // The bot's reply for the tracked run landed durably: retire the bubble.
+        const tracked = activeRunsByTopic.value[k];
+        if (msg.role === "bot" && tracked && msg.runId === tracked.id) {
+          liveTurnsByTopic.value = { ...liveTurnsByTopic.value, [k]: null };
+        }
+        bumpTopicRevisionByKey(k);
+        return;
+      }
+      case "conversation-run-changed": {
+        const k = scopedTopicKeyOf(eventInstanceId, e.run.conversationId, e.run.topicId);
+        if (!k) return;
+        activeRunsByTopic.value = {
+          ...activeRunsByTopic.value,
+          [k]: mergeRun(activeRunsByTopic.value[k] ?? null, e.run),
+        };
+        if (isTerminalRunState(e.run.state)) {
+          liveTurnsByTopic.value = { ...liveTurnsByTopic.value, [k]: null };
+        }
+        bumpTopicRevisionByKey(k);
+        return;
+      }
+      case "member-turn-started":
+      case "member-turn-finished": {
+        const terminal = e.type === "member-turn-finished" && isTerminalRunState(e.run.state);
+        const k = scopedTopicKeyOf(eventInstanceId, e.run.conversationId, e.run.topicId);
+        if (!k) return;
+        activeRunsByTopic.value = {
+          ...activeRunsByTopic.value,
+          [k]: mergeRun(activeRunsByTopic.value[k] ?? null, e.run),
+        };
+        activeMemberTurnsByTopic.value = {
+          ...activeMemberTurnsByTopic.value,
+          [k]: mergeMemberTurn(activeMemberTurnsByTopic.value[k] ?? null, e.memberTurn),
+        };
+        liveTurnsByTopic.value = {
+          ...liveTurnsByTopic.value,
+          [k]: terminal
+            ? null
+            : {
+              parts: [],
+              status: "working",
+              startedAt: e.memberTurn.startedAt ? new Date(e.memberTurn.startedAt).getTime() : Date.now(),
+              revision: (liveTurnsByTopic.value[k]?.revision ?? 0) + 1,
+            },
+        };
+        bumpTopicRevisionByKey(k);
+        return;
+      }
+      case "turn-started":
+      case "turn-output":
+      case "turn-thought":
+      case "tool-event":
+      case "plan":
+      case "turn-finished": {
+        const corr = e.conversation;
+        if (!corr) return;
+        const k = scopedTopicKeyOf(eventInstanceId, corr.conversationId, corr.topicId);
+        if (!k) return;
+        if (e.type === "plan") {
+          if (corr.runId) {
+            planByRunId.value = { ...planByRunId.value, [corr.runId]: e.entries };
+          }
+          bumpTopicRevisionByKey(k);
+          return;
+        }
+        const live = ensureScopedLive(k);
+        if (e.type === "turn-started") {
+          live.startedAt = e.startedAt ?? Date.now();
+        } else if (e.type === "turn-output") {
+          appendText(live.parts, e.chunk);
+          live.status = "streaming";
+        } else if (e.type === "turn-thought") {
+          appendReasoning(live.parts, e.chunk);
+        } else if (e.type === "tool-event") {
+          upsertTool(live.parts, e.step);
+        } else {
+          live.status = "working";
+        }
+        live.revision += 1;
+        bumpTopicRevisionByKey(k);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /** Shared @-mention capability gate (used by both the selected send path and
+   *  the scoped background-column path): re-negotiate through the Hub, including
+   *  restored drafts. A V1 unavailable response still supports durable replay;
+   *  readiness is not authority. */
+  async function assertMentionsSupported(
+    targetInstId: string,
+    targetConvId: string,
+    targetTopicId: string,
+    targetBotId: string,
+  ): Promise<void> {
+    const capabilityResponse = await api.rpc<ConversationCompletions>(targetInstId, MSG.conversationCompletionsGet, {
+      conversationId: targetConvId,
+      topicId: targetTopicId,
+    });
+    if (isErrorPayload(capabilityResponse) && ["unknown-type", "unsupported"].includes(capabilityResponse.error.code)) {
+      throw new DirectBotRpcError("unsupported-agent-mentions", "Direct references require V1 completions");
+    }
+    const capabilities = unwrapRpc(capabilityResponse);
+    if (!capabilities || capabilities.version !== 1 || capabilities.scope?.conversationId !== targetConvId
+      || capabilities.scope?.topicId !== targetTopicId || capabilities.scope?.botId !== targetBotId) {
+      throw new DirectBotRpcError("unsupported-agent-mentions", "Direct references require V1 completions");
+    }
+  }
+
   /** Title of the Topic auto-created by the first message to a topicless Bot. */
   const FIRST_TOPIC_TITLE = "Default";
 
@@ -2718,6 +2932,234 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  // --- Background split-column scope (Milestone 2 review item 2) ----------------
+  // A scoped column drives one bot conversation WITHOUT touching the global
+  // selection. Resolution + send + stop are explicit-scope; live updates arrive
+  // through mirrorScopedControlEvent (display-only, no ownership fences).
+  const scopeGenerations: Record<string, number> = {};
+  function setScopedPromptError(topicKey: string, code: string, detail: string | null): void {
+    promptErrorByTopic.value = { ...promptErrorByTopic.value, [topicKey]: { code, detail } };
+  }
+  function mapScopedPromptError(topicKey: string, err: unknown): "rejected" | "uncertain" {
+    const code = err instanceof DirectBotRpcError ? err.code : null;
+    const uiCode = code === "bot_disabled" ? "botDisabled"
+      : code === "target_unavailable" ? "referenceTargetUnavailable"
+      : code === "mentions_unavailable" ? "referencesUnavailable"
+      : code === "invalid-agent-mentions" ? "invalidReferences"
+      : code === "request_payload_conflict" ? "referenceConflict"
+      : code === "unknown-type" || code === "unsupported-agent-mentions" ? "connectorOutdated"
+      : code === "conversation_target_mismatch" || code === "conversation_mismatch" ? "topicRecovering"
+      : err instanceof Error ? err.message : String(err);
+    setScopedPromptError(topicKey, uiCode, uiCode === (err instanceof Error ? err.message : String(err)) ? uiCode : null);
+    const definitive = ["target_unavailable", "mentions_unavailable", "invalid-agent-mentions", "request_payload_conflict", "unsupported-agent-mentions"].includes(code ?? "")
+      || code === "bot_disabled" || code === "conversation_mismatch" || code === "topic_not_found"
+      || code === "conversation_not_found" || code === "conversation_deleting" || code === "topic_deleting" || code === "topic_not_active";
+    return definitive ? "rejected" : "uncertain";
+  }
+
+  /** Resolve (instance, bot) → { conversationId, topicId } for a background
+   *  column, mirroring selectBot's resolution WITHOUT touching the selection.
+   *  Stores the ids on the bot's pane record and seeds the topic's run state. */
+  async function ensureBotPaneScope(
+    targetInstanceId: string,
+    botId: string,
+  ): Promise<{ conversationId: string; topicId: string | null } | null> {
+    const genKey = botPaneKeyFor(targetInstanceId, botId);
+    const generation = (scopeGenerations[genKey] ?? 0) + 1;
+    scopeGenerations[genKey] = generation;
+    const stillCurrent = (): boolean => scopeGenerations[genKey] === generation;
+    try {
+      const bots = await loadBots(targetInstanceId);
+      if (!stillCurrent() || !bots.some((b) => b.id === botId)) return null;
+      const convs = await loadConversations(targetInstanceId, { botId });
+      if (!stillCurrent()) return null;
+      const conv = convs[0];
+      if (!conv) return null;
+      const pane = getBotPaneState(targetInstanceId, botId);
+      pane.conversationId = conv.id;
+      const topics = await loadTopics(targetInstanceId, conv.id);
+      if (!stillCurrent()) return null;
+      const ordered = sortTopicsNewestFirst(topics);
+      const executing = await findExecutingTopicId(targetInstanceId, conv.id, ordered);
+      if (!stillCurrent()) return null;
+      const live = topicsByConversation.value[`${targetInstanceId}:${conv.id}`];
+      const current = sortTopicsNewestFirst(live ?? topics);
+      const targetTopicId = executing !== undefined && current.some((t) => t.id === executing && t.status === "active")
+        ? executing
+        : conv.defaultTopicId ?? current.find((t) => t.status === "active")?.id ?? current[0]?.id ?? null;
+      pane.topicId = targetTopicId;
+      if (targetTopicId) {
+        await discoverScopedRun(targetInstanceId, conv.id, targetTopicId);
+        if (!stillCurrent()) return null;
+      }
+      return { conversationId: conv.id, topicId: targetTopicId };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Seed a background topic's tracked run (executing, else oldest queued)
+   *  without touching the selection or the admission gate. */
+  async function discoverScopedRun(
+    targetInstanceId: string,
+    conversationId: string,
+    topicId: string,
+  ): Promise<ConversationRunDto | null> {
+    const k = botTopicKeyFor(targetInstanceId, conversationId, topicId);
+    try {
+      const listed = unwrapRpc(
+        await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(
+          targetInstanceId,
+          MSG.runsList,
+          { conversationId, topicId },
+        ),
+      );
+      const candidate = listed.activeRun
+        ?? (listed.activeRunId ? listed.runs.find((r) => r.id === listed.activeRunId) : undefined)
+        ?? listed.runs.find((r) => !isTerminalRunState(r.state))
+        ?? null;
+      if (candidate) {
+        activeRunsByTopic.value = {
+          ...activeRunsByTopic.value,
+          [k]: mergeRun(activeRunsByTopic.value[k] ?? null, candidate),
+        };
+      } else {
+        activeRunsByTopic.value = { ...activeRunsByTopic.value, [k]: null };
+        liveTurnsByTopic.value = { ...liveTurnsByTopic.value, [k]: null };
+      }
+      bumpTopicRevisionByKey(k);
+      return candidate;
+    } catch {
+      return activeRunsByTopic.value[k] ?? null;
+    }
+  }
+
+  /** Background-column send: same RPC as the selected path but explicit-scope,
+   *  with per-topic in-flight + error state. A topicless scope creates the
+   *  Default topic first (mirroring sendFirstPrompt). */
+  async function sendPromptTo(
+    targetInstanceId: string,
+    targetBotId: string,
+    conversationId: string | null,
+    topicId: string | null,
+    text: string,
+    agentMentions: AgentMention[] = [],
+    media: PromptAttachmentRef[] = [],
+  ): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
+    const trimmed = text;
+    if (!trimmed.trim() && media.length === 0) return "rejected";
+    const botRow = (botsByInstance.value[targetInstanceId] ?? []).find((b) => b.id === targetBotId);
+    if (!botRow) return "rejected";
+    try {
+      let convId = conversationId;
+      if (!convId) {
+        const convs = await loadConversations(targetInstanceId, { botId: targetBotId });
+        convId = convs[0]?.id ?? null;
+        if (!convId) return "rejected";
+        getBotPaneState(targetInstanceId, targetBotId).conversationId = convId;
+      }
+      let topId = topicId;
+      if (!topId) {
+        const topic = await createTopic(targetInstanceId, convId, FIRST_TOPIC_TITLE);
+        topId = topic.id;
+      }
+      const pane = getBotPaneState(targetInstanceId, targetBotId);
+      pane.conversationId = convId;
+      pane.topicId = topId;
+      const k = botTopicKeyFor(targetInstanceId, convId, topId);
+      if (botRow && !botRow.enabled) {
+        setScopedPromptError(k, "botDisabled", null);
+        return "rejected";
+      }
+      if (promptInFlightByTopic.value[k]) return "rejected";
+      promptInFlightByTopic.value = { ...promptInFlightByTopic.value, [k]: true };
+      promptErrorByTopic.value = { ...promptErrorByTopic.value, [k]: null };
+      const frozenMentions = structuredClone(toRaw(agentMentions));
+      const frozenMedia = structuredClone(toRaw(media));
+      try {
+        if (frozenMentions.length) {
+          await assertMentionsSupported(targetInstanceId, convId, topId, targetBotId);
+        }
+        const reqId = mintRequestId();
+        const res = unwrapRpc(
+          await api.rpc<ConversationPromptResponseDto>(targetInstanceId, MSG.conversationPrompt, {
+            conversationId: convId,
+            topicId: topId,
+            requestId: reqId,
+            text: trimmed,
+            ...(frozenMentions.length ? { agentMentions: frozenMentions } : {}),
+            ...(frozenMedia.length ? { media: frozenMedia } : {}),
+            target: { botId: targetBotId },
+          }),
+        );
+        recordAcceptedPrompt(targetInstanceId, res.run);
+        // Adopt the authoritative owner when the accept names one; otherwise
+        // adopt when the slot is empty/terminal/same (never blind-adopt over a
+        // standing foreign owner — run-changed events converge it instead).
+        const promptOwner = res.activeRun && !isTerminalRunState(res.activeRun.state) ? res.activeRun : undefined;
+        const stored = activeRunsByTopic.value[k] ?? null;
+        if (promptOwner && promptOwner.id !== res.run.id) {
+          activeRunsByTopic.value = { ...activeRunsByTopic.value, [k]: mergeRun(stored, promptOwner) };
+          activeMemberTurnsByTopic.value = { ...activeMemberTurnsByTopic.value, [k]: null };
+          liveTurnsByTopic.value = { ...liveTurnsByTopic.value, [k]: null };
+        } else if (!stored || stored.id === res.run.id || isTerminalRunState(stored.state)) {
+          activeRunsByTopic.value = { ...activeRunsByTopic.value, [k]: mergeRun(stored, res.run) };
+          if (res.memberTurn) {
+            activeMemberTurnsByTopic.value = {
+              ...activeMemberTurnsByTopic.value,
+              [k]: mergeMemberTurn(activeMemberTurnsByTopic.value[k] ?? null, res.memberTurn),
+            };
+          }
+          if (isTerminalRunState(res.run.state)) {
+            liveTurnsByTopic.value = { ...liveTurnsByTopic.value, [k]: null };
+          } else {
+            liveTurnsByTopic.value = {
+              ...liveTurnsByTopic.value,
+              [k]: {
+                parts: [],
+                status: "working",
+                startedAt: res.memberTurn?.startedAt ? new Date(res.memberTurn.startedAt).getTime() : Date.now(),
+                revision: (liveTurnsByTopic.value[k]?.revision ?? 0) + 1,
+              },
+            };
+          }
+        }
+        bumpTopicRevisionByKey(k);
+        return "accepted";
+      } finally {
+        promptInFlightByTopic.value = { ...promptInFlightByTopic.value, [k]: false };
+      }
+    } catch (err: unknown) {
+      const convId = conversationId;
+      const topId = topicId;
+      if (convId && topId) return mapScopedPromptError(botTopicKeyFor(targetInstanceId, convId, topId), err);
+      return "rejected";
+    }
+  }
+
+  /** Background-column Stop: cancel the pane's own tracked run. */
+  async function cancelRunFor(targetInstanceId: string, conversationId: string, topicId: string): Promise<boolean> {
+    const k = botTopicKeyFor(targetInstanceId, conversationId, topicId);
+    const active = activeRunsByTopic.value[k];
+    if (!active || isTerminalRunState(active.state)) return false;
+    try {
+      const res = unwrapRpc(
+        await api.rpc<{ ok: boolean; run: ConversationRunDetailDto }>(targetInstanceId, MSG.runsCancel, { runId: active.id }),
+      );
+      if (res.run.conversationId !== conversationId || res.run.topicId !== topicId) return false;
+      const merged = mergeRun(active, res.run);
+      activeRunsByTopic.value = { ...activeRunsByTopic.value, [k]: merged };
+      if (isTerminalRunState(merged.state)) {
+        liveTurnsByTopic.value = { ...liveTurnsByTopic.value, [k]: null };
+      }
+      bumpTopicRevisionByKey(k);
+      return true;
+    } catch {
+      setScopedPromptError(k, "cancelUnknown", null);
+      return false;
+    }
+  }
+
   async function sendPrompt(text: string, agentMentions:AgentMention[] = [], media:PromptAttachmentRef[] = []): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
     if (promptInFlight.value) return "rejected";
     const trimmed = text;
@@ -2768,20 +3210,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     try {
       if (frozenMentions.length) {
-        // Re-negotiate through the current Hub/connector, including restored drafts.
-        // A V1 unavailable response still supports durable replay; readiness is not authority.
-        const capabilityResponse = await api.rpc<ConversationCompletions>(targetInstId, MSG.conversationCompletionsGet, {
-          conversationId: targetConvId,
-          topicId: targetTopicId,
-        });
-        if (isErrorPayload(capabilityResponse) && ["unknown-type", "unsupported"].includes(capabilityResponse.error.code)) {
-          throw new DirectBotRpcError("unsupported-agent-mentions", "Direct references require V1 completions");
-        }
-        const capabilities = unwrapRpc(capabilityResponse);
-        if (!capabilities || capabilities.version !== 1 || capabilities.scope?.conversationId !== targetConvId
-          || capabilities.scope?.topicId !== targetTopicId || capabilities.scope?.botId !== targetBotId) {
-          throw new DirectBotRpcError("unsupported-agent-mentions", "Direct references require V1 completions");
-        }
+        await assertMentionsSupported(targetInstId, targetConvId, targetTopicId, targetBotId);
       }
       const res = unwrapRpc(
         await api.rpc<ConversationPromptResponseDto>(targetInstId, MSG.conversationPrompt, {
@@ -3980,6 +4409,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     if (event.kind !== "control-event") return;
     const e = event.event;
+    // Background split columns mirror topic-carrying events into per-topic
+    // state (display only) — the selection-scoped branches below are untouched.
+    mirrorScopedControlEvent(event.instanceId, e);
 
     // Global Bot-lifecycle projection: member-turn-started proves the hidden
     // direct runtime materialized for memberTurn.botId on this instance, but
@@ -4442,6 +4874,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     selectedBotId,
     activeConversationId,
     activeTopicId,
+    botPanesByKey,
+    getBotPaneState,
     botsByInstance,
     botDetails,
     loadingBots,
@@ -4466,6 +4900,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeMemberTurn,
     liveTurn,
     planEntries,
+    planByRunId,
+    // Background split-column scope: per-topic live/run state + explicit send/stop.
+    liveTurnForTopic,
+    activeRunForTopic,
+    activeMemberTurnForTopic,
+    topicRevisionFor,
+    isPromptInFlightFor,
+    promptErrorForTopic,
+    ensureBotPaneScope,
+    discoverScopedRun,
+    sendPromptTo,
+    cancelRunFor,
     cancellingRunId,
     cancelUncertaintyRunId,
     directTracePages,
@@ -4550,5 +4996,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     reconcileOnReconnect,
     reconcileOwnedInstanceNegative,
     applyEvent,
+    botPaneKeyFor,
   };
 });

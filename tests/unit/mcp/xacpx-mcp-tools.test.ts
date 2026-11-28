@@ -1390,10 +1390,11 @@ test("agent_send returns tailored success text for none, notify, and result comp
 test("Direct launch exposes only truthful one-way messaging tools and preserves Group ceiling", async () => {
   const transport = createMemoryTransport(async () => ({taskId:"unused",status:"running"}));
   const direct = buildXacpxMcpToolRegistry({transport,coordinatorSession:"direct-execution:live",sourceHandle:"direct-execution:live",internalSessionTools:true});
-  expect(direct.map(t=>t.name)).toEqual(["agent_list","agent_send"]);
+  // Milestone 1 direct surface: peer messaging plus the bot orchestration tools.
+  expect(direct.map(t=>t.name)).toEqual(["agent_list","agent_send","xacpx_environment","session_create","session_rename","bot_create"]);
   const send=direct.find(t=>t.name==="agent_send")!;
-  expect(send.inputSchema.safeParse({to:"agent:node:bot",message:"work",mode:"queue",completion:"none"}).success).toBe(true);
-  for(const extra of [{mode:"interrupt"},{mode:"steer"},{completion:"result"},{completion:"notify"},{replyTo:"msg"},{selector:{agent:"codex"}},{sourceHandle:"spoofed"}]) {
+  expect(send.inputSchema.safeParse({to:"agent:node:bot",message:"work",mode:"queue",completion:"none",replyTo:"msg-1"}).success).toBe(true);
+  for(const extra of [{mode:"interrupt"},{mode:"steer"},{completion:"result"},{completion:"notify"},{selector:{agent:"codex"}},{sourceHandle:"spoofed"}]) {
     expect(send.inputSchema.safeParse({to:"agent:node:bot",message:"work",...extra}).success).toBe(false);
   }
   expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_say", "group_send", "group_read_result"]);

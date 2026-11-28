@@ -74,6 +74,10 @@ export interface BotProfile {
   enabled: boolean;
   /** Monotonic Bot-config generation. Missing on PR2 records; parse defaults to 1. */
   profileRevision: number;
+  /** Bot that spawned this Bot, when created via bot orchestration. Absent for human-created roots. */
+  createdByBotId?: string;
+  /** Spawn depth: human-created roots are 0, their children 1, and so on. Missing on old rows means 0. */
+  spawnDepth?: number;
   createdAt: string;
   updatedAt: string;
   /** Present only for a daemon-allocated dedicated workspace. */

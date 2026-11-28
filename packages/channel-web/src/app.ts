@@ -12,6 +12,7 @@ import {
   type ControlEventDto,
   type LiveTurnSnapshotDto,
   type SessionHistoryRowDto,
+  type WebAgentDirectoryEndpointDto,
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -49,6 +50,9 @@ export interface LocalWebApp {
   ports: { current: number };
   publish: (event: WebServerEvent) => void;
   project: (event: ControlEventDto) => void;
+  /** A control event that may have changed the published endpoint set: schedules a
+   *  debounced agent-directory re-read and broadcast. */
+  noteDirectoryEvent: (event: ControlEventDto) => void;
   /** Turns that arrived before their queue reply, still waiting to be claimed. */
   earlyTurns: () => string[];
   allows: (session: string | undefined) => boolean;
@@ -98,6 +102,55 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
 
   const inflightPrompts = new Map<string, number>();
   const earlyStarts = new Map<string, Set<string>>();
+
+  /**
+   * The @ mention selector's candidate source, and the connect-time snapshot a
+   * fresh dashboard needs before any event arrives. Read from the control
+   * facade: the daemon already publishes its endpoint set for the relay hub, so
+   * this console reuses it instead of inventing a second inventory. A control
+   * facade without the reader (an older core) answers an empty directory rather
+   * than failing the route.
+   */
+  const readAgentDirectory = async (): Promise<WebAgentDirectoryEndpointDto[]> => {
+    const read = (control as { getPublishedAgentEndpoints?: () => Promise<unknown[]> })
+      .getPublishedAgentEndpoints;
+    if (typeof read !== "function") return [];
+    const endpoints = await read.call(control);
+    return Array.isArray(endpoints)
+      ? endpoints.map((endpoint) => ({
+        ...(endpoint as Record<string, unknown>),
+        instanceId: LOCAL_INSTANCE_ID,
+      }) as WebAgentDirectoryEndpointDto)
+      : [];
+  };
+
+  const publishAgentDirectory = (): void => {
+    void readAgentDirectory()
+      .then((endpoints) => { publish({ kind: "agent-directory", endpoints }); })
+      .catch(() => { /* best effort: the next event re-reads the directory */ });
+  };
+
+  /** Trailing-debounced re-read. The trigger set is the relay channel's: sessions,
+   *  worker bindings, Bots and turn boundaries are exactly what changes the
+   *  published endpoint set, and a burst of them collapses into one snapshot. */
+  let directoryTimer: ReturnType<typeof setTimeout> | undefined;
+  const noteDirectoryEvent = (event: ControlEventDto): void => {
+    const type = (event as { type?: string }).type;
+    if (
+      type !== "sessions-changed" &&
+      type !== "orchestration-changed" &&
+      type !== "bots-changed" &&
+      type !== "turn-started" &&
+      type !== "turn-finished"
+    ) {
+      return;
+    }
+    if (directoryTimer) clearTimeout(directoryTimer);
+    directoryTimer = setTimeout(() => {
+      directoryTimer = undefined;
+      publishAgentDirectory();
+    }, 250);
+  };
 
   /**
    * What this console can serve, read from the core rather than assumed.
@@ -278,7 +331,7 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
         invites: false,
         webPush: false,
         relayUpdate: false,
-        agentDirectory: false,
+        agentDirectory: true,
         terminal: options.terminal?.ready === true,
         desktop: false,
       },
@@ -344,6 +397,15 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
     }));
     return c.json({ turns: live, usage: [], commands: [], conversationCommands: [] });
   });
+
+  /**
+   * The @ mention selector's candidate source. The relay hub broadcasts this
+   * snapshot to every connected dashboard; a local console has no hub in front of
+   * it, so serve the same view straight from the control facade — the daemon's
+   * published endpoint set (logical sessions + Bots), tagged with this instance.
+   */
+  app.get("/api/agent-directory", async (c) =>
+    c.json({ endpoints: await readAgentDirectory() }));
 
   app.get("/api/instances/:id/sessions/:alias/messages/:messageId", (c) => {
     if (c.req.param("id") !== LOCAL_INSTANCE_ID) return c.json({ error: "not-found" }, 404);
@@ -510,7 +572,11 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
       instanceId: LOCAL_INSTANCE_ID,
       interactions: interactions.list(),
     })));
-    return (raw?: string) => {
+    // The directory snapshot the hub pushes on connect: without it a fresh
+    // dashboard shows no @ candidates until the first endpoint-affecting event.
+    void readAgentDirectory().then((endpoints) => {
+      client.send(encodeEnvelope(webEventEnvelope({ kind: "agent-directory", endpoints })));
+    });    return (raw?: string) => {
       if (raw === undefined) {
         const viewerId = viewers.get(client);
         if (viewerId) options.terminal?.detachViewer(viewerId);
@@ -554,11 +620,13 @@ export function createLocalWebApp(options: LocalWebAppOptions): LocalWebApp {
     ports,
     publish,
     project,
+    noteDirectoryEvent,
     earlyTurns: () => [...earlyStarts.values()].flatMap((ids) => [...ids]),
     allows,
     attach,
     close: () => {
       interactions.closeAll("shutdown");
+      if (directoryTimer) clearTimeout(directoryTimer);
       for (const client of clients) client.end();
       clients.clear();
       sessions.clear();

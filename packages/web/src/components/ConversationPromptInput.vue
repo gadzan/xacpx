@@ -18,7 +18,8 @@ import {
 } from "../lib/composer-completion";
 import { api } from "../api/client";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
-import { useDirectBotsStore } from "../stores/direct-bots";
+import { botTopicKeyFor, useDirectBotsStore } from "../stores/direct-bots";
+import { isActiveRunState } from "../lib/topic-order";
 import { useDirectComposerStore } from "../stores/direct-composer";
 import { useComposerStore } from "../stores/composer";
 import ComposerAttachments from "./ComposerAttachments.vue";
@@ -38,6 +39,19 @@ const props = defineProps<{
     mentions: AgentMention[],
     media: PromptAttachmentRef[],
   ) => Promise<"accepted" | "rejected" | "uncertain" | "orphaned">;
+  /** Explicit background-column scope: when provided, every store read below
+   *  resolves against this (instance, conversation, topic, bot) instead of the
+   *  global selection. topicId may be null (topicless Bot — the scoped send
+   *  creates the Default topic). */
+  scope?: {
+    instanceId: string;
+    conversationId: string | null;
+    topicId: string | null;
+    botId: string;
+  } | null;
+  /** Admission gate for an explicit scope (mirrors topicReady). Fail-closed:
+   *  an explicit scope without scopeReady stays blocked. */
+  scopeReady?: boolean;
 }>();
 const emit = defineEmits<{
   send: [text: string, mentions?: AgentMention[], media?: PromptAttachmentRef[]];
@@ -48,6 +62,9 @@ const directBotsStore = useDirectBotsStore(),
   drafts = useDirectComposerStore();
 const attachments = useComposerStore();
 const composer = ref<InstanceType<typeof ConversationComposer> | null>(null);
+/** Local send umbrella: covers the scoped topic-creation window, whose store
+ *  in-flight key only exists once the concrete topic is known. */
+const localSending = ref(false);
 const composing = ref(false),
   caret = ref(0),
   collapsed = ref(true),
@@ -59,22 +76,32 @@ const isMobile = useIsMobile();
 /** The composer card this menu belongs to; a pointerdown outside it dismisses. */
 const rootEl = ref<HTMLElement | null>(null);
 useCompletionDismiss(rootEl, () => menuOpen.value, () => { cmdDismissed.value = true; });
+const scoped = computed(() => props.scope ?? null);
+const scInstanceId = computed(() => scoped.value?.instanceId ?? directBotsStore.instanceId);
+const scConversationId = computed(() => scoped.value?.conversationId ?? directBotsStore.activeConversationId);
+const scTopicId = computed(() => scoped.value?.topicId ?? directBotsStore.activeTopicId);
+const scBotId = computed(() => scoped.value?.botId ?? directBotsStore.selectedBotId);
+const scTopicKey = computed(() =>
+  scInstanceId.value && scConversationId.value && scTopicId.value
+    ? botTopicKeyFor(scInstanceId.value, scConversationId.value, scTopicId.value)
+    : null,
+);
 const scope = computed(() =>
   JSON.stringify([
-    directBotsStore.instanceId,
-    directBotsStore.activeConversationId,
-    directBotsStore.activeTopicId,
-    directBotsStore.selectedBotId,
+    scInstanceId.value,
+    scConversationId.value,
+    scTopicId.value,
+    scBotId.value,
   ]),
 );
 /** Attachment scope: one upload draft per instance + Bot conversation + Topic.
  *  Namespaced with "direct" so it can never collide with the session chat or
  *  Group composer scopes in the shared composer store. */
 const attachKey = computed(() =>
-  JSON.stringify(["direct", directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId, directBotsStore.selectedBotId]),
+  JSON.stringify(["direct", scInstanceId.value, scConversationId.value, scTopicId.value, scBotId.value]),
 );
 watch(attachKey, () => {
-  if (directBotsStore.instanceId) attachments.bindInstance(directBotsStore.instanceId, attachKey.value);
+  if (scInstanceId.value) attachments.bindInstance(scInstanceId.value, attachKey.value);
 }, { immediate: true });
 const readyMedia = computed(() => attachments.pending.some((entry) => entry.status === "ready"));
 const promptText = computed({
@@ -84,12 +111,29 @@ const promptText = computed({
     drafts.set(scope.value, text, editMentions(old.text, text, old.mentions));
   },
 });
-const isRunActive = computed(() => directBotsStore.isRunActive),
-  isTopicRecovering = computed(() => !directBotsStore.topicReady),
+const isRunActive = computed(() =>
+  scoped.value
+    ? scTopicKey.value
+      ? isActiveRunState(directBotsStore.activeRunForTopic(scInstanceId.value!, scConversationId.value!, scTopicId.value!)?.state)
+      : false
+    : directBotsStore.isRunActive,
+),
+  isTopicRecovering = computed(() => (scoped.value ? !(props.scopeReady ?? false) : !directBotsStore.topicReady)),
   // A topicless Bot's first send is in flight from the click, while its
   // Default Topic is still being created.
-  isPromptInFlight = computed(() => directBotsStore.promptInFlight || directBotsStore.firstSendPending),
-  bot = computed(() => directBotsStore.currentBot),
+  isPromptInFlight = computed(
+    () =>
+      (scoped.value
+        ? scTopicKey.value
+          ? directBotsStore.isPromptInFlightFor(scInstanceId.value!, scConversationId.value!, scTopicId.value!)
+          : false
+        : directBotsStore.promptInFlight || directBotsStore.firstSendPending) || localSending.value,
+  ),
+  bot = computed(() =>
+    scoped.value
+      ? (directBotsStore.botsByInstance[scInstanceId.value ?? ""] ?? []).find((b) => b.id === scBotId.value)
+      : directBotsStore.currentBot,
+  ),
   isBotDisabled = computed(() => (bot.value ? !bot.value.enabled : false));
 const blocked = computed(
   () =>
@@ -110,17 +154,17 @@ const blocked = computed(
 const clearingContext = ref(false);
 const canClearContext = computed(
   () =>
-    !!directBotsStore.instanceId &&
-    !!directBotsStore.activeConversationId &&
-    !!directBotsStore.activeTopicId &&
+    !!scInstanceId.value &&
+    !!scConversationId.value &&
+    !!scTopicId.value &&
     !blocked.value &&
     !isRunActive.value &&
     !clearingContext.value,
 );
 async function clearContext(): Promise<void> {
-  const instanceId = directBotsStore.instanceId;
-  const conversationId = directBotsStore.activeConversationId;
-  const topicId = directBotsStore.activeTopicId;
+  const instanceId = scInstanceId.value;
+  const conversationId = scConversationId.value;
+  const topicId = scTopicId.value;
   if (!canClearContext.value || !instanceId || !conversationId || !topicId) return;
   const ok = await confirm({
     title: t("chat.clearContext.title"),
@@ -153,12 +197,10 @@ const composerPlaceholder = computed(() =>
 const snapshot = ref<ConversationCompletions | null>(null),
   fetchStatus = ref<"loading" | "unavailable" | "error">("loading");
 const slashCommands = computed(() => {
-  const {
-    instanceId,
-    activeConversationId: conversationId,
-    activeTopicId: topicId,
-    selectedBotId: botId,
-  } = directBotsStore;
+  const instanceId = scInstanceId.value;
+  const conversationId = scConversationId.value;
+  const topicId = scTopicId.value;
+  const botId = scBotId.value;
   if (!instanceId || !conversationId || !topicId || !botId) return [];
   const live = commandStore.commandsFor({
     instanceId,
@@ -198,18 +240,29 @@ const candidates = computed(() =>
             key: c.name,
             label: "/" + c.name,
             detail: c.description ?? "",
+            badge: undefined as string | undefined,
+            icon: undefined as CompletionRow["icon"],
             command: c.name,
             kind: c.kind,
             handle: undefined as string | undefined,
           }))
-      : (snapshot.value?.mentions.items ?? []).map((m) => ({
-          key: m.handle,
-          label: "@" + m.displayName,
-          detail: [m.agent, m.workspace].filter(Boolean).join(" · "),
-          command: undefined as string | undefined,
-          kind: undefined,
-          handle: m.handle,
-        })),
+      : (snapshot.value?.mentions.items ?? []).map((m) => {
+          // Missing targetKind reads as "bot" (back-compat with pre-M2 hubs).
+          const targetKind = m.targetKind ?? "bot";
+          return {
+            key: m.handle,
+            label: "@" + m.displayName,
+            detail: [m.agent, m.workspace].filter(Boolean).join(" · "),
+            badge:
+              targetKind === "session"
+                ? t("chat.mentionSource.session")
+                : t("chat.mentionSource.bot"),
+            icon: targetKind,
+            command: undefined as string | undefined,
+            kind: undefined,
+            handle: m.handle,
+          };
+        }),
 );
 const rows = computed(() =>
   candidates.value.slice(page.value * 8, page.value * 8 + 8),
@@ -221,7 +274,8 @@ const completionRows = computed<CompletionRow[]>(() =>
     key: row.key,
     label: row.label,
     detail: row.detail,
-    badge: row.kind === "skill" ? t("bot.prompt.skillCompletion") : undefined,
+    badge: row.kind === "skill" ? t("bot.prompt.skillCompletion") : row.badge,
+    icon: row.icon,
     testId: "direct-cmd-item",
   })),
 );
@@ -232,12 +286,10 @@ const more = computed(
       menuKind.value === "mention"),
 );
 const status = computed(() => {
-  const {
-    instanceId,
-    activeConversationId: conversationId,
-    activeTopicId: topicId,
-    selectedBotId: botId,
-  } = directBotsStore;
+  const instanceId = scInstanceId.value;
+  const conversationId = scConversationId.value;
+  const topicId = scTopicId.value;
+  const botId = scBotId.value;
   const advertised =
     instanceId &&
     conversationId &&
@@ -260,11 +312,9 @@ let generation = 0,
 async function refresh(cursor = 0): Promise<void> {
   const ticket = ++generation,
     key = scope.value;
-  const {
-    instanceId,
-    activeConversationId: conversationId,
-    activeTopicId: topicId,
-  } = directBotsStore;
+  const instanceId = scInstanceId.value;
+  const conversationId = scConversationId.value;
+  const topicId = scTopicId.value;
   if (
     !instanceId ||
     !conversationId ||
@@ -292,7 +342,7 @@ async function refresh(cursor = 0): Promise<void> {
       result.version !== 1 ||
       result.scope.conversationId !== conversationId ||
       result.scope.topicId !== topicId ||
-      result.scope.botId !== directBotsStore.selectedBotId ||
+      result.scope.botId !== scBotId.value ||
       !Array.isArray(result.commands?.items) ||
       !Array.isArray(result.mentions?.items)
     ) {
@@ -332,7 +382,7 @@ watch(
   () => [
     scope.value,
     bot.value?.profileRevision,
-    commandStore.epochFor(directBotsStore.instanceId ?? ""),
+    commandStore.epochFor(scInstanceId.value ?? ""),
     menuKind.value,
     mention.value?.query,
   ],
@@ -456,8 +506,50 @@ function onKeydown(e: KeyboardEvent): void {
  * affordance, where several members share one Run.
  */
 async function stopRun(): Promise<void> {
+  if (scoped.value) {
+    const instanceId = scInstanceId.value;
+    const conversationId = scConversationId.value;
+    const topicId = scTopicId.value;
+    if (instanceId && conversationId && topicId) {
+      await directBotsStore.cancelRunFor(instanceId, conversationId, topicId);
+    }
+    return;
+  }
   await directBotsStore.stopCurrentAndQueued();
 }
+
+/** Scoped default deliver: send straight at the scoped (instance, conversation,
+ *  topic) without touching the selection. */
+async function defaultScopedDeliver(
+  text: string,
+  mentions: AgentMention[],
+  media: PromptAttachmentRef[],
+): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
+  const s = scoped.value;
+  if (!s) return "rejected";
+  return directBotsStore.sendPromptTo(s.instanceId, s.botId, s.conversationId, s.topicId, text, mentions, media);
+}
+
+/** Scoped prompt error (cancel-uncertainty shows in the warning slot, prompt
+ *  failures in the error slot — mirroring the global display split). */
+const scopedPromptIssue = computed(() =>
+  scTopicKey.value
+    ? directBotsStore.promptErrorForTopic(scInstanceId.value!, scConversationId.value!, scTopicId.value!)
+    : null,
+);
+const viewCancelError = computed(() =>
+  scoped.value
+    ? scopedPromptIssue.value?.code === "cancelUnknown" ? scopedPromptIssue.value.code : null
+    : directBotsStore.cancelError,
+);
+const viewPromptError = computed(() =>
+  scoped.value
+    ? scopedPromptIssue.value && scopedPromptIssue.value.code !== "cancelUnknown" ? scopedPromptIssue.value.code : null
+    : directBotsStore.promptError,
+);
+const viewPromptErrorDetail = computed(() =>
+  scoped.value ? scopedPromptIssue.value?.detail ?? null : directBotsStore.promptErrorDetail,
+);
 
 async function handleSend(): Promise<void> {
   if (blocked.value || composing.value || attachments.uploading) return;
@@ -473,13 +565,29 @@ async function handleSend(): Promise<void> {
     })),
   );
   if (props.deliver) {
-    const outcome = await props.deliver(text, mentions, staged.media);
-    // Accepted: the transcript owns the media. Uncertain keeps the chips so a
-    // resend replays the identical tuple (same requestId, server-deduped); a
-    // definitive refusal keeps them editable for a corrected resend.
-    if (outcome === "accepted") {
-      attachments.consume(stagedScopeKey, staged.ids);
-      drafts.clear(key, text, mentions);
+    localSending.value = true;
+    try {
+      const outcome = await props.deliver(text, mentions, staged.media);
+      // Accepted: the transcript owns the media. Uncertain keeps the chips so a
+      // resend replays the identical tuple (same requestId, server-deduped); a
+      // definitive refusal keeps them editable for a corrected resend.
+      if (outcome === "accepted") {
+        attachments.consume(stagedScopeKey, staged.ids);
+        drafts.clear(key, text, mentions);
+      }
+    } finally {
+      localSending.value = false;
+    }
+  } else if (scoped.value) {
+    localSending.value = true;
+    try {
+      const outcome = await defaultScopedDeliver(text, mentions, staged.media);
+      if (outcome === "accepted") {
+        attachments.consume(stagedScopeKey, staged.ids);
+        drafts.clear(key, text, mentions);
+      }
+    } finally {
+      localSending.value = false;
     }
   } else {
     emit("send", text, mentions, staged.media);
@@ -539,25 +647,25 @@ defineExpose({ fillDraft, focusInput, hasDraft });
 
     <!-- Cancellation uncertainty (separate from prompt errors; no retry target) -->
     <div
-      v-else-if="directBotsStore.cancelError"
+      v-else-if="viewCancelError"
       class="mb-2 flex items-center gap-2 rounded-lg bg-warning/10 px-3 py-1.5 text-xs text-warning"
     >
       <AlertCircle :size="14" class="shrink-0" />
       <span class="truncate">{{
-        $t(`bot.errors.${directBotsStore.cancelError}`)
+        $t(`bot.errors.${viewCancelError}`)
       }}</span>
     </div>
 
     <!-- Error Banner & Retry -->
     <div
-      v-else-if="directBotsStore.promptError"
+      v-else-if="viewPromptError"
       class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-danger/10 px-3 py-1.5 text-xs text-danger-text"
     >
       <div class="flex items-center gap-2 min-w-0">
         <AlertCircle :size="14" class="shrink-0" />
         <span class="truncate">{{
-          directBotsStore.promptErrorDetail ??
-          $t(`bot.errors.${directBotsStore.promptError}`)
+          viewPromptErrorDetail ??
+          $t(`bot.errors.${viewPromptError}`)
         }}</span>
       </div>
       <button

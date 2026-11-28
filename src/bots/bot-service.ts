@@ -44,6 +44,8 @@ export interface CreateBotInput {
   model?: string;
   effort?: string;
   enabled?: boolean;
+  createdByBotId?: string;
+  spawnDepth?: number;
 }
 
 /**
@@ -502,6 +504,8 @@ export class BotService {
         ...this.requireIdentity(input, options?.claimsDedicatedWorkspace === true),
         ...this.optionalFields(input),
         ...(dedicatedWorkspace ? { dedicatedWorkspace } : {}),
+        ...(input.createdByBotId !== undefined ? { createdByBotId: input.createdByBotId } : {}),
+        spawnDepth: input.spawnDepth ?? 0,
         enabled: input.enabled ?? true,
         profileRevision: 1,
         createdAt: timestamp,

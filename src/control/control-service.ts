@@ -532,16 +532,26 @@ export interface ControlServiceDeps {
         nodeId: string;
         endpointId: string;
         displayName?: string;
+        sessionAlias?: string;
         agent: string;
         workspace?: string;
         state: "idle" | "running";
+        activity?: {
+          status: "idle" | "working" | "waiting";
+          summary?: string;
+        };
         capabilities: {
           receive: boolean;
           steer: boolean;
           queue: boolean;
           interrupt: boolean;
+          conversation?: boolean;
+          completion?: boolean;
         };
         labels?: string[];
+        endpointKind?: "logical" | "worker" | "bot";
+        botId?: string;
+        channelId?: string;
         updatedAt: number;
       }>
     >;
@@ -560,6 +570,7 @@ export interface ControlServiceDeps {
         nodeId: string;
         endpointId: string;
         displayName?: string;
+        sessionAlias?: string;
         agent: string;
         workspace?: string;
         state: "idle" | "running";
@@ -573,9 +584,11 @@ export interface ControlServiceDeps {
           queue: boolean;
           interrupt: boolean;
           conversation?: boolean;
+          completion?: boolean;
         };
         /** Remote-published presentation context, preserved verbatim. */
-        endpointKind?: "logical" | "worker";
+        endpointKind?: "logical" | "worker" | "bot";
+        botId?: string;
         channelId?: string;
       }>,
     ): void;
@@ -2993,33 +3006,7 @@ export class ControlService {
       nodeId: string;
       endpointId: string;
       displayName?: string;
-      agent: string;
-      state: "idle" | "running";
-      capabilities: {
-        receive: boolean;
-        steer: boolean;
-        queue: boolean;
-        interrupt: boolean;
-      };
-      labels?: string[];
-      updatedAt: number;
-    }>
-  > {
-    if (!this.deps.agentMessaging) return [];
-    return await this.deps.agentMessaging.getPublishedEndpoints();
-  }
-
-  updateRemoteAgentEndpoints(
-    nodeId: string,
-    endpoints: AgentEndpointView[],
-  ): void {
-    this.deps.agentMessaging?.updateRemoteEndpoints?.(nodeId, endpoints);
-  }
-  syncRemoteAgentDirectory(
-    endpoints: Array<{
-      nodeId: string;
-      endpointId: string;
-      displayName?: string;
+      sessionAlias?: string;
       agent: string;
       workspace?: string;
       state: "idle" | "running";
@@ -3033,9 +3020,67 @@ export class ControlService {
         queue: boolean;
         interrupt: boolean;
         conversation?: boolean;
+        completion?: boolean;
+      };
+      labels?: string[];
+      endpointKind?: "logical" | "worker" | "bot";
+      botId?: string;
+      channelId?: string;
+      updatedAt: number;
+    }>
+  > {
+    if (!this.deps.agentMessaging) return [];
+    const endpoints = await this.deps.agentMessaging.getPublishedEndpoints();
+    // Passthrough: preserve bot presentation (endpointKind "bot" + botId)
+    // and session routing (sessionAlias) verbatim; never synthesize them.
+    return endpoints.map((e) => ({
+      nodeId: e.nodeId,
+      endpointId: e.endpointId,
+      agent: e.agent,
+      state: e.state,
+      capabilities: e.capabilities,
+      updatedAt: e.updatedAt,
+      ...(e.displayName !== undefined ? { displayName: e.displayName } : {}),
+      ...(e.sessionAlias !== undefined ? { sessionAlias: e.sessionAlias } : {}),
+      ...(e.workspace !== undefined ? { workspace: e.workspace } : {}),
+      ...(e.activity !== undefined ? { activity: e.activity } : {}),
+      ...(e.labels !== undefined ? { labels: e.labels } : {}),
+      ...(e.endpointKind !== undefined ? { endpointKind: e.endpointKind } : {}),
+      ...(e.botId !== undefined ? { botId: e.botId } : {}),
+      ...(e.channelId !== undefined ? { channelId: e.channelId } : {}),
+    }));
+  }
+
+  updateRemoteAgentEndpoints(
+    nodeId: string,
+    endpoints: AgentEndpointView[],
+  ): void {
+    this.deps.agentMessaging?.updateRemoteEndpoints?.(nodeId, endpoints);
+  }
+  syncRemoteAgentDirectory(
+    endpoints: Array<{
+      nodeId: string;
+      endpointId: string;
+      displayName?: string;
+      sessionAlias?: string;
+      agent: string;
+      workspace?: string;
+      state: "idle" | "running";
+      activity?: {
+        status: "idle" | "working" | "waiting";
+        summary?: string;
+      };
+      capabilities: {
+        receive: boolean;
+        steer: boolean;
+        queue: boolean;
+        interrupt: boolean;
+        conversation?: boolean;
+        completion?: boolean;
       };
       /** Remote-published presentation context, preserved verbatim. */
-      endpointKind?: "logical" | "worker";
+      endpointKind?: "logical" | "worker" | "bot";
+      botId?: string;
       channelId?: string;
     }>,
   ): void {
@@ -3221,13 +3266,23 @@ export class ControlService {
             status: "ready",
             items: endpoints
               .slice(cursor, cursor + 64)
-              .map((e) => ({
-                handle: e.handle,
-                displayName: e.displayName ?? e.agent,
-                botId: e.address.endpointId.slice("product-bot-".length),
-                agent: e.agent,
-                workspace: e.workspace ?? "",
-              })),
+              .map((e) => (e.kind === "session" && e.sessionAlias
+                ? {
+                  handle: e.handle,
+                  displayName: e.displayName ?? e.agent,
+                  agent: e.agent,
+                  ...(e.workspace ? { workspace: e.workspace } : {}),
+                  targetKind: "session" as const,
+                  sessionAlias: toDisplaySessionAlias(e.sessionAlias),
+                }
+                : {
+                  handle: e.handle,
+                  displayName: e.displayName ?? e.agent,
+                  botId: e.address.endpointId.slice("product-bot-".length),
+                  agent: e.agent,
+                  ...(e.workspace ? { workspace: e.workspace } : {}),
+                  targetKind: "bot" as const,
+                })),
             ...(cursor + 64 < endpoints.length
               ? { nextCursor: cursor + 64 }
               : {}),
