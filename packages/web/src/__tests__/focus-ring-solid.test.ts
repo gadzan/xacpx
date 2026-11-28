@@ -54,11 +54,28 @@ describe("focus ring tokens", () => {
     expect(missing).toEqual([]);
   });
 
+  it("signals composer and split-pane focus without a blue frame", () => {
+    // Decision (2026-11-28): a focused conversation surface no longer draws an
+    // accent box. Tapping the composer on a phone framed the whole card in 2px
+    // accent, which read as a selection state rather than "this field is
+    // active"; the focused split column drew the same colour as a ring. Both
+    // now signal focus with the surface lift plus a neutral hairline step.
+    const composer = readFileSync(join(SRC, "components/ConversationComposer.vue"), "utf8");
+    const textarea = composer.match(/<textarea[\s\S]*?>/)?.[0] ?? "";
+    expect(textarea).toContain('data-ring="container"');
+    expect(composer).toContain("focus-within:bg-raised");
+    expect(composer).toContain("focus-within:ring-hairline-strong");
+    expect(composer).not.toContain("focus-within:ring-accent");
+
+    const split = readFileSync(join(SRC, "components/SplitWorkbench.vue"), "utf8");
+    expect(split).toContain("focusedColumnId ? 'ring-1 ring-inset ring-hairline-strong'");
+    expect(split).not.toContain("ring-inset ring-accent");
+  });
+
   it("transparent fields inside ringed containers opt out via data-ring=\"container\"", () => {
     const composer = readFileSync(join(SRC, "components/ConversationComposer.vue"), "utf8");
     const textarea = composer.match(/<textarea[\s\S]*?>/)?.[0] ?? "";
     expect(textarea).toContain('data-ring="container"');
-    expect(composer).toContain("focus-within:ring-2 focus-within:ring-accent");
 
     const palette = readFileSync(join(SRC, "components/CommandPalette.vue"), "utf8");
     const input = palette.match(/<input[^>]*data-test="palette-input"[\s\S]*?>/)?.[0] ?? "";

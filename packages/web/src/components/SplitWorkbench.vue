@@ -203,7 +203,7 @@ watch(listsSignature, () => {
       <section data-test="split-column" :data-column-id="column.id"
                class="flex min-h-0 min-w-0 flex-col"
                :style="{ flex: `${column.widthFraction} 1 0%`, minWidth: `${MIN_WIDTH_PX}px` }"
-               :class="column.id === layout.focusedColumnId ? 'ring-1 ring-inset ring-accent' : ''"
+               :class="column.id === layout.focusedColumnId ? 'ring-1 ring-inset ring-hairline-strong' : ''"
                @pointerdown="focusColumn(column.id)">
         <!-- Unsplit: no redundant headers/rail — the pane owns its chrome and the
              + button docks into its #actions slot next to ConversationActions. -->
