@@ -237,7 +237,7 @@ watch(listsSignature, () => {
           <ChatPane v-if="column.target.kind === 'session'"
                     :instance-id="column.target.instanceId"
                     :session-alias="column.target.sessionAlias"
-                    pane-mode="split"
+                    :pane-mode="index === 0 ? 'primary' : 'split'"
                     @show-files="emit('showFiles')">
             <template #actions>
               <slot v-if="columns.length === 1" name="actions" />
@@ -248,7 +248,7 @@ watch(listsSignature, () => {
                          :instance-id="column.target.instanceId"
                          :bot-id="column.target.botId"
                          :topic-id="column.target.topicId"
-                         pane-mode="split"
+                         :pane-mode="index === 0 ? 'primary' : 'split'"
                          @navigate-bot="(instanceId, botId) => emit('navigateBot', instanceId, botId)"
                          @navigate-group="(instanceId, groupId) => emit('navigateGroup', instanceId, groupId)"
                          @back="emit('back')">

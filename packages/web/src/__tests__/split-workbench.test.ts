@@ -220,7 +220,9 @@ describe("SplitWorkbench.vue", () => {
     expect(chatPane.exists()).toBe(true);
     expect(chatPane.props("instanceId")).toBe("i1");
     expect(chatPane.props("sessionAlias")).toBe("a1");
-    expect(chatPane.props("paneMode")).toBe("split");
+    // Column 0 IS the selection, so it is the primary pane and keeps the
+    // single-pane behaviour; only secondary columns are scoped.
+    expect(chatPane.props("paneMode")).toBe("primary");
   });
 
   it("the picker adds a session column and close dismisses it", async () => {
@@ -494,6 +496,28 @@ describe("DirectBotPane dispatched sessions", () => {
       } as never,
     ];
   }
+
+  it("the primary column keeps the full Topic menu; a scoped column drops Fork", async () => {
+    seedBotConversation();
+    const instances = useInstancesStore();
+    // `direct.topics.fork.v1` on the instance: the entry is gated on it AND on the
+    // pane not being scoped.
+    instances.instances = [{ ...instances.instances[0]!, capabilities: ["conversations.timeline.v1", "direct.topics.fork.v1"] } as never];
+    vi.spyOn(api, "rpc").mockRejectedValue(new Error("offline"));
+    vi.spyOn(instances, "loadSessions").mockResolvedValue(undefined);
+
+    // Column 0 carries the scope props too (its target IS the selection), so a
+    // scope-presence check used to strip the primary pane of its own entries.
+    const primary = mount(DirectBotPane, { props: { instanceId: "i1", botId: "b1", paneMode: "primary" } });
+    await flushPromises();
+    expect(primary.findComponent({ name: "TopicSwitcher" }).props("forkTopic")).toBeTypeOf("function");
+
+    const scoped = mount(DirectBotPane, { props: { instanceId: "i1", botId: "b1", paneMode: "split" } });
+    await flushPromises();
+    expect(scoped.findComponent({ name: "TopicSwitcher" }).props("forkTopic")).toBeUndefined();
+    primary.unmount();
+    scoped.unmount();
+  });
 
   it("shows the dispatched menu and opens the session in a split column", async () => {
     seedBotConversation();

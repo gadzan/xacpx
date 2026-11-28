@@ -1083,9 +1083,14 @@ onUnmounted(() => {
           <EmptySessionState v-else-if="nothingSelected" class="absolute inset-0"
                              :sessions="recentSessions" :instances="fabInstances"
                              @select="onSelect" @create="createSessionIn" />
+          <!-- Split mode owns the conversation surface: its own per-column ChatPane /
+               DirectBotPane render the transcript, so the single-pane ChatPane must leave the
+               DOM entirely. `v-show` alone keeps it mounted, and two `chat-body` /
+               `toggle-terminal` nodes in one document break every strict-mode locator. -->
           <ChatPane class="absolute inset-0"
-                    :inert="showSplit || directBotsStore.isBotSelected || groupsStore.isGroupSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"
-                    v-show="!!currentKey && centerTabs.activeFor(currentKey) === 'chat' && !showSplit"
+                    :inert="directBotsStore.isBotSelected || groupsStore.isGroupSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"
+                    v-if="!showSplit"
+                    v-show="!!currentKey && centerTabs.activeFor(currentKey) === 'chat'"
                     @show-files="onShowFiles">
             <!-- ChatPane stays mounted behind the Bot / Group pane, so this slot must not
                  render a second copy of the actions while those panes own the content bar. -->

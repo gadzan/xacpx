@@ -561,17 +561,22 @@ const props = defineProps<{
 }>();
 
 /** Split-workbench target: when instanceId+botId are provided, identity (avatar, name,
- *  topic entry) resolves from props instead of the global selection — which keeps
- *  tracking the primary column. The transcript/live/composer below still follow the
- *  selection, so a scoped pane renders its placeholder until it is the selected Bot. */
+ *  topic entry) resolves from props instead of the global selection. Only a SECONDARY
+ *  column is scoped: column 0 IS the selection (the layout primary is derived from it),
+ *  so it keeps the single-pane behaviour wholesale — full Topic menu with Fork, the
+ *  edit/delete dialogs, the general error banner. Gating those on "has scope props"
+ *  silently stripped the primary Bot pane of its own features the moment the split
+ *  workbench became the default desktop container. */
 const scopedTarget = computed(() =>
-  props.instanceId && props.botId
-    ? {
-        instanceId: props.instanceId,
-        botId: props.botId,
-        ...(props.topicId ? { topicId: props.topicId } : {}),
-      }
-    : null,
+  props.paneMode === "primary"
+    ? null
+    : props.instanceId && props.botId
+      ? {
+          instanceId: props.instanceId,
+          botId: props.botId,
+          ...(props.topicId ? { topicId: props.topicId } : {}),
+        }
+      : null,
 );
 
 /** Background-column scope resolution: (bot) → { conversationId, topicId } via
