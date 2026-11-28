@@ -1441,7 +1441,6 @@ export default {
     closePane: "关闭分栏",
     maxReached: "分栏视图最多支持 4 列。",
     alreadyOpen: "已在此视图中打开。",
-    backgroundBody: "将其设为主视图后在此查看。",
     dispatched: {
       open: "在分栏打开",
       locate: "定位到分栏",

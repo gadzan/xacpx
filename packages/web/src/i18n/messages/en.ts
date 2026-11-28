@@ -1448,7 +1448,6 @@ export default {
     closePane: "Close split",
     maxReached: "Split view holds up to 4 columns.",
     alreadyOpen: "Already open in this view.",
-    backgroundBody: "Set this pane as primary to view it here.",
     dispatched: {
       open: "Open in split",
       locate: "Go to split",
